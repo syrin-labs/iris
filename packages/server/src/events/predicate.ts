@@ -742,7 +742,10 @@ function assertsExactCount(predicate: Predicate): boolean {
     return predicate.predicates.some(assertsExactCount);
   }
   if (PredicateKind.NOT === predicate.kind) return assertsExactCount(predicate.predicate);
-  return PredicateKind.NET === predicate.kind && predicate.count !== undefined;
+  return (
+    (PredicateKind.NET === predicate.kind || PredicateKind.SIGNAL === predicate.kind) &&
+    predicate.count !== undefined
+  );
 }
 
 /**

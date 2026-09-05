@@ -1230,6 +1230,72 @@ describe('net count is exact, not "at least" — the double-submit must not pass
   }, 5_000);
 });
 
+describe('signal count is exact, not "at least" — the double-fire must not pass', () => {
+  class LiveSession implements PredicateSession {
+    readonly #events: ReticleEvent[] = [];
+    readonly #listeners = new Set<(event: ReticleEvent) => void>();
+    elapsed(): number {
+      return 0;
+    }
+    command(): Promise<CommandResult> {
+      return Promise.resolve({ kind: 'command_result', id: 'x', ok: true, result: {} });
+    }
+    eventsSince(cursor = 0): ReticleEvent[] {
+      return this.#events.filter((e) => e.t >= cursor);
+    }
+    onEvent(listener: (event: ReticleEvent) => void): () => void {
+      this.#listeners.add(listener);
+      return () => {
+        this.#listeners.delete(listener);
+      };
+    }
+    push(event: ReticleEvent): void {
+      this.#events.push(event);
+      for (const l of this.#listeners) l(event);
+    }
+  }
+
+  const signal = (t: number): ReticleEvent =>
+    ev(EventType.SIGNAL, { name: 'order:placed', data: {} }, t);
+
+  it('FAILS when the second signal lands 59ms after the first', async () => {
+    const session = new LiveSession();
+    const verdict = waitForPredicate(
+      session,
+      { kind: 'signal', name: 'order:placed', count: 1 },
+      5000,
+    );
+    session.push(signal(10));
+    setTimeout(() => session.push(signal(69)), 59);
+    const r = await verdict;
+
+    expect(r.pass).toBe(false);
+    expect(r.observed).toContain('2');
+  });
+
+  it('still passes when exactly one really did fire, without burning the timeout', async () => {
+    const session = new LiveSession();
+    const started = Date.now();
+    const verdict = waitForPredicate(
+      session,
+      { kind: 'signal', name: 'order:placed', count: 1 },
+      10_000,
+    );
+    session.push(signal(10));
+    const r = await verdict;
+
+    expect(r.pass).toBe(true);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it('leaves a presence-only signal predicate resolving on the first match', async () => {
+    const session = new LiveSession();
+    const verdict = waitForPredicate(session, { kind: 'signal', name: 'order:placed' }, 10_000);
+    session.push(signal(10));
+    expect((await verdict).pass).toBe(true);
+  });
+});
+
 describe('waitForPredicate disconnect cleanup', () => {
   class DisconnectableSession implements PredicateSession {
     readonly #events: ReticleEvent[] = [];
