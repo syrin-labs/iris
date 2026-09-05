@@ -5,6 +5,7 @@ import {
   buildCoverageStatement,
   blindSpotsFromEvents,
   spotsForRuntime,
+  absenceBlindSpotNote,
 } from './blind-spots.js';
 
 function ev(type: EventType, data: Record<string, unknown>, t = 1): ReticleEvent {
@@ -110,5 +111,45 @@ describe('blindSpotsFromEvents', () => {
     const spots = blindSpotsFromEvents([ev(EventType.NET_REQUEST, {})]);
     expect(spots).toEqual([]);
     expect(buildCoverageStatement(spots).coverage).toBe('full');
+  });
+});
+
+describe('absenceBlindSpotNote', () => {
+  type AbsencePred = Parameters<typeof absenceBlindSpotNote>[0];
+  const virtualizedSpot = [{ kind: BlindSpotKind.VIRTUALIZED_UNMOUNTED, count: 5 }];
+  const crossOriginSpot = [{ kind: BlindSpotKind.CROSS_ORIGIN_IFRAME, count: 1 }];
+
+  it('returns a note for a direct element absence with a hiding blind spot', () => {
+    const pred: AbsencePred = { kind: 'element', absent: true };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toContain('cannot prove absence');
+  });
+
+  it('returns undefined for a non-absence element predicate', () => {
+    const pred: AbsencePred = { kind: 'element' };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('unwraps a not-wrapped element and still detects the blind spot', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'element' } };
+    const note = absenceBlindSpotNote(pred, virtualizedSpot);
+    expect(note).toContain('cannot prove absence');
+  });
+
+  it('returns undefined for a not-wrapped non-element predicate', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'signal' } };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('returns undefined when no relevant blind spot is present', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'element' } };
+    expect(absenceBlindSpotNote(pred, [])).toBeUndefined();
+  });
+
+  it('scoped cross-origin check works through not-unwrap', () => {
+    const pred: AbsencePred = {
+      kind: 'not',
+      predicate: { kind: 'element', query: { scope: '#iframe-region' } },
+    };
+    expect(absenceBlindSpotNote(pred, crossOriginSpot)).toContain('cannot prove absence');
   });
 });
