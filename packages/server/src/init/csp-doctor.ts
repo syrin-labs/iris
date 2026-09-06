@@ -12,7 +12,12 @@
  * would find policy strings in test fixtures and documentation.
  */
 
-import { cspConnectSrcProblem, devCspAddition } from './csp-check.js';
+import {
+  cspConnectSrcProblem,
+  cspInlineScriptProblem,
+  devCspAddition,
+  externalScriptRemedy,
+} from './csp-check.js';
 
 /** Read a project-relative file, or undefined when it is absent/unreadable. */
 type ReadFile = (relative: string) => string | undefined;
@@ -63,6 +68,14 @@ export function diagnoseWebCsp(
   for (const file of [...alsoCheck, ...CSP_FILES]) {
     const source = read(file);
     if (source === undefined) continue;
+    // `script-src` first, because it is the earlier failure. A policy that blocks the inline
+    // snippet means there is no SDK at all, so a `connect-src` finding on the same file would be
+    // describing a socket that is never opened -- true, and the wrong thing to fix first (#679).
+    const inline = cspInlineScriptProblem(source, port);
+    if (inline !== undefined) {
+      findings.push({ file, problem: inline, fix: externalScriptRemedy() });
+      continue;
+    }
     const problem = cspConnectSrcProblem(source, port);
     if (problem === undefined) continue;
     findings.push({ file, problem, fix: devCspAddition(port) });
