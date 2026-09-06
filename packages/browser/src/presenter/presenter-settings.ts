@@ -46,7 +46,7 @@ export const StatusThemeId = {
 } as const;
 export type StatusThemeId = (typeof StatusThemeId)[keyof typeof StatusThemeId];
 
-export interface StatusTheme {
+interface StatusTheme {
   id: StatusThemeId;
   label: string;
   active: string;

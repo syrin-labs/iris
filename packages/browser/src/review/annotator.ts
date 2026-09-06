@@ -29,7 +29,7 @@ const sel = (role: string): string => `[${MARK_ATTR}="${role}"]`;
  * neither the element nor which of several marks it is. The pin on the page is numbered, so the
  * row carries the same number, plus the source the anchor already resolved.
  */
-export interface MarkReport {
+interface MarkReport {
   note: string;
   /** The anchor the agent will look the element up by, e.g. `[data-testid="deploy-submit"]`. */
   anchor: string;

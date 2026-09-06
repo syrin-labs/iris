@@ -42,7 +42,7 @@ const REPORT_LABEL = 'Impact';
 const SETTINGS_LABEL = 'Settings';
 const EXIT_LABEL = 'Exit';
 
-export interface HudShellCallbacks {
+interface HudShellCallbacks {
   onChatOpen?: () => void;
   onChatClose?: () => void;
   onExpand?: () => void;

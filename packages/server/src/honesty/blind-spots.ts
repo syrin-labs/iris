@@ -219,6 +219,7 @@ interface AbsencePredicate {
   kind: string;
   absent?: boolean;
   query?: { scope?: unknown };
+  predicate?: AbsencePredicate;
 }
 
 /**
@@ -235,7 +236,18 @@ export function absenceBlindSpotNote(
   predicate: AbsencePredicate,
   spots: readonly BlindSpot[],
 ): string | undefined {
-  if ('element' !== predicate.kind || true !== predicate.absent) return undefined;
+  // `not(element)` is the third spelling of an absence assertion — the `not` wrapper IS the
+  // negation, so the inner predicate will not carry `absent: true`. Unwrap and synthesize it.
+  // `not(element { absent: true })` is a double negative — presence — and a positive match is
+  // not threatened by an unobservable region.
+  if (PredicateKind.NOT === predicate.kind && predicate.predicate !== undefined) {
+    if (PredicateKind.ELEMENT === predicate.predicate.kind) {
+      if (true === predicate.predicate.absent) return undefined;
+      return absenceBlindSpotNote({ ...predicate.predicate, absent: true }, spots);
+    }
+    return undefined;
+  }
+  if (PredicateKind.ELEMENT !== predicate.kind || true !== predicate.absent) return undefined;
 
   const relevant = spots.filter(
     (spot) =>
