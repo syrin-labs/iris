@@ -62,7 +62,12 @@
               },
               {
                 "group": "Working with agents",
-                "pages": ["multi-agent-testing", "human-control", "platform-integration"]
+                "pages": [
+                  "multi-agent-testing",
+                  "human-control",
+                  "platform-integration",
+                  "http-transport"
+                ]
               },
               {
                 "group": "When it goes wrong",

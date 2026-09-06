@@ -137,9 +137,9 @@ describe('findEchoMismatches — the request has to be a write', () => {
   });
 
   it('still grades a real write on the same shape', () => {
-    expect(
-      findEchoMismatches([lookup('PATCH', { workspace_id: '408523123' }, { workspace_id: 23 })]),
-    ).toHaveLength(1);
+    expect(findEchoMismatches([lookup('PATCH', { locale: 'fr' }, { locale: 'en' })])).toHaveLength(
+      1,
+    );
   });
 
   /**
@@ -268,5 +268,68 @@ describe('findEchoMismatches — the response has to look like an echo', () => {
     expect(kinds(write({ qty: 5 }, { ok: true, saved: { qty: 3 } }))).toContain(
       ContradictionKind.WRITE_FIELD_IGNORED,
     );
+  });
+});
+
+/**
+ * #670 — the hunter fired on ordinary, correct API behaviour, and the copy claimed a data-integrity
+ * bug that did not exist. Three reported shapes: a create that sends `0` for "you assign the id",
+ * two id spaces that share a field name, and a suffix that is not the same key.
+ */
+describe('findEchoMismatches — sentinels and identity keys are not ignored writes', () => {
+  it('stays silent when the request sent 0, the usual create-at-root sentinel', () => {
+    // POST .../add-sub-category with `sub_category_id: 0` meaning "create"; the response returns the
+    // primary key of the row just made. That is not a field the caller asked to persist.
+    expect(
+      kinds(
+        write(
+          { sub_category_id: 0, name: 'Books' },
+          { ok: true, saved: { sub_category_id: 19314, name: 'Books' } },
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('stays silent when the only requested field was an empty string', () => {
+    expect(kinds(write({ nickname: '' }, { ok: true, saved: { nickname: 'guest' } }))).toEqual([]);
+  });
+
+  it('stays silent when the only overlap is an identity key in two id spaces', () => {
+    // The client sends a public workspace id; the server returns its internal row id. Same key
+    // name, never expected to match, and treating it as a dropped write poisons every later assert.
+    expect(
+      kinds(write({ workspace_id: '408523123' }, { ok: true, saved: { workspace_id: 23 } })),
+    ).toEqual([]);
+  });
+
+  it('does not pair url_workspace_id with workspace_id — exact key, not a suffix', () => {
+    expect(
+      kinds(
+        write(
+          { url_workspace_id: '408523123' },
+          { ok: true, saved: { workspace_id: 23, name: 'Acme' } },
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('still catches a non-identity field that came back different', () => {
+    expect(
+      kinds(
+        write(
+          { workspace_id: 7, locale: 'fr' },
+          { ok: true, saved: { workspace_id: 7, locale: 'en' } },
+        ),
+      ),
+    ).toContain(ContradictionKind.WRITE_FIELD_IGNORED);
+  });
+
+  it('names a different echo, not a half-applied write the UI cannot know about', () => {
+    const [found] = findEchoMismatches([
+      write({ locale: 'fr' }, { ok: true, saved: { locale: 'en' } }),
+    ]);
+    expect(found?.detail).toContain('returned a different value than it was asked to set');
+    expect(found?.detail).not.toContain('half-applied');
+    expect(found?.detail).not.toContain('no way to know');
   });
 });

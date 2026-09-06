@@ -104,3 +104,29 @@ describe('asking for a recording that is not there', () => {
     expect(res.error).toContain('record one');
   });
 });
+
+describe('a recording that backtracks across pages', () => {
+  it('warns at save, because replay has no navigation steps', async () => {
+    const res = (await save?.handler(
+      deps(stored({ routes: ['/search', '/product/1', '/search'] })),
+      { flowName: 'triage' },
+    )) as { warning?: string };
+    expect(res.warning).toContain('/search');
+    expect(res.warning).toMatch(/returned/i);
+  });
+
+  it('does not write the journey into the flow file', async () => {
+    await save?.handler(deps(stored({ routes: ['/search', '/product/1', '/search'] })), {
+      flowName: 'triage',
+    });
+    const file = await readSaved();
+    expect(file['routes']).toBeUndefined();
+  });
+
+  it('stays quiet on a linear journey', async () => {
+    const res = (await save?.handler(deps(stored({ routes: ['/search', '/product/1'] })), {
+      flowName: 'triage',
+    })) as { warning?: string };
+    expect(res.warning).toBeUndefined();
+  });
+});

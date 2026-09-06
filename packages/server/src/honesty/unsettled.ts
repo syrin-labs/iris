@@ -78,6 +78,54 @@ export function describeWaitTarget(predicate: Predicate): string {
 }
 
 /**
+ * Did the assertion name a request that is still open?
+ *
+ * `waitForPredicate` reports a miss ("no request to /register") the moment the budget ends, even
+ * when that same POST is sitting in `stillInFlight`. Grading that miss `no` is a race against the
+ * backend, not a defect. Matching is the discriminator: an unrelated poll left open does not pardon
+ * a named URL that never started.
+ */
+export function namedNetIsInFlight(
+  predicate: Predicate,
+  stillInFlight: readonly string[],
+): boolean {
+  if (0 === stillInFlight.length) return false;
+  const nets: { method?: string; urlContains: string }[] = [];
+  const walk = (p: Predicate): void => {
+    switch (p.kind) {
+      case PredicateKind.ALL_OF:
+      case PredicateKind.ANY_OF:
+        for (const child of p.predicates) walk(child);
+        return;
+      case PredicateKind.NET: {
+        if (undefined === p.urlContains || 0 === p.urlContains.length) return;
+        nets.push({
+          ...(undefined === p.method ? {} : { method: p.method }),
+          urlContains: p.urlContains,
+        });
+        return;
+      }
+      default:
+        return;
+    }
+  };
+  walk(predicate);
+  return nets.some((net) => stillInFlight.some((label) => inFlightLabelMatchesNet(label, net)));
+}
+
+function inFlightLabelMatchesNet(
+  label: string,
+  net: { method?: string; urlContains: string },
+): boolean {
+  const space = label.indexOf(' ');
+  if (space <= 0) return false;
+  const method = label.slice(0, space);
+  const url = label.slice(space + 1);
+  if (undefined !== net.method && method.toUpperCase() !== net.method.toUpperCase()) return false;
+  return url.includes(net.urlContains);
+}
+
+/**
  * The `because` sentence for an unsettled verdict: the wait, the observation, the next move.
  *
  * The two branches are the point. An outstanding write is worth waiting for and worth asserting

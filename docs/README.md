@@ -50,6 +50,7 @@ Everything here is published to [docs.reticle.sh](https://docs.reticle.sh) by `d
 | [for-agents.md](for-agents.md) | how to fetch these docs as Markdown or `llms.txt` |
 | [architecture.md](architecture.md) | how it works, and why it is built this way |
 | [platform-integration.md](platform-integration.md) | Vite, Next, Remix, Astro, plain HTML |
+| [http-transport.md](http-transport.md) | driving the tools over plain HTTP/SSE, for clients that cannot reload MCP |
 | [desktop.mdx](desktop.mdx) | Electron and Tauri in full: setup, IPC, screenshots, headless, troubleshooting |
 | [frameworks.mdx](frameworks.mdx) | what is supported, what is wired-but-unverified, and the wiring |
 | [state-management.mdx](state-management.mdx) | zustand, Redux, and eight adapters |

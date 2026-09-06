@@ -224,3 +224,83 @@ describe('buffer loss impeaches an absence claim, not every claim', () => {
     expect(result.verified).toBe(Verified.YES);
   });
 });
+
+/**
+ * `count: 0` is an absence claim, and the rule above did not know it (#668).
+ *
+ * `restsOnCompleteWindow` recognises `PredicateKind.NOT` and `absent: true`. It does not recognise
+ * the third spelling of the same assertion — an exact cardinality of zero — so `{ kind: "net",
+ * urlContains: "…", count: 0 }` was graded `yes` over a window the buffer had provably lost scarce
+ * evidence from. That green rests entirely on the window being complete: the evicted call is exactly
+ * the disproof, which is the definition the function's own doc comment gives for an absence claim.
+ *
+ * Reported by the second reporter on #668, in those words: `buffer.dropped` climbing well past `held`
+ * on an `absent: true` / `count: 0` assertion, unable to tell whether their "no login request fired"
+ * proof was real or an evicted-buffer artifact. They re-ran the whole flow on a fresh page to trust
+ * it — which is what a verdict costs when it cannot say how sure it is.
+ */
+describe('an exact count of zero is an absence claim (#668)', () => {
+  const noSignIn = {
+    predicate: { kind: 'net', urlContains: '/api/auth/sign-in', count: 0 },
+    timeout_ms: 0,
+  };
+
+  it('refuses a green when scarce evidence from this window was evicted', async () => {
+    const result = (await tool(ReticleTool.ASSERT).handler(
+      depsWithBuffer(0, undefined, true),
+      noSignIn,
+    )) as { pass?: boolean; verified?: string; verifiedReason?: string };
+
+    expect(result.pass).toBe(true);
+    expect(result.verified).toBe(Verified.UNKNOWN);
+    expect(result.verifiedReason).toBe(VerifiedReason.UNCLEAN_CAPTURE);
+  });
+
+  it('still grades it normally when the window is intact', async () => {
+    // The green must survive a clean window, or the fix has simply traded a false yes for a useless
+    // unknown on every absence assertion anyone writes.
+    const result = (await tool(ReticleTool.ASSERT).handler(
+      depsWithBuffer(0, undefined, false),
+      noSignIn,
+    )) as { pass?: boolean; verified?: string };
+
+    expect(result.pass).toBe(true);
+    expect(result.verified).toBe(Verified.YES);
+  });
+
+  it('leaves a NON-zero count alone, which is a positive claim', async () => {
+    // `count: 2` asserts calls were MADE. It found what it found, and events aged out elsewhere in
+    // the buffer do not unmake them — the same reason a plain positive assertion is left alone.
+    const twoCalls: ReticleEvent[] = [
+      {
+        t: 1,
+        type: EventType.NET_REQUEST,
+        sessionId: 'demo',
+        data: { method: 'POST', url: 'http://localhost/api/save', status: 200, ok: true },
+      },
+      {
+        t: 2,
+        type: EventType.NET_REQUEST,
+        sessionId: 'demo',
+        data: { method: 'POST', url: 'http://localhost/api/save', status: 200, ok: true },
+      },
+    ];
+    const result = (await tool(ReticleTool.ASSERT).handler(
+      depsWithBuffer(0, undefined, true, twoCalls),
+      { predicate: { kind: 'net', urlContains: '/api/save', count: 2 }, timeout_ms: 0 },
+    )) as { pass?: boolean; verified?: string };
+
+    expect(result.pass).toBe(true);
+    expect(result.verified).toBe(Verified.YES);
+  });
+
+  it('covers a signal count of zero too, which is the same claim on the other channel', async () => {
+    const result = (await tool(ReticleTool.ASSERT).handler(depsWithBuffer(0, undefined, true), {
+      predicate: { kind: 'signal', name: 'checkout:submitted', count: 0 },
+      timeout_ms: 0,
+    })) as { pass?: boolean; verified?: string };
+
+    expect(result.pass).toBe(true);
+    expect(result.verified).toBe(Verified.UNKNOWN);
+  });
+});

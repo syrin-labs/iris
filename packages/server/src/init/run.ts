@@ -15,13 +15,8 @@ import { projectIdOf, rememberProjectOnDisk } from '../project/remember-project.
 import { detect, Framework, namesAPackageManager, type DetectInput, UiLibrary } from './detect.js';
 import { wasMcpRegistered } from './mcp-registered.js';
 import { pickAstroHost } from './astro-host.js';
-import {
-  findWorkspaceApps,
-  NEXT_CONFIG_CANDIDATES,
-  PACKAGE_JSON,
-  VITE_CONFIG_CANDIDATES,
-} from './workspace-apps.js';
-import { chooseWorkspaceApp } from './app-choice.js';
+import { NEXT_CONFIG_CANDIDATES, PACKAGE_JSON, VITE_CONFIG_CANDIDATES } from './workspace-apps.js';
+import { redirectToWorkspaceApp } from './workspace-redirect.js';
 import { isConnectStep } from './connect-steps.js';
 import { CURSOR_RULE_PATH, RETICLE_MD_PATH } from './agent-rules.js';
 import { CRA_ENV_PATH } from './cra.js';
@@ -731,11 +726,14 @@ function applyEffects(
         degraded.set(s.target, retry.note);
         continue;
       }
+      // Verify, don't re-run: give the install step itself the same sdkPackagesPresent benefit
+      // already given to the wiring it gates below (#683).
+      if (s.target === DEPS_TARGET && sdkPackagesPresent(plan.framework, plan.uiLibrary, io))
+        continue;
       failed.add(s.target);
       // A failed install only blocks the wiring when the packages are genuinely ABSENT. See
       // sdkPackagesPresent: the guard protects "the import resolves", not "our subprocess exited 0".
-      if (s.target === DEPS_TARGET && !sdkPackagesPresent(plan.framework, plan.uiLibrary, io))
-        installFailed = true;
+      if (s.target === DEPS_TARGET) installFailed = true;
     }
   }
   // Where this project lives, remembered for a daemon that will be started somewhere else.
@@ -764,90 +762,6 @@ function classifyInitFailure(failed: ReadonlySet<string>): string {
   if (failed.has(DEPS_TARGET)) return InitFailure.DEPENDENCY_INSTALL;
   if (failed.has(MCP_TARGET)) return InitFailure.MCP_REGISTRATION;
   return InitFailure.OTHER;
-}
-
-const AMBIGUOUS_HEADER =
-  'Several apps found in this workspace. Re-run `reticle init` inside the one you want:';
-
-/**
- * When the current directory is a workspace root with no app of its own, wire the app instead of the
- * root. One candidate is wired silently (there is nothing to ask about); several are listed, because
- * guessing which app someone meant is worse than one line of output.
- * Returns null when there is nothing to redirect to — the caller then proceeds here as before.
- */
-function redirectToWorkspaceApp(options: InitOptions, io: InitIo, pkg: unknown): InitResult | null {
-  if (true === options.redirected) return null;
-  const rootFiles = new Set(io.rootFiles());
-  const here = detect({
-    pkg: 'object' === typeof pkg && pkg !== null ? pkg : {},
-    configFiles: rootFiles,
-    lockfiles: new Set(),
-  });
-  // `--app` is an INSTRUCTION, and it is read before the guess below. The guess answers "where is
-  // the app?" for somebody who did not say; when somebody said, there is nothing left to infer.
-  //
-  // It used to be read after, and the check underneath returns early for any directory that looks
-  // like an app — which a JS monorepo ROOT does, because shared tooling puts `vite` in its
-  // devDependencies. So on a real pnpm+turbo monorepo (measured on nuclear, a Tauri v2 app at
-  // product scale) `reticle init --app packages/player` silently ignored the flag, installed the
-  // SDK into the root's package.json, wrote `.reticle.json` and a whole `src/reticle-dev.ts` into a
-  // repository root that has no `src/`, left `packages/player` untouched — and reported three ✓ and
-  // one ⚠. The one flag documented for this shape wired the wrong directory and said it worked.
-  //
-  // Existence is the test, not membership of the discovered list: discovery scans conventional
-  // directories, and somebody who names a path knows their own layout better than the scan does.
-  const named = options.app === undefined || '' === options.app ? undefined : options.app;
-  if (named !== undefined) {
-    const wanted = named.replace(/\/+$/, '');
-    if (io.exists(`${wanted}/${PACKAGE_JSON}`)) return enterApp(options, io, wanted, 'Wiring');
-    io.print(`--app ${named} does not name a directory with a package.json in it.`);
-    return { ok: false, applied: 0, manual: 1 };
-  }
-  if (here.framework !== Framework.HTML) return null; // this directory IS the app
-
-  const apps = findWorkspaceApps(io);
-  // An explicitly named app answers the ambiguity. Refusing to guess is right, but "re-run inside the
-  // one you want" is not something a script, a CI step, or an agent that cannot change directory can
-  // act on — so the refusal was a dead end for exactly the callers most likely to hit it.
-  const chosen = chooseWorkspaceApp(options.app, apps);
-  if (!chosen.ok) {
-    io.print(chosen.message);
-    return { ok: false, applied: 0, manual: 1 };
-  }
-  const target = chosen.app ?? (1 === apps.length ? apps[0] : undefined);
-  if (target === undefined) {
-    if (0 === apps.length) return null; // not a workspace — fall through to the normal HTML plan
-    io.print(AMBIGUOUS_HEADER);
-    for (const a of apps) io.print(`  ${a}`);
-    io.print('');
-    io.print(`Or name one without changing directory:  reticle init --app ${apps[0] ?? '<dir>'}`);
-    return { ok: false, applied: 0, manual: apps.length };
-  }
-  return enterApp(options, io, target, 'No app in this directory — wiring');
-}
-
-/**
- * Re-enter `init` scoped to one directory of a workspace.
- *
- * One implementation for both routes in — the app somebody NAMED and the app discovery found when
- * nobody did. They differ only in the sentence printed; scoping the io, moving the cwd and keeping
- * the agent root has to be identical for both, and was worth having twice for exactly as long as it
- * took to get one of them wrong.
- */
-function enterApp(options: InitOptions, io: InitIo, target: string, lead: string): InitResult {
-  io.print(`${lead} ${target}.`);
-  io.print('');
-  return runInit(
-    {
-      ...options,
-      cwd: join(options.cwd, target),
-      redirected: true,
-      // Where the human is STANDING, kept across the redirect: their agent session runs here, so
-      // this is the only place a `/reticle` command file can be found by it.
-      agentRoot: options.agentRoot ?? options.cwd,
-    },
-    io.scoped(target),
-  );
 }
 
 export function runInit(options: InitOptions, io: InitIo): InitResult {
@@ -915,7 +829,7 @@ function runInitSteps(options: InitOptions, io: InitIo): InitResult {
   //
   // `'{}'` because the redirect only needs the manifest to ask "is THIS directory the app", and a
   // directory with no package.json is definitively not.
-  const redirectedEarly = redirectToWorkspaceApp(options, io, pkgRaw ?? {});
+  const redirectedEarly = redirectToWorkspaceApp(options, io, pkgRaw ?? {}, runInit);
   if (redirectedEarly !== null) return redirectedEarly;
   if (null === pkgRaw) {
     io.print(

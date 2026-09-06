@@ -396,16 +396,24 @@ describe('Bridge security boundary', () => {
   });
 
   it('caps and expires unauthenticated pending handshakes', async () => {
+    // The hello timeout has to outlast the SECOND connect, not merely be short. At 50ms this raced
+    // on a loaded runner: `idle` expired before `excess` finished connecting, which freed the one
+    // pending slot, so `excess` was ACCEPTED and later closed 1008 (hello timeout) instead of 1013
+    // (too many pending). The assertion then read `expected 1008 to be 1013` — a real cap reported
+    // as broken because the machine was slow, which is the failure mode a duration-based test has.
+    // A second is far longer than a loopback connect and still expires well inside the test.
     const limited = await makeBridge({
       maxPendingConnections: 1,
-      helloTimeoutMs: 50,
+      helloTimeoutMs: 1_000,
     });
     const idle = await openSocket(limited.port);
     const idleClosed = waitForClose(idle);
 
     const excess = await openSocket(limited.port);
     const excessClosed = waitForClose(excess);
+    // Refused by the cap while `idle` still holds the slot — not by its own timeout.
     expect(await excessClosed).toBe(1013);
+    // And the slot is not held for ever: the idle handshake still expires on its own.
     expect(await idleClosed).toBe(1008);
     expect(limited.bridge.sessions.count()).toBe(0);
   });
