@@ -232,16 +232,17 @@ describe('runInit', () => {
     expect(out).not.toMatch(/from '@reticlehq\/\w+'/);
   });
 
-  it('hands a Streamlit app its parent-document component helper', () => {
+  it('hands a Streamlit app its executable HTML helper', () => {
     const io = memoryIo({
-      'requirements.txt': 'streamlit==1.49.1\n',
+      'requirements.txt': 'streamlit==1.63.0\n',
       'app.py': 'import streamlit as st\n',
     });
     runInit(OPTS, io);
     const out = io.lines.join('\n');
-    expect(out).toContain('components.html');
-    expect(out).toContain('window.parent.document');
-    expect(out).toContain("script.id = 'reticle-streamlit-connect'");
+    expect(out).toContain('st.html');
+    expect(out).toContain('unsafe_allow_javascript=True');
+    expect(out).toContain("marker.id = 'reticle-streamlit-connect'");
+    expect(out).toContain("import('https://");
     expect(out).toContain('reticle.connect(');
     expect(out).not.toMatch(/paste this into the page|script-tag snippet below/i);
   });

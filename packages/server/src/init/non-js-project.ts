@@ -65,8 +65,8 @@ export function streamlitSetupMessage(): string {
   return (
     'This is a Streamlit project. Streamlit owns the top-level HTML document, so there is no ' +
     'served template for the generic script tag, and scripts passed to `st.markdown` do not run. ' +
-    "Add the `components.html` helper below to your app during development. It runs in Streamlit's " +
-    'component frame and installs one guarded Reticle module in the parent app document.'
+    'Use Streamlit 1.63 or newer and add the `st.html` helper below during development. It runs ' +
+    'Reticle in the app document and guards against duplicate connections across reruns.'
   );
 }
 

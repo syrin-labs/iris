@@ -59,8 +59,8 @@ describe('Streamlit detection', () => {
 
   it('explains why the generic template advice does not apply', () => {
     expect(streamlitSetupMessage()).toMatch(/no served template/i);
-    expect(streamlitSetupMessage()).toContain('components.html');
-    expect(streamlitSetupMessage()).toMatch(/parent app document/i);
+    expect(streamlitSetupMessage()).toContain('st.html');
+    expect(streamlitSetupMessage()).toMatch(/app document/i);
   });
 });
 

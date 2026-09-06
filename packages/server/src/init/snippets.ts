@@ -440,30 +440,31 @@ export function staticPageSnippet(connectArgLiteral: string): string {
 
 /**
  * Streamlit has no served HTML template, and `st.markdown` inserts script markup without executing
- * it. A custom component does execute in a same-origin iframe; this helper uses that supported
- * boundary to append one module script to the parent document, where Reticle can observe the app
- * rather than the component frame. The id guard makes Streamlit reruns idempotent.
+ * it. Streamlit 1.63 added an explicit JavaScript boundary to `st.html`; use a classic script there
+ * so it can dynamically import the ESM SDK in the app document. A head marker makes reruns
+ * idempotent and is removed after an import failure so the next rerun can retry.
  */
 export function streamlitPageSnippet(connectArgLiteral: string): string {
-  const moduleSource =
-    `import { reticle } from '${CDN_SDK_URL}';\n` + `reticle.connect(${connectArgLiteral});`;
-  return `import streamlit.components.v1 as components
+  return `import streamlit as st
 
-components.html(
+st.html(
     """
     <script>
       (() => {
-        const document = window.parent.document;
         if (document.getElementById('reticle-streamlit-connect')) return;
-        const script = document.createElement('script');
-        script.id = 'reticle-streamlit-connect';
-        script.type = 'module';
-        script.textContent = ${JSON.stringify(moduleSource)};
-        document.head.appendChild(script);
+        const marker = document.createElement('meta');
+        marker.id = 'reticle-streamlit-connect';
+        document.head.appendChild(marker);
+        void import('${CDN_SDK_URL}')
+          .then(({ reticle }) => reticle.connect(${connectArgLiteral}))
+          .catch((error) => {
+            marker.remove();
+            throw error;
+          });
       })();
     </script>
     """,
-    height=0,
+    unsafe_allow_javascript=True,
 )`;
 }
 
