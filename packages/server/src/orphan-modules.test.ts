@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { join } from 'node:path';
+
+import { scanPackage } from '../../../scripts/orphan-scan.mjs';
 
 /**
  * A module that nothing imports must be DECLARED unwired, not discovered by an auditor.
@@ -14,9 +15,13 @@ import { join, relative, sep } from 'node:path';
  * This test does not ban orphans — some are staged work with real tests, and deleting them would throw
  * away sound code. It bans UNDECLARED orphans: to add one you must name it here, which is exactly the
  * moment to ask whether it should be wired or removed.
+ *
+ * The scan lives in `scripts/orphan-scan.mjs` so every package asks the same question the same way,
+ * and so entry points are derived from this package's `exports` map rather than a literal
+ * `index.ts` (#548).
  */
 
-const SRC = join(__dirname);
+const PACKAGE_DIR = join(__dirname, '..');
 
 /** Modules with no production importer, each with the reason it is allowed to stay. */
 const DECLARED_UNWIRED: Record<string, string> = {
@@ -47,54 +52,14 @@ const DECLARED_UNWIRED: Record<string, string> = {
     'would is real, but this consumer is not implemented.',
 };
 
-/** Source files, excluding tests, type-only barrels and the entry points everything hangs off. */
-function sourceFiles(dir: string, acc: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) {
-      sourceFiles(full, acc);
-      continue;
-    }
-    if (!entry.endsWith('.ts')) continue;
-    if (entry.endsWith('.test.ts') || entry.endsWith('.test-harness.ts')) continue;
-    // `relative()` returns the PLATFORM separator, so every comparison below is against a POSIX
-    // literal that never matches on Windows: the scan then reports every file as a violation, or
-    // passes by matching nothing. Same fixture bug as four other packages on this branch.
-    acc.push(relative(SRC, full).split(sep).join('/'));
-  }
-  return acc;
-}
-
-/** Entry points and barrels are imported by consumers outside src, so "no importer here" is expected. */
-const ENTRY_POINTS = new Set(['index.ts', 'cli.ts', 'mcp.ts', 'daemon.ts']);
-
 describe('no undeclared orphan modules', () => {
-  const files = sourceFiles(SRC);
-  const corpus = files.map((f) => ({ path: f, text: readFileSync(join(SRC, f), 'utf8') }));
+  const { orphans, stale } = scanPackage(PACKAGE_DIR, DECLARED_UNWIRED);
 
   it('every module without a production importer is declared, with a reason', () => {
-    const orphans: string[] = [];
-    for (const file of files) {
-      if (ENTRY_POINTS.has(file)) continue;
-      const base = file.replace(/\.ts$/, '');
-      const specifier = `${base.split('/').pop() ?? base}.js`;
-      const imported = corpus.some(
-        (c) => c.path !== file && !c.path.endsWith('.test.ts') && c.text.includes(specifier),
-      );
-      if (!imported && DECLARED_UNWIRED[file] === undefined) orphans.push(file);
-    }
     expect(orphans).toEqual([]);
   });
 
   it('every declared entry is still an orphan — a wired one must be removed from the list', () => {
-    const stale: string[] = [];
-    for (const declared of Object.keys(DECLARED_UNWIRED)) {
-      const specifier = `${declared.replace(/\.ts$/, '').split('/').pop() ?? ''}.js`;
-      const imported = corpus.some(
-        (c) => c.path !== declared && !c.path.endsWith('.test.ts') && c.text.includes(specifier),
-      );
-      if (imported) stale.push(declared);
-    }
     expect(stale).toEqual([]);
   });
 });
