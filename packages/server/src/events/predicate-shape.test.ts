@@ -137,6 +137,22 @@ describe('scoping the text predicate', () => {
   it('names `scope` among the fields the text predicate accepts', () => {
     expect(predicateFieldsFor(PredicateKind.TEXT)).toContain('scope');
   });
+
+  it('accepts `self` for checking the scoped root subtree', () => {
+    expect(
+      parsePredicate({
+        kind: PredicateKind.TEXT,
+        contains: 'Move to Folder',
+        scope: 'e12',
+        self: true,
+      }),
+    ).toEqual({
+      kind: PredicateKind.TEXT,
+      contains: 'Move to Folder',
+      scope: 'e12',
+      self: true,
+    });
+  });
 });
 
 describe('nestedKeysOf reaches one level into an object field', () => {

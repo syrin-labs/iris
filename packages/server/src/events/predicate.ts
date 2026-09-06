@@ -250,7 +250,7 @@ async function evalElement(
   // A text miss where the string is on the page but split across children reads exactly like an
   // element that never rendered. Naming the container is the difference between a retry and a bug
   // report against working code. See split-text-miss.ts.
-  const splitText = describeSplitTextMiss(match.hint?.splitText);
+  const splitText = describeSplitTextMiss(match.hint?.splitText, query.text);
   const clause = splitText ?? (alsoHere === undefined || '' === alsoHere ? undefined : alsoHere);
   const suffix = clause === undefined ? '' : ` — ${clause}`;
   return {
@@ -622,7 +622,11 @@ async function evaluatePredicateRaw(
         // with only `text` filled in, so scoping it needs the field, not a second code path.
         undefined === predicate.scope
           ? { text: predicate.contains }
-          : { text: predicate.contains, scope: predicate.scope },
+          : {
+              text: predicate.contains,
+              scope: predicate.scope,
+              ...(true === predicate.self ? { self: true } : {}),
+            },
         true === predicate.visible ? ElementState.VISIBLE : undefined,
         predicate.absent ?? false,
         diagnose,

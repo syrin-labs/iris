@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
+import { PredicateKind } from '@reticlehq/core';
+import { parsePredicate } from './predicate-parse.js';
 import { describeSplitTextMiss } from './split-text-miss.js';
+
+function retryPredicateFrom(message: string): unknown {
+  const marker = 'retry as ';
+  const start = message.indexOf(marker);
+  expect(start).toBeGreaterThanOrEqual(0);
+  return JSON.parse(message.slice(start + marker.length));
+}
 
 /**
  * The clause exists to separate two failures that produced the SAME verdict: an element that never
@@ -12,10 +21,19 @@ describe('describeSplitTextMiss', () => {
     expect(describeSplitTextMiss(undefined)).toBeUndefined();
   });
 
-  it('names the container and hands back a query that resolves', () => {
-    const message = describeSplitTextMiss({ ref: 'e12', role: 'button', name: 'Move to Folder' });
+  it('names the container and hands back a predicate that the public schema accepts', () => {
+    const message = describeSplitTextMiss(
+      { ref: 'e12', role: 'button', name: 'Move to Folder' },
+      'Move to Folder',
+    );
     expect(message).toContain("button 'Move to Folder'");
-    expect(message).toContain("{ scope: 'e12', self: true }");
+    const retry = retryPredicateFrom(message ?? '');
+    expect(parsePredicate(retry)).toEqual({
+      kind: PredicateKind.TEXT,
+      contains: 'Move to Folder',
+      scope: 'e12',
+      self: true,
+    });
   });
 
   it('states that no text query can match, not merely that this one did not', () => {

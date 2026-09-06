@@ -12,9 +12,12 @@
  * only, so the channel an agent is most likely to copy from produces the one locator this query
  * cannot resolve.
  *
- * Naming the container ends it in one step: `ref` is a locator, and `self: true` returns the scope
- * element itself, so the recovery is a query the agent can paste rather than another guess.
+ * Naming the container ends it in one step: `ref` is a locator, and a scoped text predicate with
+ * `self: true` checks the container's combined subtree text. The recovery is a predicate the agent
+ * can paste rather than another guess, and it is serialized as JSON so the schema test can parse it.
  */
+
+import { PredicateKind } from '@reticlehq/core';
 
 /** Enough of the label to recognise it; the message is read in a tool result, not a log. */
 const MAX_TEXT = 60;
@@ -43,13 +46,21 @@ interface SplitTextOwner {
  * Undefined — not a vaguer sentence — when the browser found no container: an ordinary miss keeps the
  * short message it already had. A clause that fires on every failure stops carrying information.
  */
-export function describeSplitTextMiss(owner: SplitTextOwner | undefined): string | undefined {
+export function describeSplitTextMiss(
+  owner: SplitTextOwner | undefined,
+  searchedText?: string,
+): string | undefined {
   if (owner === undefined) return undefined;
   const where = nameOf(owner);
   const scope = owner.ref !== undefined && owner.ref.length > 0 ? owner.ref : undefined;
   const recovery =
-    scope === undefined
+    scope === undefined || searchedText === undefined
       ? 'scope to that container and match it as a whole'
-      : `retry as { scope: '${scope}', self: true }`;
+      : `retry as ${JSON.stringify({
+          kind: PredicateKind.TEXT,
+          contains: searchedText,
+          scope,
+          self: true,
+        })}`;
   return `that text IS on the page, split across the children of ${where} — no single element's own text carries it, so no text query can match it; ${recovery}`;
 }

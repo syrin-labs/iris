@@ -29,6 +29,8 @@ export type Predicate =
        * `act_and_wait` reports `already_true` for an action that did exactly the right thing.
        */
       scope?: string;
+      /** Match the scope root itself and check its combined subtree text. Requires `scope`. */
+      self?: boolean;
     }
   | {
       kind: typeof PredicateKind.NET;
@@ -164,6 +166,9 @@ const ELEMENT_QUERY_FIELDS = [
  */
 function usedQueryFields(query: ElementQuery): ReadonlySet<string> {
   const used = new Set<string>();
+  // The browser's `self` branch checks subtree text when supplied, but skips every other locator.
+  // Mark only text as consumed so role/name/etc. remain residual checks on the returned descriptor.
+  if (true === query.self) return query.text === undefined ? used : used.add('text');
   if (query.by !== undefined && query.value !== undefined) {
     used.add('by').add('value');
     if (QueryBy.ROLE === query.by) used.add('name');
@@ -321,6 +326,7 @@ function predicateUnion() {
         visible: z.boolean().optional(),
         absent: z.boolean().optional(),
         scope: z.string().optional(),
+        self: z.boolean().optional(),
       })
       .strict(),
     z
