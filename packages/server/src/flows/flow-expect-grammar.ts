@@ -110,6 +110,18 @@ export function describeFlowZodFailure(error: ZodError): string {
   const issue = error.issues[0];
   if (undefined === issue) return FlowParseNote.MALFORMED;
   const path = issue.path;
+  // A strict object reports an unrecognized key as `unrecognized_keys` on the OBJECT's path, with
+  // the offending names in `keys` — not as an issue whose path ends in the key. Reading only the
+  // path shape reported the one failure this exists to name as a bare "malformed", which sends the
+  // author back to the file to find a typo we had already identified.
+  if ('unrecognized_keys' === issue.code) {
+    const named = issue.keys.map((k) => `"${k}"`).join(', ');
+    if ('steps' === path[0] && 'number' === typeof path[1] && 'expect' === path[2]) {
+      return `${FlowParseNote.UNSUPPORTED_SHAPE} at step ${String(path[1])} key ${named}`;
+    }
+    if ('success' === path[0]) return `${FlowParseNote.UNSUPPORTED_SHAPE} at success key ${named}`;
+    return `${FlowParseNote.UNSUPPORTED_SHAPE} — unrecognized key ${named}`;
+  }
   if (
     'steps' === path[0] &&
     'number' === typeof path[1] &&

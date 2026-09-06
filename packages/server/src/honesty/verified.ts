@@ -49,7 +49,7 @@ interface VerifiedInputs {
   /** Did a real frame flush before the wait gave up? */
   settled?: boolean;
   /**
-   * The caller NAMED the expected consequence before acting — an `until`/`predicate` of its own,
+   * The caller named a consequence before acting — an `until`/`predicate` of its own,
    * rather than the default "wait for the page to go idle".
    *
    * This is the epistemic core of the tool: a declaration made before the action cannot be
@@ -67,6 +67,12 @@ interface VerifiedInputs {
    * outright. Fixing a false negative must not open a path to a false positive.
    */
   declaredConsequence?: boolean;
+  /**
+   * A net the caller named is still open. `waitForPredicate` reports that as `pass: false` ("no
+   * request to …") the instant the budget ends, which made a cold backend `assertion_failed` and a
+   * warm one `proved`. Absence of a settle is not evidence the request never happened — see #669.
+   */
+  namedRequestInFlight?: boolean;
   /**
    * A write in this window answered `202 Accepted` — the server took the request and has NOT
    * finished processing it.
@@ -172,6 +178,24 @@ export function decideVerified(inputs: VerifiedInputs): VerifiedVerdict {
         'no consequence was declared, so this only waited for the page to go idle and it never ' +
         'did — that is a statement about when Reticle stopped looking, not about the app. Pass ' +
         '`until` naming what the action should cause (a signal, a request, a route, or store state)',
+    };
+  }
+
+  // ABOVE the failure clause, same reason as observationLost: absence is not evidence.
+  //
+  // A `{ net, urlContains }` miss while that URL is still in `stillInFlight` is a window that
+  // closed early, not a request that never happened. The same result object already named the
+  // in-flight POST; calling it `assertion_failed` contradicted that field and flipped green on a
+  // warm backend. UNKNOWN, and the sentence says to re-check once the request lands.
+  if (false === pass && true === inputs.namedRequestInFlight) {
+    return {
+      verified: Verified.UNKNOWN,
+      verifiedReason: VerifiedReason.WINDOW_CLOSED_EARLY,
+      because: unsettledBecause(
+        'the request this assertion named was still in flight when the window closed, so the ' +
+          'consequence was not disproved — it had not finished',
+        inputs.unsettled,
+      ),
     };
   }
 

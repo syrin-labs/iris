@@ -1,5 +1,5 @@
 import { span } from '../trace.js';
-import { routePathOf } from '../events/predicate-route.js';
+import { routeOfEvent } from '../events/predicate-route.js';
 import {
   AnchorKind,
   DriftReason,
@@ -296,14 +296,12 @@ function currentRoute(session: FlowReplaySession): string | undefined {
   const routes = session.eventsSince(0).filter((e) => e.type === EventType.ROUTE_CHANGE);
   const last = routes.at(-1);
   if (last === undefined) return undefined;
-  const data = last.data ?? {};
   // The ROUTER's path. This field answers "which page did this step run on", and the document
   // pathname is `/` on every page of a hash-routed app — so a whole desktop replay reported `/` for
-  // every step. Sixth place the same reading was wrong; see routePathOf.
-  const pathname = asString(data['pathname']) ?? asString(data['to']);
-  if (pathname === undefined || 0 === pathname.length) return undefined;
-  const routed = routePathOf(pathname, asString(data['hash']) ?? '');
-  return routed.length > 0 ? routed : undefined;
+  // every step. Sixth place the same reading was wrong; see routeOfEvent.
+  const parts = routeOfEvent(last);
+  if (parts === undefined || 0 === parts.docPath.length) return undefined;
+  return parts.routePath.length > 0 ? parts.routePath : undefined;
 }
 
 /** Pathname only (drop origin + query) so a net URL stays terse in the journey. */
@@ -324,9 +322,8 @@ function summarizeConsequence(events: ReticleEvent[]): string | undefined {
   const parts: string[] = [];
   const lastRoute = events.filter((e) => e.type === EventType.ROUTE_CHANGE).at(-1);
   if (lastRoute !== undefined) {
-    const data = lastRoute.data ?? {};
-    const to = asString(data['pathname']) ?? asString(data['to']);
-    if (to !== undefined && to.length > 0) parts.push(`→ ${to}`);
+    const routed = routeOfEvent(lastRoute);
+    if (routed !== undefined && routed.routePath.length > 0) parts.push(`→ ${routed.routePath}`);
   }
   const signals = new Set<string>();
   for (const e of events) {
