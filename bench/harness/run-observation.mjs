@@ -5,6 +5,7 @@
 import { writeFileSync } from 'node:fs';
 import { makeAdapter, NAV } from './adapters.mjs';
 import { inject, revert, revertAll } from './inject.mjs';
+import { isObservationRetryable } from './observation-retry.mjs';
 import { BENCH_URL } from './ports.mjs';
 
 // Never a port literal: ports.mjs is the one place the app, the daemon and every harness agree, and
@@ -606,78 +607,99 @@ for (const sc of list) {
     // Held outside the cell so an ABANDONED cell can still be torn down: on timeout the inner
     // `stop()` never runs, and without this each hang would leak a browser for the rest of the pass.
     let openAdapter = null;
-    try {
-      await withCellTimeout(async () => {
-        let baseline = null;
-        // baseline scenarios: clean capture first
-        if ('baseline' === sc.mode) {
-          const a0 = makeAdapter(tool, scenarioUrl(sc));
-          openAdapter = a0;
-          await a0.start();
-          await a0.login();
-          baseline = await runRecipe(a0, eff.steps, eff.observe, eff.verdict);
-          if (sc.differsAfterFilter) {
-            // type a filter and re-observe to compare effect on the table
-            if (tool !== 'devtools') {
-              try {
-                await a0.clickTestid('filter-search');
-              } catch {
-                /* */
+    // Playwright MCP initialize and browser_click time out under CI load. Recording those as
+    // NOT MEASURED shrinks coverage and trips the gate while every rate stays 1.0. Replay-detect
+    // already retries a flaky baseline; one retry here is the same rule. A missing tool still misses.
+    let attempt = 0;
+    const maxAttempts = 2;
+    while (attempt < maxAttempts) {
+      attempt += 1;
+      openAdapter = null;
+      try {
+        await withCellTimeout(async () => {
+          let baseline = null;
+          // baseline scenarios: clean capture first
+          if ('baseline' === sc.mode) {
+            const a0 = makeAdapter(tool, scenarioUrl(sc));
+            openAdapter = a0;
+            await a0.start();
+            await a0.login();
+            baseline = await runRecipe(a0, eff.steps, eff.observe, eff.verdict);
+            if (sc.differsAfterFilter) {
+              // type a filter and re-observe to compare effect on the table
+              if (tool !== 'devtools') {
+                try {
+                  await a0.clickTestid('filter-search');
+                } catch {
+                  /* */
+                }
               }
             }
+            await a0.stop();
+            openAdapter = null;
           }
-          await a0.stop();
+          if (sc.regression) inject(sc.regression);
+          await sleep(400); // let vite HMR apply
+          const a = makeAdapter(tool, scenarioUrl(sc));
+          openAdapter = a;
+          await a.start();
+          await a.login();
+          const regr = await runRecipe(a, eff.steps, eff.observe, eff.verdict);
+          await a.stop();
           openAdapter = null;
-        }
-        if (sc.regression) inject(sc.regression);
-        await sleep(400); // let vite HMR apply
-        const a = makeAdapter(tool, scenarioUrl(sc));
-        openAdapter = a;
-        await a.start();
-        await a.login();
-        const regr = await runRecipe(a, eff.steps, eff.observe, eff.verdict);
-        await a.stop();
-        openAdapter = null;
-        if (sc.regression) revert(sc.regression);
+          if (sc.regression) revert(sc.regression);
 
-        const g = grade(eff, regr, baseline);
-        const detected = 'object' === typeof g ? g.detected : g;
-        const detail = 'object' === typeof g ? g.detail : '';
-        const cycleTokens = regr.cycle.reduce((n, c) => n + (c.tokens_o200k ?? 0), 0);
-        const cycleChars = regr.cycle.reduce((n, c) => n + (c.chars ?? 0), 0);
-        const cycleBytes = regr.cycle.reduce((n, c) => n + (c.bytes ?? 0), 0);
-        row = {
-          ...row,
-          tokens_o200k: cycleTokens,
-          chars: cycleChars,
-          bytes: cycleBytes,
-          latency_ms: Date.now() - t0,
-          verdict: detected ? 'ISSUE DETECTED' : 'NO ISSUE FOUND',
-          detected_issue: detected,
-          confidence: detected === sc.expectDetect ? 1 : 0,
-          notes: `obs=${gradesOnVerdict ? sc.observe : 'evidence(act+snapshot+network)'}; signal=${sc.signal}; ${detail}; ${'verdict' === sc.observe && gradesOnVerdict ? `verified=${verifiedField(regr.obsText)}; ` : ''}calls=${regr.cycle.map((c) => c.call).join('>')}`,
-          _obsTokens: regr.cycle.at(-1)?.tokens_o200k ?? null,
-        };
-      });
-    } catch (e) {
-      // Best-effort: an abandoned cell leaves its browser up, and 36 cells of leaked Chrome would
-      // starve the rest of the pass. Never let a teardown failure mask the original error.
-      if (openAdapter !== null) {
-        try {
-          await openAdapter.stop();
-        } catch {
-          /* already gone */
+          const g = grade(eff, regr, baseline);
+          const detected = 'object' === typeof g ? g.detected : g;
+          const detail = 'object' === typeof g ? g.detail : '';
+          const cycleTokens = regr.cycle.reduce((n, c) => n + (c.tokens_o200k ?? 0), 0);
+          const cycleChars = regr.cycle.reduce((n, c) => n + (c.chars ?? 0), 0);
+          const cycleBytes = regr.cycle.reduce((n, c) => n + (c.bytes ?? 0), 0);
+          row = {
+            ...row,
+            tokens_o200k: cycleTokens,
+            chars: cycleChars,
+            bytes: cycleBytes,
+            latency_ms: Date.now() - t0,
+            verdict: detected ? 'ISSUE DETECTED' : 'NO ISSUE FOUND',
+            detected_issue: detected,
+            confidence: detected === sc.expectDetect ? 1 : 0,
+            notes: `obs=${gradesOnVerdict ? sc.observe : 'evidence(act+snapshot+network)'}; signal=${sc.signal}; ${detail}; ${'verdict' === sc.observe && gradesOnVerdict ? `verified=${verifiedField(regr.obsText)}; ` : ''}calls=${regr.cycle.map((c) => c.call).join('>')}`,
+            _obsTokens: regr.cycle.at(-1)?.tokens_o200k ?? null,
+          };
+        });
+        break;
+      } catch (e) {
+        // Best-effort: an abandoned cell leaves its browser up, and 36 cells of leaked Chrome would
+        // starve the rest of the pass. Never let a teardown failure mask the original error.
+        if (openAdapter !== null) {
+          try {
+            await openAdapter.stop();
+          } catch {
+            /* already gone */
+          }
         }
-      }
-      if (sc.regression) {
-        try {
-          revert(sc.regression);
-        } catch {
-          /* */
+        if (sc.regression) {
+          try {
+            revert(sc.regression);
+          } catch {
+            /* */
+          }
         }
+        if (attempt < maxAttempts && isObservationRetryable(e)) {
+          console.log(
+            JSON.stringify({
+              s: sc.id,
+              t: tool,
+              v: 'RETRY',
+              n: String(e).slice(0, 90),
+            }),
+          );
+          continue;
+        }
+        row.verdict = 'NOT MEASURED';
+        row.notes = `error: ${String(e).slice(0, 200)}`;
       }
-      row.verdict = 'NOT MEASURED';
-      row.notes = `error: ${String(e).slice(0, 200)}`;
     }
     rows.push(row);
     console.log(

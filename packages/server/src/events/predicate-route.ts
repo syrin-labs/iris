@@ -50,20 +50,82 @@ export function routePathOf(pathname: string, hash: string): string {
 }
 
 /**
+ * The resolved parts of a route, from a `ROUTE_CHANGE` event or a session URL.
+ *
+ * `routePath` is where the ROUTER is (the fragment path under a hash router). `docPath` + `hash`
+ * is the NAVIGABLE value a `reticle_navigate` can be pointed at. Call sites pick; collapsing
+ * them into one string is how a hash-router miss lands as "every page is `/`".
+ */
+export interface RouteParts {
+  routePath: string;
+  docPath: string;
+  hash: string;
+  search: string;
+  full: string;
+}
+
+function asPayload(value: unknown): Record<string, unknown> | undefined {
+  if (null === value || 'object' !== typeof value || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function payloadOf(
+  eventOrData: ReticleEvent | Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (eventOrData['type'] === EventType.ROUTE_CHANGE) return asPayload(eventOrData['data']);
+  // A different event: refuse rather than read whatever happened to sit in `data`.
+  if (undefined !== eventOrData['type'] && undefined !== eventOrData['data']) return undefined;
+  return eventOrData;
+}
+
+function partsFromPayload(data: Record<string, unknown>): RouteParts | undefined {
+  const docPath = str(data['pathname']) ?? str(data['to']);
+  if (docPath === undefined) return undefined;
+  const hash = str(data['hash']) ?? '';
+  const search = str(data['search']) ?? '';
+  return {
+    routePath: routePathOf(docPath, hash),
+    docPath,
+    hash,
+    search,
+    full: `${docPath}${search}${hash}`,
+  };
+}
+
+/** A `ROUTE_CHANGE` event, or its `data` — one reading, so the sixth copy cannot drift. */
+export function routeOfEvent(
+  eventOrData: ReticleEvent | Record<string, unknown>,
+): RouteParts | undefined {
+  const data = payloadOf(eventOrData);
+  return data === undefined ? undefined : partsFromPayload(data);
+}
+
+/** Same shape from a session URL (the fallback when the tab hard-loaded and emitted no route event). */
+export function routeOfUrl(url: string): RouteParts | undefined {
+  if (!URL.canParse(url)) return undefined;
+  const parsed = new URL(url);
+  return partsFromPayload({
+    pathname: parsed.pathname,
+    search: parsed.search,
+    hash: parsed.hash,
+  });
+}
+
+/**
  * The session's live URL, split the way a route-change event already carries it.
  *
  * Absolute (that is what the session tracks), but a relative value is accepted rather than thrown
  * away — an unreadable URL is not worth losing the fallback over.
  */
 function readCurrentRoute(url: string): RouteReading {
-  const parsed = URL.canParse(url) ? new URL(url) : undefined;
-  const pathname = parsed?.pathname ?? url;
-  const search = parsed?.search ?? '';
-  const hash = parsed?.hash ?? '';
+  const parts = routeOfUrl(url);
+  const pathname = parts?.docPath ?? url;
+  const search = parts?.search ?? '';
+  const hash = parts?.hash ?? '';
   return {
     pathname,
-    routePath: routePathOf(pathname, hash),
-    full: `${pathname}${search}${hash}`,
+    routePath: parts?.routePath ?? routePathOf(pathname, hash),
+    full: parts?.full ?? `${pathname}${search}${hash}`,
     decidedBy: RouteDecidedBy.CURRENT,
     data: { pathname, search, hash, url, decidedBy: RouteDecidedBy.CURRENT },
   };
@@ -92,19 +154,16 @@ export function evalRoute(
 ): EvalResult {
   const routes = events.filter((e) => e.type === EventType.ROUTE_CHANGE);
   const last = routes.at(-1);
+  const changed = last === undefined ? undefined : routeOfEvent(last);
   const reading: RouteReading | undefined =
-    last !== undefined
-      ? ((): RouteReading => {
-          const changedPath = str(last.data['pathname']) ?? str(last.data['to']) ?? '';
-          const changedHash = str(last.data['hash']) ?? '';
-          return {
-            pathname: changedPath,
-            routePath: routePathOf(changedPath, changedHash),
-            full: `${changedPath}${str(last.data['search']) ?? ''}${changedHash}`,
-            decidedBy: RouteDecidedBy.CHANGE,
-            data: { ...last.data, decidedBy: RouteDecidedBy.CHANGE },
-          };
-        })()
+    changed !== undefined && last !== undefined
+      ? {
+          pathname: changed.docPath,
+          routePath: changed.routePath,
+          full: changed.full,
+          decidedBy: RouteDecidedBy.CHANGE,
+          data: { ...last.data, decidedBy: RouteDecidedBy.CHANGE },
+        }
       : currentUrl === undefined || 0 === currentUrl.length
         ? undefined
         : readCurrentRoute(currentUrl);
@@ -117,7 +176,7 @@ export function evalRoute(
       assertion: 'route.changed',
     };
   }
-  // The ROUTER's path, not the document's — see routePathOf.
+  // The ROUTER's path, not the document's — see routeOfEvent.
   const pathname = reading.routePath;
   if (p.pathname !== undefined && pathname !== p.pathname) {
     return {

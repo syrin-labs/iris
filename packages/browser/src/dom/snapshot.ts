@@ -92,6 +92,24 @@ export interface SnapshotResult {
    */
   leanSkipped?: number;
   /**
+   * How many subtrees the walk refused to enter because their ROOT was hidden — `aria-hidden`,
+   * the `hidden` attribute, or `display: none` — present only when non-zero. Counts subtree roots
+   * rather than elements, because a hidden root is never descended into and the elements beneath it
+   * are therefore never seen to be counted.
+   *
+   * The same argument as `leanSkipped`, for the cause `leanSkipped` cannot speak to. That one is
+   * lean-only by construction, so a `full` snapshot that comes back empty carries no explanation at
+   * all: `{ tree: "", nodes: 0 }` on a page holding 44 buttons, which reads as "the app broke" when
+   * what happened is that everything on it computed hidden. Reported from the field (#672) at a cost
+   * of about six tool calls and a large console dump to establish the page was fine and the snapshot
+   * was wrong.
+   *
+   * It is deliberately a count of what was SKIPPED rather than a diagnosis of why the page is
+   * hidden. The walk knows the first fact for certain and cannot know the second, and a number that
+   * is certainly true is what turns "" from a claim about the app into a pointer at the read.
+   */
+  hiddenSkipped?: number;
+  /**
    * Refs of the subtree roots the walk never entered, present ONLY when `truncated`. This is the
    * cut's own frontier: re-snapshot each with `{ scope: ref, includeRoot: true }` and the union is
    * the whole tree. Without it `truncated` says only THAT the read stopped, never WHERE, so nobody
@@ -131,12 +149,22 @@ interface SnapshotOptions {
 export const MAX_UNREAD_BRANCHES = 50;
 
 /** Cheap skips that need no computed style (tags, overlays, aria-hidden, [hidden]). */
+/**
+ * Hidden by its own MARKUP — `aria-hidden="true"` or the `hidden` attribute.
+ *
+ * Split out of `skipEarly` so the walk can tell the two kinds of skip apart. A `<script>` or
+ * Reticle's own HUD being absent from the tree explains nothing about the page; a subtree the app
+ * marked hidden is exactly what a reader of an empty tree needs to know about.
+ */
+function hiddenByMarkup(el: Element): boolean {
+  if ('true' === el.getAttribute('aria-hidden')) return true;
+  return el instanceof HTMLElement && el.hidden;
+}
+
 function skipEarly(el: Element): boolean {
   if (SKIP_TAGS.has(el.tagName.toLowerCase())) return true;
   if (isIgnored(el)) return true; // Reticle overlay + known dev overlays
-  if ('true' === el.getAttribute('aria-hidden')) return true;
-  if (el instanceof HTMLElement && el.hidden) return true;
-  return false;
+  return hiddenByMarkup(el);
 }
 
 function stateSuffix(el: Element): string {
@@ -201,6 +229,8 @@ interface WalkCtx {
   maxNodes: number;
   /** Meaningful nodes INTERACTIVE mode passed over — see the note where it is set. */
   leanSkipped: number;
+  /** Subtrees skipped because their root was hidden — see the note where it is set. */
+  hiddenSkipped: number;
   maxDepth: number;
   unread: string[];
   unreadOverflow: boolean;
@@ -247,12 +277,21 @@ function pierceChildren(parent: Element): Element[] {
 /** Emit one element (if it earns a line) and descend into it. Split out of `walk` so the completion
  * re-read can start AT a branch root — the node the truncated walk stopped just before emitting. */
 function visit(child: Element, depth: number, ctx: WalkCtx, inLive: boolean): void {
-  if (skipEarly(child)) return;
+  if (skipEarly(child)) {
+    // Only the hidden ones are counted. The others — <script>, <style>, our own HUD — are noise the
+    // tree is SUPPOSED to omit, and counting them would put a number on every ordinary page and so
+    // make the number mean nothing on the one page that needs it.
+    if (hiddenByMarkup(child)) ctx.hiddenSkipped += 1;
+    return;
+  }
   // Resolve computed style ONCE per node (the dominant snapshot cost) and thread it into both the
   // display-none skip and the layout signature — was two forced style resolutions per node.
   const view = child.ownerDocument.defaultView;
   const style = view !== null ? view.getComputedStyle(child) : null;
-  if (style !== null && 'none' === style.display) return;
+  if (style !== null && 'none' === style.display) {
+    ctx.hiddenSkipped += 1;
+    return;
+  }
   const role = getRole(child);
   const name = getAccessibleName(child);
   const interactive = INTERACTIVE.has(role);
@@ -383,6 +422,20 @@ function overlayHidingPage(root: ParentNode): string | undefined {
     '[role="dialog"], dialog[open], [aria-modal="true"]',
   );
   let modal: Element | undefined;
+  /**
+   * A candidate that is present but does NOT compute visible.
+   *
+   * The visible check is the right primary test — it is what tells an open modal from a closed one
+   * still in the DOM. But it fails CLOSED in the one state this function exists to explain: when
+   * every node on the page computes hidden, the modal computes hidden too, and the explainer for an
+   * empty tree goes silent exactly when the tree is emptiest (#672 hit this with a dialog that had
+   * just opened). A check that cannot fire in its own failure case is not a check.
+   *
+   * Falling back to it is safe because the visibility of the CANDIDATE was never the evidence. The
+   * evidence is the condition below — every other child of body carrying `aria-hidden="true"` —
+   * which is a focus trap's signature and does not happen by accident on a healthy page.
+   */
+  let hiddenCandidate: Element | undefined;
   for (const d of dialogs) {
     // Never OUR overlay. Reticle's HUD must not be able to explain the app's absence with itself:
     // that turns "the page did not render" into "an overlay is covering it", which sends the reader
@@ -392,7 +445,9 @@ function overlayHidingPage(root: ParentNode): string | undefined {
       modal = d;
       break;
     }
+    hiddenCandidate ??= d;
   }
+  modal ??= hiddenCandidate;
   if (modal === undefined) return undefined;
   const modalEl = modal;
   const outside = Array.from(document.body.children).filter((c) => !c.contains(modalEl));
@@ -439,6 +494,7 @@ export function buildSnapshot(options: SnapshotOptions = {}): SnapshotResult {
     lines: [],
     nodes: 0,
     leanSkipped: 0,
+    hiddenSkipped: 0,
     truncated: false,
     mode,
     maxNodes: options.maxNodes ?? 400,
@@ -454,6 +510,7 @@ export function buildSnapshot(options: SnapshotOptions = {}): SnapshotResult {
     nodes: ctx.nodes,
     truncated: ctx.truncated,
     ...(ctx.leanSkipped > 0 ? { leanSkipped: ctx.leanSkipped } : {}),
+    ...(ctx.hiddenSkipped > 0 ? { hiddenSkipped: ctx.hiddenSkipped } : {}),
     ...(ctx.unread.length > 0 ? { unread: ctx.unread } : {}),
     ...(ctx.unreadOverflow ? { unreadOverflow: true as const } : {}),
   };

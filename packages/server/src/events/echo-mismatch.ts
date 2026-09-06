@@ -25,6 +25,9 @@ import type { OwnContradiction } from './contradictions.js';
  *    as a half-applied write. The gate was on the RESPONSE being a success and never on the REQUEST
  *    being a write, so every successful call carrying a body read as a save — and the same key name
  *    legitimately means different things on the two sides of a request/response pair;
+ *  - identity keys (`id`, `*_id`) and create sentinels (`0`, `""`, `null`) are not compared. A
+ *    create that sends `sub_category_id: 0` and gets back `19314` assigned the row; two id spaces
+ *    that share a field name were never expected to match. Both used to fire on every healthy POST;
  *  - only keys the request actually SENT are considered;
  *  - only scalars, since deep structural diffing is where the false positives live;
  *  - values are compared NORMALISED (trimmed, case-folded, numbers as numbers), so `FR` vs `fr` and
@@ -74,6 +77,25 @@ function normalize(value: unknown): string | undefined {
 }
 
 /**
+ * Values that mean "server, you decide", not a field the caller asked to persist. A create that
+ * sends `0` for the new row's id, or an empty string the backend fills in, is the usual REST shape
+ * — not a dropped write.
+ */
+function isSentinelValue(value: unknown): boolean {
+  return 0 === value || '' === value || null === value;
+}
+
+/**
+ * Keys that name an identity, not a persisted attribute. The server assigns these (create returns a
+ * new id; a public id and an internal row id share a field name). Comparing them as echoes is how
+ * this kind fired on every healthy POST-create and poisoned later asserts in the same window.
+ */
+function isIdentityKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  return 'id' === lower || lower.endsWith('_id');
+}
+
+/**
  * Every scalar value the response carries for each key, at any depth.
  *
  * Depth matters because the echo is usually nested — `{ok:true, saved:{...}}`, `{data:{...}}`,
@@ -84,17 +106,19 @@ function scalarsByKey(
   body: unknown,
   into: Map<string, Set<string>> = new Map(),
   depth = 0,
+  omitSentinels = false,
 ): Map<string, Set<string>> {
   if (depth > 6 || into.size > MAX_ECHO_KEYS) return into;
   if (Array.isArray(body)) {
-    for (const item of body) scalarsByKey(item, into, depth + 1);
+    for (const item of body) scalarsByKey(item, into, depth + 1, omitSentinels);
     return into;
   }
   if (!isRecord(body)) return into;
   for (const [key, value] of Object.entries(body)) {
+    if (omitSentinels && isSentinelValue(value)) continue;
     const scalar = normalize(value);
     if (scalar === undefined) {
-      scalarsByKey(value, into, depth + 1);
+      scalarsByKey(value, into, depth + 1, omitSentinels);
       continue;
     }
     const seen = into.get(key) ?? new Set<string>();
@@ -204,7 +228,7 @@ export function findEchoMismatches(
     if (request === undefined || response === undefined) continue;
 
     const echoed = scalarsByKey(response);
-    const asked = scalarsByKey(request);
+    const asked = scalarsByKey(request, new Map(), 0, true);
     if (!responseRestatesRequest(asked, echoed)) continue;
     const dropped: string[] = [];
     for (const [key, wanted] of asked) {
@@ -212,6 +236,7 @@ export function findEchoMismatches(
       // was asked for" ambiguous, and a guess here is exactly how this kind would earn a reputation
       // for crying wolf.
       if (wanted.size !== 1) continue;
+      if (isIdentityKey(key)) continue;
       const values = echoed.get(key);
       // Not echoed at all = no evidence either way. Only a key the server chose to report back can
       // contradict the request, and silence is not a contradiction.
@@ -230,8 +255,8 @@ export function findEchoMismatches(
     found.push({
       kind: ContradictionKind.WRITE_FIELD_IGNORED,
       claim: 'the write returned success and the page treated it as saved',
-      counter: `its own echo shows ${String(dropped.length)} field(s) NOT applied — ${dropped.join('; ')}`,
-      detail: `${method} ${url} — the server answered OK and returned a different value than it was asked to set, so the write half-applied; the UI has no way to know and will show the value the user typed${attribution}`,
+      counter: `its own echo shows ${String(dropped.length)} field(s) that differ from the request — ${dropped.join('; ')}`,
+      detail: `${method} ${url} — the server answered OK and returned a different value than it was asked to set${attribution}`,
     });
   }
   return found;

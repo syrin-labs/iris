@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import {
   chromiumHint,
   chromiumInstallCommand,
+  chromiumInstallDepsCommand,
   parseChromiumRevision,
   type ChromiumProbe,
 } from './chromium-hint.js';
@@ -39,6 +40,18 @@ describe('chromium install command', () => {
 
   it('falls back to an unpinned command rather than none', () => {
     expect(chromiumInstallCommand(undefined)).toBe('npx playwright install chromium');
+  });
+});
+
+describe('chromium install-deps command', () => {
+  it('pins to the playwright the daemon actually bundles', () => {
+    expect(chromiumInstallDepsCommand(PLAYWRIGHT_VERSION)).toBe(
+      'npx playwright@1.61.1 install-deps chromium',
+    );
+  });
+
+  it('falls back to an unpinned command rather than none', () => {
+    expect(chromiumInstallDepsCommand(undefined)).toBe('npx playwright install-deps chromium');
   });
 });
 

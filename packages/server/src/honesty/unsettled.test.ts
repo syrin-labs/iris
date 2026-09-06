@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { ContradictionKind, PredicateKind, Verified, VerifiedReason } from '@reticlehq/core';
 import { HonestyGrade } from './honesty.js';
 import { decideVerified } from './verified.js';
-import { describeWaitTarget, unsettledBecause } from './unsettled.js';
+import { describeWaitTarget, namedNetIsInFlight, unsettledBecause } from './unsettled.js';
 
 const clean = {
   grade: HonestyGrade.SIGNAL,
@@ -51,6 +51,52 @@ describe('describeWaitTarget names what was being waited for', () => {
     });
     expect(said).toContain('saved');
     expect(said).toContain('Saved');
+  });
+});
+
+/**
+ * A named net that is still open is the register POST that finished 500ms after the window, not a
+ * miss. Matching is the whole discriminator: an unrelated in-flight poll must not pardon a real miss.
+ */
+describe("namedNetIsInFlight matches the assertion's own request", () => {
+  it('is true when the named POST is still open', () => {
+    expect(
+      namedNetIsInFlight(
+        { kind: PredicateKind.NET, method: 'POST', urlContains: '/api/v1/auth/register' },
+        ['POST /api/v1/auth/register'],
+      ),
+    ).toBe(true);
+  });
+
+  it('is false when a different URL is the one left open', () => {
+    expect(
+      namedNetIsInFlight({ kind: PredicateKind.NET, urlContains: '/api/v1/auth/register' }, [
+        'GET /api/notifications',
+      ]),
+    ).toBe(false);
+  });
+
+  it('is false when the caller only asked about the screen', () => {
+    expect(
+      namedNetIsInFlight({ kind: PredicateKind.TEXT, contains: 'Welcome' }, [
+        'POST /api/v1/auth/register',
+      ]),
+    ).toBe(false);
+  });
+
+  it('reads the net out of an allOf that also names on-screen proof', () => {
+    expect(
+      namedNetIsInFlight(
+        {
+          kind: PredicateKind.ALL_OF,
+          predicates: [
+            { kind: PredicateKind.NET, urlContains: '/api/v1/auth/register' },
+            { kind: PredicateKind.TEXT, contains: 'Welcome' },
+          ],
+        },
+        ['POST /api/v1/auth/register'],
+      ),
+    ).toBe(true);
   });
 });
 
