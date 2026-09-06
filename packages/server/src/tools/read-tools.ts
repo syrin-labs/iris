@@ -15,6 +15,7 @@ import { ReticleTool } from './tool-names.js';
 import { advanceMsSchema, depthSchema } from './numeric-bounds.js';
 import { proposeConsequences } from '../oracles/propose-consequences.js';
 import type { CompiledProgram } from '../flows/recordings.js';
+import { recordingBacktrackWarning, routesFromRecording } from '../flows/recording-backtrack.js';
 import { replayProgram } from '../flows/replay.js';
 import { diffLines } from '../project/baselines.js';
 import { selectPath, capDepth, projectComponentState } from '../session/state-select.js';
@@ -190,7 +191,7 @@ export const READ_TOOLS: ToolDef[] = [
   {
     name: ReticleTool.RECORD_STOP,
     description:
-      'Stop the recording identified by `recordingName` and return both the reaction report for the span and a compiled, replayable { program: { version, steps:[{tool,args,stable}] } } of the agent acts captured during it.',
+      'Stop the recording identified by `recordingName` and return both the reaction report for the span and a compiled, replayable { program: { version, steps:[{tool,args,stable}] } } of the agent acts captured during it. `warning` is present when the window left a page and returned to it — replay has no navigation steps, so the next click will look for a control on a page the tab is no longer on.',
     inputSchema: {
       recordingName: z
         .string()
@@ -224,11 +225,13 @@ export const READ_TOOLS: ToolDef[] = [
         );
       }
       const events = session.eventsSince(rec.cursor);
+      const routes = routesFromRecording(rec.startPath, events);
       const program: CompiledProgram = {
         name,
         version: REPLAY_PROGRAM_VERSION,
         steps: rec.steps,
         ...(rec.startPath === undefined ? {} : { startPath: rec.startPath }),
+        ...(0 === routes.length ? {} : { routes }),
       };
       deps.recordings.saveCompiled(program);
       const unstable = rec.steps.filter((s) => !s.stable).length;
@@ -248,15 +251,14 @@ export const READ_TOOLS: ToolDef[] = [
               timeline_omitted: `${String(events.length)} event(s) were recorded and are not included here. Call reticle_observe { since: ${String(rec.cursor)} } for the raw timeline.`,
             }
           : {};
+      const unanchored = 0 < unstable ? unanchoredWarning(unstable) : undefined;
+      const backtrack = recordingBacktrackWarning(routes);
+      const warning = [unanchored, backtrack].filter((part): part is string => part !== undefined);
       const body = {
         recordingName: name,
         program,
         ...timeline,
-        ...(unstable > 0
-          ? {
-              warning: unanchoredWarning(unstable),
-            }
-          : {}),
+        ...(0 === warning.length ? {} : { warning: warning.join(' ') }),
         ...(proposedConsequences.length > 0 ? { proposedConsequences } : {}),
         ...digest,
       };
