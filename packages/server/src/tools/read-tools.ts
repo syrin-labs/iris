@@ -24,6 +24,7 @@ import { buildReactionReport, summarizeReaction } from '../events/reaction.js';
 import { asString, asNumber, parseInteractive } from './tools-helpers.js';
 import { type ToolDef, sessionIdShape, commandOrThrow, snapshotTree } from './tool-kit.js';
 import { bufferEnvelope } from '../session/session-health.js';
+import { routeOfUrl } from '../events/predicate-route.js';
 
 /** The route part of a session URL. A host belongs to the machine, not to the journey. */
 /**
@@ -36,12 +37,8 @@ import { bufferEnvelope } from '../session/session-health.js';
  */
 function pathnameOf(url: string | undefined): string | undefined {
   if (url === undefined) return undefined;
-  try {
-    const parsed = new URL(url);
-    return `${parsed.pathname}${parsed.hash}`;
-  } catch {
-    return undefined;
-  }
+  const parts = routeOfUrl(url);
+  return parts === undefined ? undefined : `${parts.docPath}${parts.hash}`;
 }
 
 /**

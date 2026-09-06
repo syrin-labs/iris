@@ -1,5 +1,5 @@
 import { EventType, PerfMetric, isDevToolingUrl, type ReticleEvent } from '@reticlehq/core';
-import { routePathOf } from '../events/predicate-route.js';
+import { routeOfEvent } from '../events/predicate-route.js';
 
 /**
  * The causal summary (Tier 1) — the bounded ~50–100 token block on EVERY act, green included: what the
@@ -205,17 +205,14 @@ export function causalSummary(
         }
         break;
       }
-      case EventType.ROUTE_CHANGE:
+      case EventType.ROUTE_CHANGE: {
         // The ROUTER's path. Reporting the document pathname left `route: "/"` on every action of a
         // hash-routed app — the same reading that made a route predicate unsatisfiable there, and an
-        // agent reasoning off this field would conclude the route never changed. See routePathOf.
-        if ('string' === typeof data['pathname']) {
-          route = routePathOf(
-            data['pathname'],
-            'string' === typeof data['hash'] ? data['hash'] : '',
-          );
-        }
+        // agent reasoning off this field would conclude the route never changed. See routeOfEvent.
+        const routed = routeOfEvent(data);
+        if (routed !== undefined) route = routed.routePath;
         break;
+      }
       case EventType.SIGNAL:
         pushUnique(signals, data['name']);
         break;

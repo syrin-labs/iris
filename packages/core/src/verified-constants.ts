@@ -69,6 +69,17 @@ export const VerifiedReason = {
    * RED, from the layer whose entire job is not to produce one.
    */
   OBSERVATION_LOST: 'observation_lost',
+  /**
+   * The request the assertion named was still in flight when the window closed, so a miss is not a
+   * failure — the consequence had not finished. NEVER `"no"`.
+   *
+   * Measured: `act_and_wait` returned `verified: "no"` / `assertion_failed` while the same result's
+   * contradictions named the matching POST as still in flight. The request completed 200 half a
+   * second after the window; a warm backend on the same assertion came back `yes`. A red that flips
+   * green when the backend warms up teaches the agent to loosen checks — the behaviour the docs
+   * forbid. See #669.
+   */
+  WINDOW_CLOSED_EARLY: 'window_closed_early',
   /** The declared consequence did not hold. */
   ASSERTION_FAILED: 'assertion_failed',
   /** Channels disagreed about the action — the false green this product exists to catch. */
