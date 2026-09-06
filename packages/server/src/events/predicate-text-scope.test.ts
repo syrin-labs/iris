@@ -117,4 +117,57 @@ describe('text predicate: scope narrows the search', () => {
     });
     expect(result.pass, 'nothing named Delete inside the dialog, so absent holds').toBe(true);
   });
+
+  it("can assert the scope root's combined subtree text without turning every root into a match", async () => {
+    const owner: ElementDescriptor = {
+      ref: asRef('e12'),
+      role: 'generic',
+      name: '',
+      text: 'Move to Reticle Repro Folder',
+      states: [],
+      visible: true,
+    };
+    class SplitTextSession extends ScopedSession {
+      override command(name: string, args: Record<string, unknown> = {}): Promise<CommandResult> {
+        if (name !== ReticleCommand.MATCH) return super.command(name, args);
+        const query = (args['query'] ?? {}) as ElementQuery;
+        this.seen.push(query);
+        const elements =
+          true === query.self && true === owner.text?.includes(query.text ?? '') ? [owner] : [];
+        const result: MatchResult = {
+          matched: 0 < elements.length,
+          count: elements.length,
+          elements,
+          ...(0 === elements.length
+            ? {
+                hint: {
+                  route: '/',
+                  presentTestids: [],
+                  presentRegions: [],
+                  knownEmptyState: false,
+                  splitText: owner,
+                },
+              }
+            : {}),
+        };
+        return Promise.resolve({ kind: 'command_result', id: 'x', ok: true, result });
+      }
+    }
+
+    const matching = await evaluatePredicate(new SplitTextSession([]), {
+      kind: 'text',
+      contains: 'Move to Reticle Repro Folder',
+      scope: 'e12',
+      self: true,
+    });
+    expect(matching.pass).toBe(true);
+
+    const different = await evaluatePredicate(new SplitTextSession([]), {
+      kind: 'text',
+      contains: 'A different sentence',
+      scope: 'e12',
+      self: true,
+    });
+    expect(different.pass, 'self must still enforce the requested text').toBe(false);
+  });
 });

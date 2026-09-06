@@ -366,10 +366,15 @@ function findCandidates(query: ElementQuery): { candidates: HTMLElement[]; scope
   // `self: true` asks for the container ITSELF, which every other path excludes by construction.
   // A layout element with no role, name, testid or own text is unreachable by any semantic locator,
   // and it is routinely the element carrying the handler - "click the empty space in this row" is a
-  // real user action that was simply not expressible. Requires a scope: without one there is no root
-  // to return, and answering `document.body` would be a wrong answer wearing the shape of one.
+  // real user action that was simply not expressible. When `text` is also present, check the root's
+  // combined subtree text: that is the recovery for prose split across child elements, which no
+  // ordinary text query can match. Requires a scope: without one there is no root to return, and
+  // answering `document.body` would be a wrong answer wearing the shape of one.
   if (true === query.self) {
     if (query.scope === undefined) return { candidates: [], scopeMissing };
+    if (query.text !== undefined && !fuzzyVisibleText(container.textContent ?? '', query.text)) {
+      return { candidates: [], scopeMissing };
+    }
     return { candidates: isIgnored(container) ? [] : [container], scopeMissing };
   }
   const seen = new Set<HTMLElement>();
