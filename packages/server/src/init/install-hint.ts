@@ -20,6 +20,20 @@ const REGISTRY_HINT =
   'about reachability and not about this project: check `npm config get registry` and whether this ' +
   'machine can reach it.';
 
+/**
+ * A checkout whose `node_modules` is symlinked into another checkout's `.pnpm` store — a git
+ * worktree, or an A/B harness running two copies of the same repo — makes pnpm refuse to add a
+ * package with ERR_PNPM_UNEXPECTED_VIRTUAL_STORE, because it will not silently repoint an
+ * existing virtual store. The original hint named only the maturity-window cause, so this one
+ * sent the reader through their dependency versions looking for a problem that was actually
+ * about where the store lives (#683).
+ */
+const VIRTUAL_STORE_HINT =
+  "If pnpm reported ERR_PNPM_UNEXPECTED_VIRTUAL_STORE, this checkout's node_modules is " +
+  "symlinked into another checkout's pnpm store (a git worktree, or an A/B harness). Either run " +
+  '`pnpm install` once in that other checkout first, or point this one at its own store:\n' +
+  '  pnpm add -D --config.virtual-store-dir=node_modules/.pnpm <packages>';
+
 export function installFailureHint(pm: PackageManager): string {
   if (pm !== PackageManager.PNPM) {
     return `If the version was refused, install the SDK yourself. ${REGISTRY_HINT}`;
@@ -29,6 +43,6 @@ export function installFailureHint(pm: PackageManager): string {
     'this release back. Either wait out the window, or allow these packages explicitly:\n' +
     '  pnpm config set minimumReleaseAgeExclude "@reticlehq/*"\n' +
     'Do NOT drop the version pin — unpinned, pnpm installs an older SDK against a newer daemon, and ' +
-    `that mismatch surfaces as a -32000 with nothing naming a version.\n${REGISTRY_HINT}`
+    `that mismatch surfaces as a -32000 with nothing naming a version.\n${VIRTUAL_STORE_HINT}\n${REGISTRY_HINT}`
   );
 }

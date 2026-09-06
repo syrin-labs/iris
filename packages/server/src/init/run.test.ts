@@ -702,6 +702,35 @@ describe('runInit — a failed install must not leave the app half-wired', () =>
     );
     runInit({ ...OPTS, install: true }, io);
     expect(io.written['next.config.mjs']).toBeUndefined();
+    // The install step itself is still correctly reported as failed here — only some of the
+    // packages resolved, so this is the genuine failure the guard exists to catch (#683).
+    const report = io.lines.join('\n');
+    expect(report).toContain('[⚠] Install dependencies');
+    expect(report).toContain('step failed');
+  });
+
+  /**
+   * Reported alongside #683: a pnpm checkout whose node_modules is symlinked into another
+   * checkout's `.pnpm` store (a git worktree, or an A/B harness) makes `pnpm add` exit non-zero
+   * with ERR_PNPM_UNEXPECTED_VIRTUAL_STORE even though the packages resolve. The wiring guard
+   * above already protects the FILES it writes from this false failure — but the install step's
+   * own printed status did not, so a correct install still read as `[⚠] Install dependencies —
+   * step failed`, and a second `init` run repeated the false failure forever because nothing
+   * about a re-run makes the exec command succeed.
+   */
+  it('reports the install step as done, not failed, when the packages already resolve', () => {
+    const io = memoryIo(
+      {
+        ...NEXT_FILES,
+        'node_modules/@reticlehq/react/package.json': '{"name":"@reticlehq/react"}',
+        'node_modules/@reticlehq/next/package.json': '{"name":"@reticlehq/next"}',
+      },
+      { execOk: false, mcpExists: true },
+    );
+    runInit({ ...OPTS, install: true }, io);
+    const report = io.lines.join('\n');
+    expect(report).toContain('[✓] Install dependencies');
+    expect(report).not.toContain('step failed');
   });
 
   it('config that does not import anything is still written — it has no dependency to miss', () => {
