@@ -26,6 +26,7 @@ import { stallUptime } from './stall-clock.js';
 import type { SessionManager } from './session-manager.js';
 import { probeDaemon } from '../mcp/mcp-proxy.js';
 import { findOccupiedSiblings } from '../cli/sibling-ports.js';
+import { WS_CLOSE_REASON } from '../bridge/bridge.js';
 
 /** Slow enough to be free, fast enough that a dev server started 15s ago is already reflected. */
 const REFRESH_MS = 15_000;
@@ -256,6 +257,21 @@ export function startNoSessionWatch(options: NoSessionWatchOptions): () => void 
   const timer = setInterval(refresh, REFRESH_MS);
   timer.unref();
 
+  /**
+   * Did the most recent bridge-initiated close refuse a page on its token?
+   *
+   * The bridge records it (`noteClosure(WS_CLOSE_REASON.AUTH_FAILED)`) and nothing read it as a
+   * DIAGNOSIS. It is the one fact that proves an app is running and instrumented: only an SDK dials
+   * the bridge, so a refused hello means the wiring works and this daemon would not serve it.
+   *
+   * Called optionally because this watch is constructed against a structural slice of the manager,
+   * and several callers pass a double that predates `lastClosure`. A manager that cannot answer has
+   * recorded no refusal, which falls through to the behaviour that was there before -- the safe
+   * direction for a fact whose only job is to SUPPRESS an `init` suggestion.
+   */
+  const lastCloseWasAuthFailure = (): boolean =>
+    options.sessions.lastClosure?.()?.reason === WS_CLOSE_REASON.AUTH_FAILED;
+
   const nextAction = (scope: ProjectScopeFacts): NoSessionNextAction => {
     const split = splitBrain();
     return nextActionFor({
@@ -263,6 +279,9 @@ export function startNoSessionWatch(options: NoSessionWatchOptions): () => void 
       initialized: scope.initialized,
       ...(scope.configsElsewhere === undefined ? {} : { configsElsewhere: scope.configsElsewhere }),
       previouslyConnected: connectedBefore(),
+      // Read when asked, like every other fact here: a page can dial at any moment, and a daemon
+      // that cached "nothing has been refused" at boot would keep saying so.
+      authRefused: lastCloseWasAuthFailure(),
       ...(split === undefined ? {} : { splitBrain: split }),
       listening,
       // Read when asked, like everything else here: a `package.json` can gain a dev script, and a

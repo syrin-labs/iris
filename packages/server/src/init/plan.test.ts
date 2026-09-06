@@ -975,4 +975,16 @@ describe('a failed dependency install names the registry', () => {
   it('keeps the pnpm maturity hint beside it', () => {
     expect(installFallback(PackageManager.PNPM)).toContain('minimumReleaseAge');
   });
+
+  // #683: a symlinked pnpm store (a git worktree, or an A/B harness) fails with
+  // ERR_PNPM_UNEXPECTED_VIRTUAL_STORE, a cause the hint did not name at all.
+  it('names the symlinked virtual-store cause on pnpm', () => {
+    expect(installFallback(PackageManager.PNPM)).toContain('ERR_PNPM_UNEXPECTED_VIRTUAL_STORE');
+  });
+
+  it('does not hand a non-pnpm project a pnpm virtual-store remedy', () => {
+    for (const pm of [PackageManager.NPM, PackageManager.YARN]) {
+      expect(installFallback(pm)).not.toContain('ERR_PNPM_UNEXPECTED_VIRTUAL_STORE');
+    }
+  });
 });

@@ -1,5 +1,5 @@
 import { EventType, type ReticleEvent, PredicateKind } from '@reticlehq/core';
-import { routePathOf } from '../events/predicate-route.js';
+import { routeOfEvent } from '../events/predicate-route.js';
 
 /**
  * Self-generating oracles, v1. Given the window a recording captured, propose ranked mustHold
@@ -88,16 +88,16 @@ export function proposeConsequences(events: readonly ReticleEvent[]): ProposedCo
         break;
       }
       case EventType.ROUTE_CHANGE: {
-        const docPath = data['pathname'];
-        if ('string' === typeof docPath) {
+        const routed = routeOfEvent(data);
+        if (routed !== undefined) {
           // `pathname`, not `to`: the evaluator has never accepted `to`, so this surface was handing
           // the agent a predicate reticle_assert refuses with "unknown field to". A proposal that
           // cannot be evaluated is worse than no proposal — see the schema check in the test.
           //
           // And the ROUTER's path, not the document's: under a hash router the document pathname is
           // `/` on every page, so proposing it proposes an assertion that says nothing about where
-          // the app went.
-          const to = routePathOf(docPath, 'string' === typeof data['hash'] ? data['hash'] : '');
+          // the app went. See routeOfEvent.
+          const to = routed.routePath;
           add(`route:${to}`, {
             predicate: { kind: PredicateKind.ROUTE, pathname: to },
             tier: TIER.CONSEQUENCE,

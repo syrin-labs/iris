@@ -182,8 +182,23 @@ export function wireRedactionKeys(config?: RedactionConfig): string[] {
 // a secret can sit under a benign key (`{"note":"<jwt>"}`, `<meta content="sk_live_…">`). Deliberately
 // narrow (JWT, known provider prefixes) so it never corrupts legitimate prose the way a broad
 // entropy/length heuristic would.
+//
+// Every entry is a vendor-RESERVED prefix plus a length floor, which is the property that makes the
+// rule safe to widen: `github_pattern_matching`, `ASIAN_MARKETS`, and `AIzawa` are all prose that
+// starts with one of these prefixes and none of them reaches the floor. A vendor that ships a new
+// prefix belongs here; a shape recognisable only by entropy does not.
+//
+//  - `AKIA` / `ASIA` are both AWS access key ids: long-term and STS-temporary. They are the same 20
+//    characters and leak from the same places, so covering one and not the other was an accident of
+//    which one got written down first.
+//  - `github_pat_` is GitHub's fine-grained token, now the default a user is handed. It does not
+//    share the `gh[pousr]_` shape of the classic tokens.
+//  - `AIza` is the Google API key handed out for Maps/Firebase/YouTube, the one credential most
+//    likely to sit in a front-end request this SDK is watching.
+//  - `sk-<product>-` covers the LLM-provider keys (OpenAI `sk-proj-`, Anthropic `sk-ant-`). The
+//    product segment is required: bare `sk-` is two characters and would catch prose.
 const KNOWN_SECRET =
-  /eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|ya29\.[A-Za-z0-9._-]{20,}/g;
+  /eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}|sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{22,}|AIza[0-9A-Za-z_-]{35}|xox[baprs]-[A-Za-z0-9-]{10,}|ya29\.[A-Za-z0-9._-]{20,}/g;
 
 /** Redact high-confidence secret shapes anywhere in a text/value, independent of any surrounding key. */
 export function scrubKnownSecrets(text: string): string {

@@ -14,6 +14,7 @@ import {
   type ReticleEvent,
 } from '@reticlehq/core';
 import { asRecord, asString } from '../tools/tools-helpers.js';
+import { routeOfEvent, routeOfUrl } from '../events/predicate-route.js';
 import type { ArrivalClock } from '../tools/navigate-arrival.js';
 import { carryReticleIdentity } from '../tools/lease-tools.js';
 import type { SessionManager } from '../session/session-manager.js';
@@ -41,6 +42,7 @@ import { consultSubjectFor, selectConsulted, type ConsultedMemory } from './flow
 import { log } from '../log.js';
 import type { ToolDeps } from '../tools/tools.js';
 import { flowsForSession } from './flow-store-for-session.js';
+import { FlowParseNote } from './flow-expect-grammar.js';
 
 export function latestRecordedFlow(
   events: ReticleEvent[],
@@ -55,14 +57,15 @@ export function latestRecordedFlow(
 }
 
 /** Map a structured FlowErrorCode to a legible one-line message for the agent. */
-export function flowErrorMessage(code: FlowErrorCode): string {
+export function flowErrorMessage(code: FlowErrorCode, detail?: string): string {
+  if (FlowErrorCode.PARSE_FAILED === code && undefined !== detail) return detail;
   switch (code) {
     case FlowErrorCode.INVALID_NAME:
       return 'invalid flow name — use a single safe segment (letters/digits/-/_), no path separators';
     case FlowErrorCode.NOT_FOUND:
       return 'no such flow on disk — run reticle_flow{action:"list"} to see saved flows';
     case FlowErrorCode.PARSE_FAILED:
-      return 'flow file is malformed — fix or regenerate it with reticle_flow_save';
+      return FlowParseNote.MALFORMED;
     case FlowErrorCode.NO_RECORDING:
       return 'no compiled recording by that name — record one (reticle_record{action:"start"|"stop"}) first';
   }
@@ -134,19 +137,15 @@ interface StartPathSession {
  */
 function currentPathOf(session: StartPathSession): string | undefined {
   const routes = session.eventsSince(0).filter((e) => e.type === EventType.ROUTE_CHANGE);
-  const data = routes.at(-1)?.data ?? {};
+  const last = routes.at(-1);
   // pathname + hash, because `startPath` is compared against this and must stay NAVIGABLE. Reading
   // the pathname alone made both sides `/` on a hash router — always "same path", so the hint never
   // fired however far the tab had drifted, on the router desktop renderers use by default.
-  const observed = asString(data['pathname']) ?? asString(data['to']);
-  if (observed !== undefined) return `${observed}${asString(data['hash']) ?? ''}`;
+  const observed = last === undefined ? undefined : routeOfEvent(last);
+  if (observed !== undefined) return `${observed.docPath}${observed.hash}`;
   if (session.url === undefined) return undefined;
-  try {
-    const parsed = new URL(session.url);
-    return `${parsed.pathname}${parsed.hash}`;
-  } catch {
-    return undefined;
-  }
+  const fromUrl = routeOfUrl(session.url);
+  return fromUrl === undefined ? undefined : `${fromUrl.docPath}${fromUrl.hash}`;
 }
 
 /** Pathname equality up to a trailing slash — a router normalising one must not read as "elsewhere". */
@@ -379,7 +378,7 @@ export async function replayNamedFlow(
       name,
       status: ReplayStatus.ERROR,
       steps: [],
-      error: { code: loaded.code, message: flowErrorMessage(loaded.code) },
+      error: { code: loaded.code, message: flowErrorMessage(loaded.code, loaded.detail) },
     };
   }
   // What this flow is FOR, from the shared ledger — so a failure can report the business outcome
