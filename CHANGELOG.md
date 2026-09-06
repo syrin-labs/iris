@@ -7,6 +7,7 @@ All notable changes to the **`@reticlehq/*`** packages are documented here (each
 ### Changed
 
 - **`@reticlehq/server` — a `ROUTE_CHANGE` is read through one helper (`routeOfEvent`).** Six call sites (and the journey consequence line) each picked `pathname` / `to` / `hash` out of the event by hand, so a seventh hash-router miss was a field choice away: the document pathname is `/` on every HashRouter page, the default for a packaged Electron/Tauri renderer. The helper returns both the router path and the navigable `docPath + hash`; call sites pick, they do not re-index. Closes [#727](https://github.com/reticlehq/reticle/issues/727).
+
 ### Fixed
 
 - **`@reticlehq/server` — a recording that leaves a page and returns to it is named at stop/save.** The recorder stores clicks, not navigations, so a drive into a product and back to search saved both clicks and dropped the route change between them. Replay then looked for a search-only control while still on the product page. Stop and `flow_save` now warn with the journey (`/search → /product/1 → /search`) instead of writing a flow that cannot replay. Linear A→B→C stays quiet. The flow file is unchanged. Closes [#603](https://github.com/reticlehq/reticle/issues/603).
