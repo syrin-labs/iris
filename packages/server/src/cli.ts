@@ -68,6 +68,7 @@ import {
 import { IdleShutdown, resolveIdleShutdownMs, resolveIdleCheckMs } from './daemon/idle-shutdown.js';
 import { DaemonHeartbeat, resolveHeartbeatMs } from './daemon/heartbeat.js';
 import { everServedToolCall } from './daemon/daemon-usefulness.js';
+import { DAEMON_START_FAILED_EVENT, readDaemonStartupCause } from './daemon/startup-failure.js';
 import {
   fetchStatus,
   summarizeStatus,
@@ -214,6 +215,7 @@ async function serveWithHonestExit(parsed: {
     return;
   }
   const daemonArgs = daemonSpawnArgs(parsed);
+  const startupStartedAt = Date.now();
   spawnDaemon(process.execPath, scriptPath, daemonArgs, parsed.port);
   // The child binds asynchronously and, when it cannot, exits 1 long after this process would have
   // reported success. Wait for it to ANSWER — `/status` responding is the only evidence a daemon
@@ -221,12 +223,14 @@ async function serveWithHonestExit(parsed: {
   const bound = await waitForPresence(parsed.port, PortPresence.DAEMON, SERVE_BIND_TIMEOUT_MS);
   if (!bound) {
     const settled = await probePresence(parsed.port, { tcpOpen: probeDaemon, status: fetchStatus });
+    const startupCause = readDaemonStartupCause(logPath(parsed.port), startupStartedAt);
     log('reticle_daemon_start_failed_parent', {
       port: parsed.port,
       presence: settled,
       reason: describePresence(settled, parsed.port),
       log: logPath(parsed.port),
       stateDir: stateDirProblem(reticleStateHome()) === undefined ? 'writable' : 'unwritable',
+      ...(startupCause === undefined ? {} : { cause: startupCause }),
     });
     // Name the CAUSE when we can see it. An unwritable state directory is a first-run failure mode
     // (locked-down home, read-only container mount, managed profile) that produced only "nothing is
@@ -235,7 +239,10 @@ async function serveWithHonestExit(parsed: {
     const dirProblem = stateDirProblem(reticleStateHome());
     process.stderr.write(
       dirProblem === undefined
-        ? `the daemon did not come up on :${String(parsed.port)} — ${describePresence(settled, parsed.port)}\n` +
+        ? startupCause === undefined
+          ? `the daemon did not come up on :${String(parsed.port)} — ${describePresence(settled, parsed.port)}\n` +
+            `see ${logPath(parsed.port)}\n`
+          : `the daemon did not come up on :${String(parsed.port)}.\n${startupCause}\n` +
             `see ${logPath(parsed.port)}\n`
         : `the daemon did not come up on :${String(parsed.port)}.\n${dirProblem}\n`,
     );
@@ -780,7 +787,7 @@ function handleDaemonInner(parsed: {
     })
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      log('reticle_daemon_start_failed', { error: message });
+      log(DAEMON_START_FAILED_EVENT, { error: message });
       removePid(parsed.port);
       process.exit(1);
     });

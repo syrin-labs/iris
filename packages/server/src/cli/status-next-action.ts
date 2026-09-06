@@ -55,20 +55,6 @@ export interface StatusFacts {
 export function statusNextAction(facts: StatusFacts): string | undefined {
   if (facts.sessionCount > 0) return undefined;
 
-  // Ahead of everything else, because it dominates: an app that was never wired cannot connect, and
-  // no advice about dev servers or ports applies until it is. `previouslyConnected` overrides it —
-  // an app CAN be wired by the Vite or Babel plugin with no `.reticle.json` at all, so a project
-  // that has connected here before is wired whatever this file says, and sending it back to `init`
-  // would be the same wrong answer in the other direction.
-  if (!facts.initialized && !facts.previouslyConnected) {
-    return (
-      'no app has ever connected for this project, and there is no Reticle config here — so the ' +
-      'tools are registered and the app itself is not instrumented. Those are two different halves ' +
-      'of the install. Run `npx @reticlehq/server init` in the app directory, then start the dev ' +
-      'server and load the page.'
-    );
-  }
-
   if (!facts.running) {
     // `running: false` reads as "Reticle is broken", and it usually means the opposite: the daemon is
     // started by an agent, on demand, and idles out when nobody is driving. A user who has not
@@ -81,6 +67,19 @@ export function statusNextAction(facts: StatusFacts): string | undefined {
       `Reticle tool, and it exits again when idle. ${wiring} Ask your agent to verify something, then ` +
       `run status again.`
     ).replace(/\s+/g, ' ');
+  }
+
+  // Only diagnose instrumentation after a live daemon makes that diagnosis possible. When the
+  // daemon is absent, claiming the app is unwired confuses missing evidence with evidence of a
+  // missing install. `previouslyConnected` overrides this branch because plugin-based wiring may
+  // connect without creating `.reticle.json`.
+  if (!facts.initialized && !facts.previouslyConnected) {
+    return (
+      'no app has ever connected for this project, and there is no Reticle config here — so the ' +
+      'tools are registered and the app itself is not instrumented. Those are two different halves ' +
+      'of the install. Run `npx @reticlehq/server init` in the app directory, then start the dev ' +
+      'server and load the page.'
+    );
   }
 
   // The daemon is up and no page has connected. `nextActionFor` owns the ranking; this passes what
