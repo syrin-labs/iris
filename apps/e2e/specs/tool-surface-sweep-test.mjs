@@ -268,6 +268,7 @@ await record('reticle_flow_replay', { flowName: 'sweep-flow', confirmDangerous: 
 await record('reticle_verify', { action: 'flows', names: ['sweep-flow'] });
 await record('reticle_flow_heal', { flowName: 'sweep-flow' });
 await record('reticle_verify', { action: 'crawl', maxSteps: 2, confirmDangerous: true });
+await record('reticle_verify', { action: 'nav_smoke', maxLinks: 2, confirmDangerous: true });
 await record('reticle_session', { action: 'yield', mode: 'waiting' });
 
 // A deliberately STALE ref: click something that re-renders, then reuse the ref from before it.

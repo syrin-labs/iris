@@ -39,6 +39,7 @@ All notable changes to the **`@reticlehq/*`** packages are documented here (each
 - **`@reticlehq/server` — `init --relaunch` decides what a restart should do, and refuses the dangerous case.** `--resume` on a session id with no transcript opens an EMPTY conversation under that id with no error anywhere, which is worse than no restart because it looks exactly like success. The flag was previously not accepted at all, so passing it printed the usage text.
 
 - **`@reticlehq/core` + `@reticlehq/server` — socket-level MCP POST failures are now a session count.** `ENOBUFS`, `EMFILE`, `EADDRNOTAVAIL` and `ECONNREFUSED` before any bytes were sent never produced `tool_refused` (the handler never ran) and never produced `mcp_connection_lost` (the SSE stream was fine), so a keep-alive retry that saved the call was indistinguishable from one that never fired. `postSocketFailures` and `postRetriesSaved` ride the existing session summary, omitted when zero, and the proxy awaits the flush before exit.
+- **`@reticlehq/server` — one-shot primary nav smoke.** `reticle_verify { action: "nav_smoke" }` queries links inside a nav landmark (default `nav`), clicks each internal href, and returns one consolidated table with `renderedWithoutConsoleErrors` per row — honest naming for "rendered without new console errors", not "the route works". Closes [#167](https://github.com/reticlehq/reticle/issues/167).
 
 ### Changed
 

@@ -54,6 +54,10 @@ const ORDER = [
   'spa-nav-realinput-test',
   'visual-test',
   'crawl-test',
+  // The other one-shot explorer: crawl drives every control; this walks primary nav only. next-smoke
+  // has a `<nav>` of App Router links, which is the shape the tool is for — unit tests inject a fake
+  // session and never prove the query+click+settle path against a real document.
+  'nav-smoke-test',
   // The release motive, end to end. The unit tests pin the RULE; only a real app in a real browser
   // proves the wiring — that the facts reach the rule, that the field survives the outputSchema, and
   // that a gap raised on one call is still open on the next AND closes when the app stops being

@@ -69,6 +69,8 @@ export const ReticleTool = {
   VISUAL_DIFF: 'reticle_visual_diff',
   /** autonomously click every reachable control + report anomalies (no script). */
   CRAWL: 'reticle_crawl',
+  /** one-shot smoke of primary nav links with a consolidated honest table. */
+  NAV_SMOKE: 'reticle_nav_smoke',
   /** scroll a virtualized list until a queried row mounts, then return it. */
   SCROLL_TO: 'reticle_scroll_to',
   /** Session lifecycle: tune the presenter session (e.g. idle-end window) for the app's needs.

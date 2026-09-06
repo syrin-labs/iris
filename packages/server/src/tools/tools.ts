@@ -33,6 +33,7 @@ import { AFFECTED_TOOLS } from '../flows/affected-tools.js';
 import { buildCoverageTools } from './coverage-tools.js';
 import { VERIFY_CHANGE_TOOLS } from '../flows/verify-change-tools.js';
 import { CRAWL_TOOLS } from '../crawl/crawl-tools.js';
+import { NAV_SMOKE_TOOLS } from '../nav-smoke/nav-smoke-tools.js';
 import { SCROLL_TOOLS } from '../input/scroll-tools.js';
 import { NETWORK_MOCK_TOOLS } from '../input/network-mock-tools.js';
 import { VIEWPORT_TOOLS } from '../input/viewport-tools.js';
@@ -588,6 +589,8 @@ export const RAW_TOOLS: ToolDef[] = [
   ...VIEWPORT_TOOLS,
   // reticle_crawl — autonomous click-everything + anomaly report. See crawl-tools.ts.
   ...CRAWL_TOOLS,
+  // reticle_nav_smoke — one-shot primary-nav smoke table. See nav-smoke-tools.ts.
+  ...NAV_SMOKE_TOOLS,
   // reticle_scroll_to — reveal a virtualized off-screen row. See scroll-tools.ts.
   ...SCROLL_TOOLS,
   // Session lifecycle: reticle_session — tune the presenter session (idle-end). See session-tools.ts.
@@ -670,13 +673,14 @@ export const MERGE_PLANS: MergePlan[] = [
   {
     name: ReticleTool.VERIFY,
     description:
-      'What is proved, and what is not — by action. Start from a change: { action: "affected" } names which saved flows must re-verify for the files you edited (pass `files`, and/or `since` for a git ref), and "change" goes further and actually replays them, answering with one `verified` plus `because`. `unknown` there is the honest answer when NO saved flow covers the change: nothing ran, so nothing was proved, and it is never reported as green. Without a change to start from: "flows" replays every saved flow for one consolidated suite verdict (deterministic, no LLM per flow), and "coverage" lists the interactive controls you have and have NOT driven this session — an untouched list still holding the controls your change affects means you are not done. "crawl" is the no-script option: it drives every reachable control itself and reports single-channel faults (console errors, failed requests, dead controls) and CONTRADICTIONS, two channels disagreeing about the same click — the false greens a human cannot see, because a human watches the screen and the screen looks correct. DESTRUCTIVE: crawl really clicks, and may navigate or mutate state.',
+      'What is proved, and what is not — by action. Start from a change: { action: "affected" } names which saved flows must re-verify for the files you edited (pass `files`, and/or `since` for a git ref), and "change" goes further and actually replays them, answering with one `verified` plus `because`. `unknown` there is the honest answer when NO saved flow covers the change: nothing ran, so nothing was proved, and it is never reported as green. Without a change to start from: "flows" replays every saved flow for one consolidated suite verdict (deterministic, no LLM per flow), and "coverage" lists the interactive controls you have and have NOT driven this session — an untouched list still holding the controls your change affects means you are not done. "nav_smoke" walks primary nav links (default: inside `nav`) and returns one table per route with `renderedWithoutConsoleErrors` — that is "no new console errors in the settle window", NOT "the route works". "crawl" is the no-script option: it drives every reachable control itself and reports single-channel faults (console errors, failed requests, dead controls) and CONTRADICTIONS, two channels disagreeing about the same click — the false greens a human cannot see, because a human watches the screen and the screen looks correct. DESTRUCTIVE: crawl and nav_smoke really click, and may navigate or mutate state.',
     members: {
       change: ReticleTool.VERIFY_CHANGE,
       flows: ReticleTool.FLOW_VERIFY,
       affected: ReticleTool.AFFECTED,
       coverage: ReticleTool.COVERAGE,
       crawl: ReticleTool.CRAWL,
+      nav_smoke: ReticleTool.NAV_SMOKE,
     },
     // No default action ON PURPOSE. The name implies no single member, and one of them really
     // clicks: a fallthrough that guessed wrong would drive the app rather than read it. Every action
