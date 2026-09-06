@@ -508,6 +508,14 @@ describe('no condition Reticle itself authored is reported as a possible Reticle
         'Pass one sessionId at the top level to target a tab. Nothing was acted on.',
       RECOVERY.BAD_ARGUMENTS,
     ],
+    // resolve-target.ts — resolveTargetRef, the ambiguous case
+    [
+      'an ambiguous target',
+      'target matched 2 elements and an action must not guess between them: e1309 (button "Submit"), ' +
+        'e1310 (generic). Narrow the query (add role/name/testid or a scope), or pass an explicit ' +
+        '`ref` from reticle_query.',
+      RECOVERY.TARGET_AMBIGUOUS,
+    ],
   ])('%s is recognized', (_label, message, expected) => {
     const payload = buildErrorPayload(message);
     expect(payload.feedback, message).toBeUndefined();
@@ -726,6 +734,37 @@ describe('a selector that missed is not a malformed call', () => {
   /** An unmatched message collects the feedback ask, which is how agents get pushed to report a miss. */
   it('is still matched, so it never collects a defect report', () => {
     expect(recoveryFor(missed)).toBeDefined();
+  });
+});
+
+describe('an ambiguous target is the same class as a miss', () => {
+  /**
+   * The error ends with `reticle_query.` — the trailing period falls inside the catch-all regex's
+   * negative lookahead exclusion set `[\w/.-]`, the same mechanism that required TARGET_MISSED to
+   * be placed before the catch-all. Without a specific rule, this fell through to FEEDBACK_ASK and
+   * told the agent a correctly-classified caller error "may be a defect in Reticle".
+   */
+  const ambiguous =
+    'target matched 3 elements and an action must not guess between them: e101 (button "Save"), ' +
+    'e102 (button "Save"), e103 (generic). Narrow the query (add role/name/testid or a scope), ' +
+    'or pass an explicit `ref` from reticle_query.';
+
+  it('does not tell the caller its arguments were wrong', () => {
+    const hint = recoveryFor(ambiguous);
+    expect(hint).toBeDefined();
+    expect(hint).not.toMatch(/did not match the tool's schema/);
+  });
+
+  it('says the call was valid and names the fix', () => {
+    const hint = recoveryFor(ambiguous) ?? '';
+    expect(hint).toMatch(/valid/i);
+    expect(hint).toMatch(/narrow the query/i);
+  });
+
+  it('is classified, so it never collects a defect report', () => {
+    const payload = buildErrorPayload(ambiguous);
+    expect(payload.feedback).toBeUndefined();
+    expect(payload.recovery).toBe(RECOVERY.TARGET_AMBIGUOUS);
   });
 });
 

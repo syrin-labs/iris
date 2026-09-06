@@ -116,6 +116,15 @@ export const RECOVERY = {
     'acted on. Take a reticle_snapshot to see what is actually there (a view may still be ' +
     'rendering, or the control may be named differently), then retry with what it shows. This is ' +
     'a miss, not a Reticle defect: there is nothing to report.',
+  /**
+   * The selector found too many, not too few. Same class as TARGET_MISSED: a caller's
+   * underspecified query, not a defect. The error message already enumerates the candidates and
+   * names the narrowing moves, so this adds only the classification the fallback cannot.
+   */
+  TARGET_AMBIGUOUS:
+    'The call was valid — the selector matched multiple elements and an action must not guess ' +
+    'between them. Narrow the query (add role, name, testid, or a scope), or pass an explicit ' +
+    '`ref` from reticle_query. This is a miss, not a Reticle defect: there is nothing to report.',
   NO_SUCH_OPTION:
     'That <select> has no option with the value you asked for, and the message above lists the ones ' +
     'it does have. Reticle refuses rather than assigning it: an unmatched value deselects everything, ' +
@@ -233,6 +242,7 @@ const REASON_OF: Record<keyof typeof RECOVERY, RefusalReason> = {
   STALE_REF_AFTER_EDIT: RefusalReason.NO_MATCH,
   NO_SUCH_OPTION: RefusalReason.NO_MATCH,
   TARGET_MISSED: RefusalReason.NO_MATCH,
+  TARGET_AMBIGUOUS: RefusalReason.NO_MATCH,
   FLOW_STEP_MISSING: RefusalReason.NO_MATCH,
   UNSUPPORTED_SURFACE: RefusalReason.UNSUPPORTED,
   HOVER_NEEDS_POINTER: RefusalReason.UNSUPPORTED,
@@ -310,6 +320,10 @@ const RULES: readonly { readonly match: RegExp; readonly hint: string }[] = [
   // agent to re-read arguments that were already correct costs it a turn, and this is the commonest
   // refusal there is.
   { match: /target matched no element/i, hint: RECOVERY.TARGET_MISSED },
+  // Same mechanism as TARGET_MISSED: the error names `reticle_query` in its own advice, and the
+  // catch-all's trailing-period exclusion misses the period after it. Placed before the catch-all
+  // for the same reason TARGET_MISSED is.
+  { match: /target matched \d+ elements/i, hint: RECOVERY.TARGET_AMBIGUOUS },
   // Authored by Reticle, about the caller's arguments: the message already names the valid answers.
   { match: /^unknown action '/i, hint: RECOVERY.BAD_ARGUMENTS },
   { match: /^unsupported query strategy '/i, hint: RECOVERY.BAD_ARGUMENTS },
