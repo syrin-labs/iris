@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { scanPackage } from '../../../scripts/orphan-scan.mjs';
 
 /**
- * A module that nothing imports must be declared unwired, not discovered later as dead code.
+ * A module that nothing imports must be DECLARED unwired, not discovered later by an auditor.
  *
- * This test does not ban orphans. It requires every deliberate orphan to be named with the reason
- * it remains, and fails when a production module becomes unreachable without that decision.
+ * A lint rule that nothing registers is invisible: it passes its own unit tests and never runs on
+ * anyone's code. Reachability from the plugin entry is the only thing that makes a rule real.
  *
- * The scan lives in `scripts/orphan-scan.mjs` so every package asks the same question the same way,
- * and so entry points are derived from this package's `exports` map rather than a literal
+ * The scan itself lives in `scripts/orphan-scan.mjs` so every package asks the same question the
+ * same way, and so entry points come from this package's own `exports` map rather than a literal
  * `index.ts` (#548).
  */
 
