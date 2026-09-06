@@ -51,7 +51,7 @@ const MAX_FIBER_NODES = 20000;
 const PROVIDER_TYPE = Symbol.for('react.provider');
 const CONTEXT_TYPE = Symbol.for('react.context');
 
-export interface DiscoveredStore {
+interface DiscoveredStore {
   key: string;
   store: StoreLike;
   /**

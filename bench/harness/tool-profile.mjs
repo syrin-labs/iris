@@ -235,6 +235,7 @@ function resolveToolArgs(name, ctx) {
     reticle_state: {},
     reticle_session: { action: 'tune', idleEndMs: 300000 },
     reticle_feedback: { kind: 'experience', text: 'profile run', rating: 5 },
+    reticle_intent: { action: 'list' },
     reticle_capabilities: {},
     reticle_tools: {},
     reticle_run: { tool: 'reticle_sessions', args: {} },

@@ -19,6 +19,7 @@
  * repo's install gate exists to catch.
  */
 import { NPX, MCP_SERVER_NAME, npxServerArgs, isReticleRegistration } from './mcp.js';
+import { codexServerTokens } from './codex-toml.js';
 
 export const McpClient = {
   CLAUDE_CODE: 'claude-code',
@@ -255,14 +256,40 @@ function leaveEntryAlone(existing: unknown, spec: ClientSpec): boolean {
 }
 
 /**
+ * Is this TOML config's existing entry one we should leave exactly as it is?
+ *
+ * The TOML half of {@link leaveEntryAlone}, over the strings the config declares rather than a
+ * parsed object. `false` when the table is absent, when it is a Reticle registration that has
+ * drifted from what we would write, and when the shape was not one the scanner reads — every one of
+ * those keeps today's MANUAL answer, and the snippet is then the actionable thing to print.
+ */
+function tomlEntryIsSettled(spec: ClientSpec, existing: string | null): boolean {
+  const tokens = codexServerTokens(existing, spec.serversKey);
+  if (0 === tokens.length) return false;
+  const expected = [NPX, ...npxServerArgs()];
+  // Same strings, and no others: an entry carrying an extra flag is not the one we would write.
+  if (tokens.length === expected.length && expected.every((t) => tokens.includes(t))) return true;
+  // Not ours to touch. Somebody pointing `reticle` at their own local build made a deliberate
+  // choice, and telling them to hand-edit it back is the same wrong answer as overwriting it.
+  return !isReticleRegistration(tokens);
+}
+
+/**
  * Merge our server into this client's config.
  *
  * TOML is never auto-merged. Editing TOML without a parser is how a config file gets corrupted, and
  * a corrupted `~/.codex/config.toml` costs the user every server they had, not just ours. Printing
  * the exact block is honest; writing a guess is not — so Codex returns MANUAL with a snippet.
+ *
+ * Not writing it is no reason not to READ it, though. Reporting `add this by hand` to somebody who
+ * already has the table is a warning they must not act on, and the setup contract makes a `⚠`
+ * blocking (#681). Detection is read-only and cannot corrupt anything.
  */
 export function mergeClientConfig(spec: ClientSpec, existing: string | null): ClientMergeResult {
   if (spec.format !== ConfigFormat.JSON) {
+    if (ConfigFormat.TOML === spec.format && tomlEntryIsSettled(spec, existing)) {
+      return { status: ClientMergeStatus.ALREADY, content: existing ?? '' };
+    }
     return { status: ClientMergeStatus.MANUAL, content: existing ?? '' };
   }
   const parsed = parseConfig(existing);
