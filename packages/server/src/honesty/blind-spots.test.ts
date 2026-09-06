@@ -157,4 +157,20 @@ describe('absenceBlindSpotNote', () => {
     };
     expect(absenceBlindSpotNote(pred, crossOriginSpot)).toContain('cannot prove absence');
   });
+
+  // Suggested by Chirag6722 in #815 — pins the recursion-depth decision so the next reader does
+  // not re-open the question #774 raised about how deep to recurse.
+  it('not(not(element)) is itself a presence claim — silence is correct, not a gap', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'not' } };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('both spellings produce the identical note, not merely a non-empty one', () => {
+    const direct: AbsencePred = { kind: 'element', absent: true };
+    const wrapped: AbsencePred = { kind: 'not', predicate: { kind: 'element' } };
+    const directNote = absenceBlindSpotNote(direct, virtualizedSpot);
+    const wrappedNote = absenceBlindSpotNote(wrapped, virtualizedSpot);
+    expect(directNote).toBeDefined();
+    expect(wrappedNote).toBe(directNote);
+  });
 });
