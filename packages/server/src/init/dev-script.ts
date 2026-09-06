@@ -29,7 +29,7 @@ export const DevScriptChoice = {
 } as const;
 export type DevScriptChoice = (typeof DevScriptChoice)[keyof typeof DevScriptChoice];
 
-export interface DevScriptPlan {
+interface DevScriptPlan {
   choice: DevScriptChoice;
   /** The npm script name, when there is one. */
   script?: string;

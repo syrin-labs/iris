@@ -57,16 +57,16 @@ export const MAX_BLOCKING_WAIT_MS = MCP_SDK_DEFAULT_REQUEST_TIMEOUT_MS - 5_000;
 export const MAX_STATE_DEPTH = 256;
 
 /** A crawl that clicks forever is not a bound. */
-export const MAX_CRAWL_STEPS = 500;
+const MAX_CRAWL_STEPS = 500;
 
 /** Scroll-to-find steps. Default is 20; hundreds is searching, thousands is a hang. */
 export const MAX_SCROLLS = 200;
 
 /** Fake-clock jump. One day of timers is a test; a billion ms is not. */
-export const MAX_ADVANCE_MS = 86_400_000;
+const MAX_ADVANCE_MS = 86_400_000;
 
 /** Presenter idle window. One hour is a slow app; larger values never fire. */
-export const MAX_IDLE_MS = 3_600_000;
+const MAX_IDLE_MS = 3_600_000;
 
 /** Viewport CSS px — matches the clamp the handler already applied, now as a refusal. */
 export const MIN_VIEWPORT_PX = 64;
@@ -145,5 +145,5 @@ export const workerCountSchema = z
  * A row index / list length in a virtualized table. Those lists are large on purpose; the ring
  * buffer's 2000 is the wrong ceiling. A billion-row claim is not a list, it is a hang.
  */
-export const MAX_LIST_INDEX = 1_000_000;
+const MAX_LIST_INDEX = 1_000_000;
 export const listIndexSchema = z.number().finite().int().nonnegative().max(MAX_LIST_INDEX);

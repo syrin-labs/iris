@@ -19,7 +19,7 @@ import {
   type ReticleEvent,
 } from '@reticlehq/core';
 
-export interface BlindSpot {
+interface BlindSpot {
   kind: BlindSpotKind;
   count: number;
 }
@@ -286,8 +286,19 @@ export function isStateUnwatched(spots: readonly BlindSpot[]): boolean {
 export function restsOnCompleteWindow(predicate: {
   kind: string;
   absent?: boolean;
+  count?: number;
   predicate?: unknown;
 }): boolean {
   if (PredicateKind.NOT === predicate.kind) return true;
+  // An exact cardinality of ZERO is the third spelling of an absence claim, and reading only
+  // `absent` missed it: `{ kind: "net", urlContains: "/api/auth/sign-in", count: 0 }` says "this
+  // request was never made", and the call the buffer evicted is precisely the disproof. It was
+  // graded `yes` over a window known to have lost scarce evidence — the exact false green the two
+  // clauses above exist to prevent, reached by the one spelling they did not cover (#668).
+  //
+  // Only zero. `count: 2` asserts calls were MADE and found them; events aged out elsewhere in the
+  // buffer do not unmake a positive finding, which is the same reason a plain presence assertion is
+  // left alone here.
+  if (0 === predicate.count) return true;
   return true === predicate.absent;
 }

@@ -20,6 +20,7 @@ import { homedir } from 'node:os';
 import { resolveProjectCloud } from '../cloud/cloud-config.js';
 import { buildSuiteVerdict } from './decision.js';
 import { classifyFlowAssertions } from './flow-classify.js';
+import { recordingBacktrackWarning } from './recording-backtrack.js';
 import { isValidFlowName, flowPath } from '../project/reticle-dir.js';
 import type { SuiteVerdict } from '@reticlehq/core';
 import { type FlowAnnotations } from './flows.js';
@@ -108,7 +109,7 @@ export const FLOW_TOOLS: ToolDef[] = [
   {
     name: ReticleTool.FLOW_SAVE,
     description:
-      'Persist the last/active recording (by name) as a git-checked, anchor-resolved flow at .reticle/flows/<name>.json. Each step is bound to a SEMANTIC anchor (testid/role/signal), never a volatile ref; steps without a resolvable testid are kept with degraded:true (a "add a data-testid here" marker) rather than dropped. Returns { name, stepCount, degraded, empty, assertions } — `assertions.grade` is asserted | presence-only | assertion-free: a flow that only acts (or only checks element presence) will pass even if the feature breaks, so when grade is not "asserted" follow assertions.warning and add a consequence assertion via reticle_annotate (assert-signal / assert-net / success-state).',
+      'Persist the last/active recording (by name) as a git-checked, anchor-resolved flow at .reticle/flows/<name>.json. Each step is bound to a SEMANTIC anchor (testid/role/signal), never a volatile ref; steps without a resolvable testid are kept with degraded:true (a "add a data-testid here" marker) rather than dropped. Returns { name, stepCount, degraded, empty, assertions, warning? } — `assertions.grade` is asserted | presence-only | assertion-free: a flow that only acts (or only checks element presence) will pass even if the feature breaks, so when grade is not "asserted" follow assertions.warning and add a consequence assertion via reticle_annotate (assert-signal / assert-net / success-state). `warning` is present when the recording left a page and returned to it: replay has no navigation steps, so the next click will look for a control on a page the tab is no longer on.',
     inputSchema: {
       flow: z
         .string()
@@ -158,6 +159,12 @@ export const FLOW_TOOLS: ToolDef[] = [
         })
         .optional(),
       intentGap: INTENT_GAP_FIELD,
+      warning: z
+        .string()
+        .optional()
+        .describe(
+          'Present when the recording left a page and returned to it. Replay has no navigation steps, so the next click will look for a control on a page the tab is no longer on.',
+        ),
       error: z.string().optional(),
       code: z.string().optional(),
     },
@@ -218,7 +225,7 @@ export const FLOW_TOOLS: ToolDef[] = [
       const { flows, root } = flowsForSession(deps, projectId);
       const toSave = saveAs === undefined ? program : { ...program, name: saveAs };
       return flows.save(toSave, annotations, projectId).then(async (res) => {
-        if (!res.ok) return { error: flowErrorMessage(res.code), code: res.code };
+        if (!res.ok) return { error: flowErrorMessage(res.code, res.detail), code: res.code };
         deps.annotations.clear(name);
         // Grade the saved flow's assertions so the agent learns immediately if it just saved a flow
         // that asserts nothing observable (passes even when the feature is broken).
@@ -228,13 +235,19 @@ export const FLOW_TOOLS: ToolDef[] = [
         // back from a save that succeeded, so the guard is a type narrowing rather than a doubt.
         const saved = res.value.name;
         const path = isValidFlowName(saved) ? flowPath(root, saved, projectId) : undefined;
+        const backtrack = recordingBacktrackWarning(program.routes ?? []);
         return loaded.ok
           ? {
               ...res.value,
               ...(path === undefined ? {} : { path }),
               assertions: classifyFlowAssertions(loaded.value),
+              ...(backtrack === undefined ? {} : { warning: backtrack }),
             }
-          : { ...res.value, ...(path === undefined ? {} : { path }) };
+          : {
+              ...res.value,
+              ...(path === undefined ? {} : { path }),
+              ...(backtrack === undefined ? {} : { warning: backtrack }),
+            };
       });
     },
   },
@@ -283,7 +296,7 @@ export const FLOW_TOOLS: ToolDef[] = [
   {
     name: ReticleTool.FLOW_LOAD,
     description:
-      'Read + validate a saved flow by flowName from .reticle/flows/<flowName>.json. Returns the FlowFile (version, flowName, createdAt, anchored steps) or a structured { error, code }.',
+      'Read + validate a saved flow by flowName from .reticle/flows/<flowName>.json. Returns the FlowFile (version, flowName, createdAt, anchored steps) or a structured { error, code }. Step `expect` (and flow `success`) accepts the same allOf grammar as reticle_act_and_wait; a parse failure names the step and key rather than calling the file malformed.',
     inputSchema: {
       flow: z
         .string()
@@ -311,7 +324,7 @@ export const FLOW_TOOLS: ToolDef[] = [
       return deps.flows
         .load(asString(aliasParam(args, 'flowName', ['flow'])['flowName']) ?? '', projectId)
         .then((res) => {
-          if (!res.ok) return { error: flowErrorMessage(res.code), code: res.code };
+          if (!res.ok) return { error: flowErrorMessage(res.code, res.detail), code: res.code };
           const { name, ...rest } = res.value;
           return { flowName: name, ...rest };
         });
@@ -346,7 +359,7 @@ export const FLOW_TOOLS: ToolDef[] = [
       return deps.flows
         .remove(asString(aliasParam(args, 'flowName', ['flow'])['flowName']) ?? '', projectId)
         .then((res) => {
-          if (!res.ok) return { error: flowErrorMessage(res.code), code: res.code };
+          if (!res.ok) return { error: flowErrorMessage(res.code, res.detail), code: res.code };
           return { deleted: true };
         });
     },
@@ -628,7 +641,7 @@ export const FLOW_TOOLS: ToolDef[] = [
         flow,
         session.projectId,
       );
-      if (!res.ok) return { error: flowErrorMessage(res.code), code: res.code };
+      if (!res.ok) return { error: flowErrorMessage(res.code, res.detail), code: res.code };
       // If logged in to Reticle, mirror the saved flow to the team's regression suite. Best-effort
       // and non-blocking: the flow is already on disk, so a sync failure never fails the save.
       void syncSavedFlowToCloud(deps, flow, session.projectId);

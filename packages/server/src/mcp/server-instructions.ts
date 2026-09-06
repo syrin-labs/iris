@@ -89,7 +89,7 @@ const FEEDBACK_ASK = `Feedback is first-class here, not a courtesy. Reticle is b
 
 Nothing is too minor, and a report costs one call. If the tools are unreachable (setup unfinished, daemon down), file the same report from the shell instead: \`reticle feedback --agent --kind <one of those kinds> "what happened"\`. Report defects in RETICLE — a bug you find in the app under test is Reticle working, and belongs in your answer to the user.`;
 
-export interface InstructionState {
+interface InstructionState {
   /**
    * Has an app ever connected to Reticle for this project, on this port?
    *

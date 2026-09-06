@@ -31,7 +31,7 @@ function truncate(value: string): string {
 }
 
 /** The container descriptor the browser attaches to a missed text query. */
-export interface SplitTextOwner {
+interface SplitTextOwner {
   ref?: string;
   role?: string;
   name?: string;

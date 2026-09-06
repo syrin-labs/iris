@@ -32,7 +32,7 @@ export interface RelaunchEnv {
   readonly cwd: string;
 }
 
-export interface RelaunchDecision {
+interface RelaunchDecision {
   readonly outcome: RelaunchOutcome;
   readonly message: string;
 }

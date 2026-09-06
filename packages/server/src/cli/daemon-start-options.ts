@@ -22,7 +22,7 @@ import {
   PORT_FLAG,
 } from './cli-parse.js';
 
-export type DaemonFlags = {
+type DaemonFlags = {
   port: number;
   driveUrl?: string;
   headless: boolean;

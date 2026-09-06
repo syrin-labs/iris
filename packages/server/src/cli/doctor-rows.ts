@@ -49,7 +49,7 @@ export const DoctorRow = {
   DESKTOP: 'desktop',
 } as const;
 
-export type DoctorRowLabel = (typeof DoctorRow)[keyof typeof DoctorRow];
+type DoctorRowLabel = (typeof DoctorRow)[keyof typeof DoctorRow];
 
 export const DOCTOR_ROW_LABELS: readonly DoctorRowLabel[] = Object.values(DoctorRow);
 

@@ -251,7 +251,7 @@ describe('FlowStore — temp-dir fs, never touches the repo', () => {
     await mkdir(reticleDirPaths(root).flows, { recursive: true });
     await writeFile(flowPath(root, asFlowName('bad')), '{not json', 'utf8');
     const loaded = await store.load('bad');
-    expect(loaded).toEqual({ ok: false, code: FlowErrorCode.PARSE_FAILED });
+    expect(loaded).toMatchObject({ ok: false, code: FlowErrorCode.PARSE_FAILED });
   });
 
   it('12: load of a schema-invalid flow (wrong version) returns PARSE_FAILED', async () => {
@@ -262,7 +262,7 @@ describe('FlowStore — temp-dir fs, never touches the repo', () => {
       'utf8',
     );
     const loaded = await store.load('wrong');
-    expect(loaded).toEqual({ ok: false, code: FlowErrorCode.PARSE_FAILED });
+    expect(loaded).toMatchObject({ ok: false, code: FlowErrorCode.PARSE_FAILED });
   });
 
   it('13: load rejects a traversal name before touching disk', async () => {

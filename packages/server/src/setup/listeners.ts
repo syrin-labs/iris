@@ -9,7 +9,7 @@
  */
 
 /** One LISTENING socket and the process that owns it. */
-export interface Listener {
+interface Listener {
   readonly port: number;
   readonly pid: number;
 }

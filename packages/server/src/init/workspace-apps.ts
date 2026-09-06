@@ -9,7 +9,7 @@ import { DEV_SCRIPT_NAMES } from './dev-script.js';
  */
 
 export const PACKAGE_JSON = 'package.json';
-export const PNPM_WORKSPACE = 'pnpm-workspace.yaml';
+const PNPM_WORKSPACE = 'pnpm-workspace.yaml';
 export const VITE_CONFIG_CANDIDATES = [
   'vite.config.ts',
   'vite.config.js',

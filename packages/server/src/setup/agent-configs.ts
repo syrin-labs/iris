@@ -53,7 +53,7 @@ export interface PlatformPaths {
   readonly win32: string;
 }
 
-export interface AgentClient {
+interface AgentClient {
   readonly id: string;
   readonly name: string;
   readonly confidence: AgentConfidence;
@@ -261,7 +261,7 @@ export interface AgentPlanStep {
   readonly why: string;
 }
 
-export interface AgentPlanInput {
+interface AgentPlanInput {
   readonly home: string;
   readonly platform: keyof PlatformPaths;
   readonly exists: (path: string) => boolean;

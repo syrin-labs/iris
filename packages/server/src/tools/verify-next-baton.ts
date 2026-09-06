@@ -34,7 +34,7 @@ export const SUPPRESS_VERIFY_NEXT_ENV = 'RETICLE_SUPPRESS_VERIFY_NEXT';
 /** What the agent must supply itself. Phrased as an instruction so it cannot be sent verbatim. */
 export const UNTIL_PLACEHOLDER = '<name the consequence this action causes>';
 
-export interface VerifyNextBaton {
+interface VerifyNextBaton {
   /** The fact that produced this, in the agent's own terms. */
   why: string;
   /** A call, ready to make once `until` is filled in. */

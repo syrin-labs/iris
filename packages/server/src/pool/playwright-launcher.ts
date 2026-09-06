@@ -11,8 +11,13 @@ import { BrowserLaunchKind } from '@reticlehq/core';
 import { chromiumLaunchOptions } from '../chromium-launch-options.js';
 import { getSessionMetrics } from '../telemetry/session-metrics.js';
 import { classifyConnectFailure } from '../telemetry/connect-failure.js';
-import { chromiumInstallCommand, bundledPlaywrightVersion } from '../cli/chromium-hint.js';
+import {
+  chromiumInstallCommand,
+  chromiumInstallDepsCommand,
+  bundledPlaywrightVersion,
+} from '../cli/chromium-hint.js';
 import type { Launcher, PooledBrowser, PooledContext, PooledPage } from './browser-pool.js';
+import { installNetworkMocks } from '../input/network-mock.js';
 
 /**
  * How a leased tab navigates. Pure, and exported, because the decision in it is worth a test while
@@ -58,6 +63,7 @@ function wrapBrowser(browser: Browser): PooledBrowser {
               await page.mouse.move(x + 1, y);
               await page.mouse.move(x, y);
             },
+            installMocks: (rules) => installNetworkMocks(page, [...rules]),
             onCrash: (handler) => page.on('crash', handler),
             onConsole: (handler) => page.on('console', (msg) => handler(msg.text())),
           };
@@ -80,6 +86,15 @@ function wrapBrowser(browser: Browser): PooledBrowser {
  */
 const CHROMIUM_MISSING_HINT = `Chromium is not installed for Playwright. Run: ${chromiumInstallCommand(bundledPlaywrightVersion())}`;
 
+/**
+ * A DIFFERENT first-run failure from the one above: the browser binary is already there, but the
+ * host is missing the OS-level shared libraries (e.g. `libnspr4.so`) Playwright's own
+ * host-requirement check refuses to launch without. `npx playwright install chromium` does nothing
+ * for this — it re-downloads a binary that was never the problem — so this needs its own hint
+ * pointing at `install-deps`, pinned the same way and for the same reason as the one above.
+ */
+const CHROMIUM_MISSING_DEPS_HINT = `Chromium is installed, but the host system is missing shared-library dependencies it needs. Run: ${chromiumInstallDepsCommand(bundledPlaywrightVersion())}`;
+
 /** A Launcher that boots a real headless Chromium and adapts it to the pool's interface. */
 export function playwrightLauncher(opts: { headless?: boolean } = {}): Launcher {
   const headless = opts.headless ?? true;
@@ -101,6 +116,12 @@ export function playwrightLauncher(opts: { headless?: boolean } = {}): Launcher 
       settle(classifyConnectFailure(err));
       // Turn Playwright's raw "Executable doesn't exist" into the one command that fixes it.
       const msg = err instanceof Error ? err.message : String(err);
+      // Checked FIRST: Playwright's host-requirement validation error also contains
+      // "browserType.launch", so the generic check below would otherwise misdiagnose it as a
+      // missing binary and send the user through a fix that changes nothing.
+      if (/host system is missing dependencies/i.test(msg)) {
+        throw new Error(CHROMIUM_MISSING_DEPS_HINT);
+      }
       if (/executable doesn.?t exist|playwright install|browsertype\.launch/i.test(msg)) {
         throw new Error(CHROMIUM_MISSING_HINT);
       }

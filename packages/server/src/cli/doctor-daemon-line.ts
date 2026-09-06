@@ -23,7 +23,7 @@ export interface DaemonIdentity {
   contract?: string;
 }
 
-export interface DaemonLine {
+interface DaemonLine {
   /** The `daemon ✓ …` line itself. */
   text: string;
   /** A skew sentence to print underneath, when this CLI and that daemon disagree. */

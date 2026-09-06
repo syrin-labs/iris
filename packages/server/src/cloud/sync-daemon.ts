@@ -27,7 +27,7 @@ import { diskSink, diskSource, readCloudState } from './sync-disk.js';
 import type { ProjectCloud } from './cloud-config.js';
 
 /** How often the daemon cycles. See the note above on why this is a constant and not a curve. */
-export const DAEMON_SYNC_INTERVAL_MS = 60_000;
+const DAEMON_SYNC_INTERVAL_MS = 60_000;
 
 /**
  * The cadence while something is actually happening.
@@ -43,7 +43,7 @@ export const DAEMON_SYNC_INTERVAL_MS = 60_000;
  * Deliberately not per-tool-call. A push in the tool path would put the network in the agent's inner
  * loop, and verification working with the network down is a promise this product makes.
  */
-export const DAEMON_SYNC_ACTIVE_INTERVAL_MS = 5_000;
+const DAEMON_SYNC_ACTIVE_INTERVAL_MS = 5_000;
 
 /** Given to the first cycle so a freshly-started daemon does not race the session that woke it. */
 const FIRST_CYCLE_DELAY_MS = 5_000;
@@ -58,7 +58,7 @@ const FIRST_CYCLE_DELAY_MS = 5_000;
  */
 const NUDGE_DELAY_MS = 1_500;
 
-export interface SyncDaemonDeps {
+interface SyncDaemonDeps {
   reticleRoot: string;
   /** Resolved per tick, not once: a repo linked while the daemon is alive starts syncing itself. */
   cloud: () => Promise<ProjectCloud>;
@@ -84,7 +84,7 @@ export interface SyncDaemonDeps {
   ) => Promise<{ status: number; text: string }>;
 }
 
-export interface SyncDaemon {
+interface SyncDaemon {
   /** Run one cycle now, whatever the timer is doing. Returns undefined when not linked. */
   syncNow: () => Promise<SyncReport | undefined>;
   /**

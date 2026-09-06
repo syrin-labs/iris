@@ -42,7 +42,7 @@ export interface MigrationDeps {
   readonly log: (event: string, data: Record<string, unknown>) => void;
 }
 
-export interface MigrationResult {
+interface MigrationResult {
   readonly ran: boolean;
   readonly granted: readonly string[];
   readonly deferred: readonly string[];

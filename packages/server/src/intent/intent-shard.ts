@@ -46,7 +46,7 @@ import { IntentSchema, type Intent } from '@reticlehq/core';
 import type { FileSystemPort } from '../project/fs-port.js';
 import { subjectFor, UNSORTED_SUBJECT } from './intent-subject.js';
 
-export const INTENT_SHARD_VERSION = 1;
+const INTENT_SHARD_VERSION = 1;
 
 /** Byte-stable writes: an unchanged shard produces no diff, so the ones that DID change stand out. */
 const JSON_INDENT = 2;
@@ -71,7 +71,7 @@ export const IntentStatus = {
 } as const;
 export type IntentStatus = (typeof IntentStatus)[keyof typeof IntentStatus];
 
-export const IntentRecordSchema = IntentSchema.extend({
+const IntentRecordSchema = IntentSchema.extend({
   /** Which shard this lives in. Stored as well as implied, so a file read alone is self-describing. */
   subject: z.string().min(1),
   status: z.enum([
@@ -112,7 +112,7 @@ export const summarise = (statement: string): string =>
   statement.length <= SUMMARY_MAX ? statement : `${statement.slice(0, SUMMARY_MAX - 1).trimEnd()}…`;
 
 /** One line per intent: enough to decide whether to open the shard, and no more. */
-export const IntentIndexEntrySchema = z.object({
+const IntentIndexEntrySchema = z.object({
   id: z.string().min(1),
   subject: z.string().min(1),
   statement: z.string().min(1),

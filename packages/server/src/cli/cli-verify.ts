@@ -326,23 +326,39 @@ async function openLiveConnection(opts: LiveOpts): Promise<VerifyConnection> {
  * worst answer available, and reached most often by the people with the fewest other options, since
  * the skill offers this command as the way to a verdict with no MCP at all.
  *
- * Three ways out, in the order they are worth trying, and the message says all three rather than
- * picking one: an agent that already has the tools should ask the daemon that is running instead of
- * starting a second one; somebody who wants this command specifically can stop the daemon; and a
- * second port works when the app is configured for it.
+ * The message says every way out rather than picking one, and it says FIRST that a busy port is the
+ * normal state rather than a fault — an install that worked leaves a daemon on it, so a reader who
+ * arrives here has done nothing wrong and should not go looking for what they broke (#689).
  *
- * Attaching to the running daemon the way `reticle drive` now does is the better answer and is not
- * this change — see cli/drive-attach.ts for the shape it should take.
+ * `reticle drive` leads, because it is the only option that works in the state most people are in
+ * when they reach this message: the client exposes no `reticle_*` tools (Codex, Cursor Cloud,
+ * Antigravity, a session whose MCP link dropped), which is exactly when the CLI is reached for. It
+ * ATTACHES to the running daemon rather than binding — see cli/drive-attach.ts — so there is nothing
+ * to stop, nothing to race, and it hands back a sessionId the daemon owns. The advice that used to
+ * lead, "ask the daemon through the tools", is the one thing that reader by construction cannot do.
+ *
+ * Stopping the daemon stays on the list and stays LAST of the working options, with the reason: the
+ * MCP proxy respawns one into the gap, so `stop` is a race the caller usually loses, and it kills
+ * the agent's own link on the way past.
+ *
+ * `verify` itself attaching, rather than needing the port at all, is the real fix and is #689's
+ * first bullet — not this change.
  */
 export function portBusyMessage(port: number): string {
   return (
     `reticle verify needs port ${String(port)} — the port your app dials — and a Reticle daemon is ` +
     'already listening on it. It did not start a second one.\n\n' +
-    '  • If you have the Reticle tools, ask the daemon that is already running instead: ' +
+    '  This is the NORMAL state after a working install, not a fault: the daemon your MCP client ' +
+    'started owns that port.\n\n' +
+    `  • Drive the app through the daemon that is already there — this needs no tools and stops ` +
+    `nothing: npx @reticlehq/server drive <url>\n` +
+    '  • If your client HAS the Reticle tools, ask that daemon directly: ' +
     'reticle_run { tool: "reticle_verify", args: { action: "change", files: ["..."] } }\n' +
-    `  • Or stop it and re-run: npx @reticlehq/server stop --port ${String(port)}\n` +
     `  • Or run both on another port, if your app is configured for it: RETICLE_PORT=<port> ` +
-    'npx @reticlehq/server verify <url>'
+    'npx @reticlehq/server verify <url>\n' +
+    `  • Stopping the daemon (npx @reticlehq/server stop --port ${String(port)}) works, but it cuts ` +
+    "your agent's MCP link and the proxy usually respawns a daemon into the gap before verify can " +
+    'bind — prefer one of the above.'
   );
 }
 

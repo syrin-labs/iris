@@ -39,18 +39,9 @@ import {
   RETICLE_MD_PATH,
   CURSOR_RULE_PATH,
 } from './agent-rules.js';
-import {
-  viteSteps,
-  nextSteps,
-  craSteps,
-  svelteKitSteps,
-  nuxtSteps,
-  astroSteps,
-  cspStep,
-  VITE_PLUGIN_DETAIL,
-} from './plan-framework.js';
+import { cspStep, frameworkSteps } from './plan-framework.js';
 import { join } from 'node:path';
-import { htmlManual, reticleConfigContent, unverifiedUiLibraryNote } from './snippets.js';
+import { reticleConfigContent, unverifiedUiLibraryNote } from './snippets.js';
 import { configWithInstallSource, declaredInstallSource } from '../telemetry/install-source.js';
 import { existingConfigProblem, projectIdOf, RETICLE_CONFIG_FILE } from './existing-config.js';
 
@@ -116,7 +107,10 @@ export function frameworkPackages(
     case Framework.NEXT:
       // Next is React by construction, so the detection cannot disagree in a way worth honouring.
       return [RETICLE_REACT_KIT, RETICLE_NEXT_PLUGIN];
+    // React Router framework mode is a Vite app that renders React, so the kit and the plugin are
+    // both right for it too — only the connect INJECTION differs, and that is the plan's business.
     case Framework.VITE:
+    case Framework.REACT_ROUTER:
     case Framework.SVELTEKIT:
       // SvelteKit builds on Vite; until a dedicated Svelte kit exists it uses the Vite build plugin.
       // The build plugin stamps `data-reticle-source` regardless of UI library, so a Vue or Svelte
@@ -283,6 +277,8 @@ export interface PlanInput {
   viteDevModuleExists?: boolean | undefined;
   /** Whether src/hooks.client.ts already exists (SvelteKit idempotency). */
   svelteKitHooksExists?: boolean;
+  /** Whether app/entry.client.tsx already exists — it decides which React Router recipe to print. */
+  reactRouterEntryExists?: boolean;
   /** CRA's bundled entry (src/index.tsx or .js) — where the connect import has to go. */
   craEntry?: { path: string; source: string } | null;
   /** Existing .env.development.local, so an unrelated variable in it survives. */
@@ -966,29 +962,6 @@ export function buildPlan(input: PlanInput): Plan {
     installStep(input),
     ...reticleConfigSteps(input),
   ];
-  if (input.detection.framework === Framework.VITE) {
-    steps.push(...viteSteps(input));
-  } else if (input.detection.framework === Framework.NEXT) {
-    steps.push(...nextSteps(input));
-  } else if (input.detection.framework === Framework.ASTRO) {
-    steps.push(...astroSteps(input));
-  } else if (input.detection.framework === Framework.CRA) {
-    steps.push(...craSteps(input));
-  } else if (input.detection.framework === Framework.NUXT) {
-    steps.push(...nuxtSteps(input));
-  } else if (input.detection.framework === Framework.SVELTEKIT) {
-    steps.push(...svelteKitSteps(input));
-    // The Vite plugin as well as the client hook. `init` already INSTALLS @reticlehq/vite-plugin for
-    // SvelteKit and then never wired it into the config, so it sat in package.json doing nothing —
-    // which is why a SvelteKit app connected fine and every verdict came back with no file:line.
-    steps.push(...viteSteps(input, VITE_PLUGIN_DETAIL.SVELTEKIT));
-  } else {
-    steps.push({
-      title: 'Connect snippet',
-      target: 'index.html',
-      status: StepStatus.MANUAL,
-      detail: htmlManual(input.options.port, input.options.projectId, input.pairingToken),
-    });
-  }
+  steps.push(...frameworkSteps(input));
   return { framework: input.detection.framework, uiLibrary: input.detection.uiLibrary, steps };
 }

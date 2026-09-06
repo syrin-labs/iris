@@ -310,9 +310,9 @@ reticle_session {action:"review"}({ sessionId })
 
 Each pending mark carries the human note, the element label, the source **`file:line`** (when the framework stamped one), and a ready-to-act `fix` hint. Open the file, apply the fix, then `reticle_session {action:"review"}({ resolve: "m1" })`. The human watching the panel sees **"✓ fixed: …"** land. Reading never consumes a mark, so you can list → fix → verify → resolve. `reticle_sessions` also reports `pendingMarks` so you notice flagged bugs during normal orientation.
 
-### `reticle_network_mock`: stub the network for error-state testing (driven mode)
+### `reticle_network_mock`: stub the network for error-state testing
 
-On a page Reticle drives (`reticle drive`), make a request return a 500, force it offline, or delay it, so testing error/edge states is one declared rule, no backend changes:
+On a page Reticle drives (`reticle drive`) or a leased Playwright tab (`reticle_lease acquire`), make a request return a 500, force it offline, or delay it, so testing error/edge states is one declared rule, no backend changes:
 
 ```
 reticle_network_mock({ mocks: [{ urlContains: "/api/pay", method: "POST", status: 500 }] })
@@ -321,7 +321,7 @@ reticle_network_mock({ mocks: [{ urlContains: "/api/feed", abort: true }] })   /
 reticle_network_mock({ clear: true }) // turn mocking off
 ```
 
-First matching rule wins (`urlContains` + optional case-insensitive `method`). Needs a driven browser; without one it returns a `recommendation` pointing at `reticle drive`.
+First matching rule wins (`urlContains` + optional case-insensitive `method`). Needs a driven or leased browser; without one it returns a `recommendation` pointing at `reticle drive`.
 
 ### `reticle_viewport`: reproducible visual baselines (driven mode)
 

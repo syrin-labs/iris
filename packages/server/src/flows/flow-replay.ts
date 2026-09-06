@@ -12,6 +12,7 @@ import {
   type FlowFile,
   type FlowStep,
   type FlowStepResult,
+  type FlowExpect,
   type ReticleEvent,
   type QueryEmptyHint,
   PredicateKind,
@@ -193,6 +194,27 @@ export function testidDrift(value: string, hint: QueryEmptyHint | undefined): Dr
   const drift: Drift = {
     reasonKind: DriftReason.TESTID_NOT_FOUND,
     reason: `testid "${value}" not found`,
+    anchor: value,
+    nearest: nearestTestid(value, present),
+  };
+  if (nearestIsAmbiguous(value, present)) drift.ambiguous = true;
+  return drift;
+}
+
+/**
+ * Build the drift for a step whose `expect.element` testid was absent after the action ran.
+ *
+ * Deliberately not `testidDrift`: that one means "this step's anchor is gone", and reusing it here
+ * put the assertion's target in the result's `anchor` field — the field documented as the value the
+ * step is bound to. A caller then reads `testid_not_found` naming something that was never the
+ * step's locator and goes hunting for a rename, while the truth is the step ran and its
+ * consequence did not hold.
+ */
+export function expectElementDrift(value: string, hint: QueryEmptyHint | undefined): Drift {
+  const present = hint?.presentTestids ?? [];
+  const drift: Drift = {
+    reasonKind: DriftReason.EXPECT_ELEMENT_NOT_FOUND,
+    reason: `expect.element testid "${value}" not present after the action`,
     anchor: value,
     nearest: nearestTestid(value, present),
   };
@@ -408,9 +430,12 @@ async function runTestidStep(
       return {
         step: index,
         tool: step.tool,
-        anchor: expectTestid,
+        // The step's OWN anchor, not the expectation's target. Replay stops at the first drift, so
+        // this result is the only thing the caller sees about why the run ended — naming the
+        // assertion here reads as "step N's locator drifted" and hides that the action did run.
+        anchor: value,
         ok: false,
-        drift: testidDrift(expectTestid, expectRefs.hint),
+        drift: expectElementDrift(expectTestid, expectRefs.hint),
       };
     }
   }
@@ -439,10 +464,13 @@ async function assertStepExpect(
   timeoutMs: number,
   since: number,
 ): Promise<Drift | undefined> {
-  // `element` is deliberately dropped: the step runner already asserts expect.element.testid against
-  // the live DOM before we get here, and re-asserting it through the predicate engine would be a
-  // second round trip for the same fact.
-  const { element: _element, ...consequences } = expect;
+  // A testid is already asserted against the live DOM by the step runner. A role/name locator is
+  // not that path — stripping every element made a recorded `until` by button name a no-op, so a
+  // flow that proved the control at capture time could not go red when it was gone.
+  const consequences: FlowExpect = { ...expect };
+  if (undefined !== consequences.element?.testid) {
+    delete consequences.element;
+  }
   const predicate = successToPredicate(consequences, dynamic);
   if (predicate === undefined) return undefined;
   const verdict = await waitForSignal(session, predicate, timeoutMs, since);
@@ -464,6 +492,9 @@ function expectLabel(expect: NonNullable<FlowStep['expect']>): string {
   if (expect.net !== undefined) return `net:${expect.net.urlContains ?? expect.net.method ?? '*'}`;
   if (expect.state !== undefined) return `state:${expect.state.path}`;
   if (expect.console !== undefined) return `console:${expect.console.level ?? '*'}`;
+  if (undefined !== expect.element) {
+    return expect.element.testid ?? expect.element.name ?? expect.element.role ?? 'element';
+  }
   return 'expect';
 }
 

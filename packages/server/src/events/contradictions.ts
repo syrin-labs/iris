@@ -427,6 +427,42 @@ function splitForeignTraffic(
  * observation in the window predates the edit. One post-edit observation and the agent is already
  * looking at the code it wrote, so the label would be noise.
  */
+/**
+ * Below this, repeated writes are a BURST, whatever their spacing.
+ *
+ * A double submit is two clicks, or one click and a re-render: milliseconds apart. Nothing a human
+ * or a StrictMode remount does lands on a quarter-second grid, so this is the floor under which
+ * regularity means nothing.
+ */
+const POLL_MIN_INTERVAL_MS = 250;
+
+/**
+ * How far a gap may sit from the median and still count as the same cadence.
+ *
+ * Loose on purpose: a real poll drifts under load, and a `setInterval` competing with a busy main
+ * thread is not metronomic. Tight enough that a burst followed by a late retry — the shape a double
+ * submit plus a user's second attempt makes — is not read as a rhythm.
+ */
+const POLL_JITTER_RATIO = 0.4;
+
+/**
+ * Is this the same write on a steady interval, rather than the same write twice?
+ *
+ * THREE samples minimum, and that is the load-bearing part: two writes give one gap, and a single
+ * gap cannot distinguish a cadence from a coincidence. Two writes stay a duplicate however far
+ * apart they are, which is the classic double submit and every case this rule was written for.
+ */
+function isSteadyCadence(times: readonly number[]): boolean {
+  if (times.length < 3) return false;
+  const ordered = [...times].sort((a, b) => a - b);
+  const gaps: number[] = [];
+  for (let i = 1; i < ordered.length; i += 1) gaps.push((ordered[i] ?? 0) - (ordered[i - 1] ?? 0));
+  const sorted = [...gaps].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+  if (median < POLL_MIN_INTERVAL_MS) return false;
+  return gaps.every((gap) => Math.abs(gap - median) <= median * POLL_JITTER_RATIO);
+}
+
 export function findContradictions(
   allEvents: readonly ReticleEvent[],
   options: ContradictionOptions = {},
@@ -780,7 +816,7 @@ function findWindowContradictions(
     const navigatedAt = events.find(
       (e) => EventType.ROUTE_CHANGE === e.type && e.t >= actionSince,
     )?.t;
-    const writeCounts = new Map<string, { label: string; count: number }>();
+    const writeTimes = new Map<string, { label: string; times: number[] }>();
     for (const event of events) {
       if (event.type !== EventType.NET_REQUEST || event.t < actionSince) continue;
       if (navigatedAt !== undefined && event.t >= navigatedAt) continue;
@@ -789,17 +825,22 @@ function findWindowContradictions(
       const label = `${call.method} ${call.url}`;
       const body = asString(event.data['requestBody']);
       const key = body === undefined || 0 === body.length ? label : `${label} ${body}`;
-      const entry = writeCounts.get(key) ?? { label, count: 0 };
-      entry.count += 1;
-      writeCounts.set(key, entry);
+      const entry = writeTimes.get(key) ?? { label, times: [] };
+      entry.times.push(event.t);
+      writeTimes.set(key, entry);
     }
-    for (const [, { label, count }] of writeCounts) {
-      if (count < 2) continue;
+    for (const [, { label, times }] of writeTimes) {
+      if (times.length < 2) continue;
+      // A steady cadence is a POLL, and a poll is not a double submit. An app that polls could not
+      // produce a verdict at all: a camera scan loop POSTing until it acquires a lock had every
+      // assertion that had already seen its consequence come back `unknown` behind writes that
+      // were the app working correctly (#673).
+      if (isSteadyCadence(times)) continue;
       found.push({
         kind: ContradictionKind.DUPLICATE_REQUEST,
         claim: 'one user action was performed',
-        counter: `the same write fired ${String(count)} times`,
-        detail: `${label} ×${String(count)}`,
+        counter: `the same write fired ${String(times.length)} times`,
+        detail: `${label} ×${String(times.length)}`,
       });
     }
   }

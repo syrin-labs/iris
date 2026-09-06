@@ -17,7 +17,7 @@ import { cspConnectSrcProblem, devCspAddition } from './csp-check.js';
 /** Read a project-relative file, or undefined when it is absent/unreadable. */
 type ReadFile = (relative: string) => string | undefined;
 
-export interface CspDiagnosis {
+interface CspDiagnosis {
   /** Which file to look at. */
   file: string;
   /** What is wrong, in one line. */

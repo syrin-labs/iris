@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LastAct } from './last-act.js';
-import { SessionState, UNSCRIPTABLE_TAB_RECOMMENDATION } from '@reticlehq/core';
+import { UNSCRIPTABLE_TAB_RECOMMENDATION } from '@reticlehq/core';
 import type { CommandResult } from '@reticlehq/core';
 import { TOOLS, type ToolDeps } from '../tools/tools.js';
 import { ReticleTool } from '../tools/tool-names.js';
@@ -11,6 +10,7 @@ import { FlowStore } from '../flows/flows.js';
 import { ProjectStore } from '../project/project-store.js';
 import { AnnotationStore } from '../flows/annotation-store.js';
 import type { Session, SessionInfo, SessionManager } from './session.js';
+import { createFakeSession } from './fake-session.js';
 
 const SESSION_URL = 'http://localhost:5173/app';
 
@@ -31,30 +31,17 @@ function fakeSession(throttled: boolean): Session {
         recommendation: UNSCRIPTABLE_TAB_RECOMMENDATION,
       }
     : { lastSeenMs: 0, throttled: false, focused: true };
-  const stub: Partial<Session> = {
-    id: 'demo',
-    url: SESSION_URL,
-    elapsed: () => 0,
-    recordAction: () => 'a1',
-    lastAct: new LastAct(),
-    beginAction: () => 'a1',
-    finishAction: () => undefined,
-    eventsSince: () => [],
-    queryEvents: () => Promise.resolve([]),
-    eventsInWindow: () => [],
-    onEvent: () => () => undefined,
-    command,
-    health: () => health,
-    bufferHealth: () => ({ total: 0, dropped: 0 }),
-    lostSince: () => false,
-    blindSpots: () => ({}),
-    throttled: () => throttled,
-    // Live-control: a clean active session — no pause short-circuit, no piggyback.
-    getState: () => SessionState.ACTIVE,
-    drainInbox: () => [],
-    inboxSize: () => 0,
-  };
-  return stub as Session;
+  const stub = createFakeSession(
+    {
+      elapsed: () => 0,
+      command,
+      health: () => health,
+      bufferHealth: () => ({ total: 0, dropped: 0 }),
+      throttled: () => throttled,
+    },
+    { url: SESSION_URL },
+  );
+  return stub;
 }
 
 function fakeDeps(throttled: boolean, listRows: SessionInfo[]): ToolDeps {

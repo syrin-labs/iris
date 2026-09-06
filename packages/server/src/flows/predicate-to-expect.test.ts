@@ -72,6 +72,12 @@ describe('predicateToExpect', () => {
     });
   });
 
+  it('carries an element assertion by role and name', () => {
+    expect(
+      predicateToExpect({ kind: 'element', query: { role: 'button', name: '0 Clicks' } }),
+    ).toEqual({ element: { role: 'button', name: '0 Clicks' } });
+  });
+
   it('carries a state assertion', () => {
     expect(predicateToExpect({ kind: 'state', path: 'cart.total', equals: 42 })).toEqual({
       state: { path: 'cart.total', equals: 42 },
@@ -169,7 +175,27 @@ describe('enforcedOnReplay', () => {
     expect(enforcedOnReplay({})).toBeUndefined();
   });
 
-  it('drops an element expectation with no testid — replay resolves by testid alone', () => {
-    expect(enforcedOnReplay({ element: { role: 'dialog' } })).toBeUndefined();
+  it('keeps an element expectation located by role and name — replay compiles those', () => {
+    // Dropping this was the hole that made a recorded `until: { kind:"element", query:{ role, name } }`
+    // vanish: successToPredicate has always compiled role/name, but this filter still required a
+    // testid, so the saved flow was assertion-free while the agent had already proved the control.
+    expect(enforcedOnReplay({ element: { role: 'button', name: '0 Clicks' } })).toEqual({
+      element: { role: 'button', name: '0 Clicks' },
+    });
+    expect(enforcedOnReplay({ element: { role: 'dialog' } })).toEqual({
+      element: { role: 'dialog' },
+    });
+  });
+
+  it('keeps a mixed net + role/name expectation, which is the recorded allOf shape', () => {
+    expect(
+      enforcedOnReplay({
+        net: { method: 'GET', urlContains: '/context', status: 200 },
+        element: { role: 'button', name: '0 Clicks' },
+      }),
+    ).toEqual({
+      net: { method: 'GET', urlContains: '/context', status: 200 },
+      element: { role: 'button', name: '0 Clicks' },
+    });
   });
 });

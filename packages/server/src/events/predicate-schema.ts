@@ -202,7 +202,7 @@ const RESIDUAL_CHECKS: Readonly<
   text: (element, want) => (element.text ?? element.name).includes(want),
 };
 
-export interface ResidualQueryChecks {
+interface ResidualQueryChecks {
   /** Dropped fields this side CAN check, as [field, wanted value] pairs. */
   checks: [string, string][];
   /** Dropped fields with no descriptor to check them against — refuse rather than ignore. */

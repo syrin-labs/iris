@@ -146,12 +146,12 @@ export interface ApprovalResult {
   readonly warn?: string;
 }
 
-export interface ApprovalWhere {
+interface ApprovalWhere {
   readonly home: string;
   readonly platform: keyof PlatformPaths;
 }
 
-export interface ApprovalOptions {
+interface ApprovalOptions {
   /**
    * Refuse any grant that would CREATE a file superseding an allowlist we cannot read.
    *

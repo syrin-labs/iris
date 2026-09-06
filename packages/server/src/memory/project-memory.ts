@@ -16,7 +16,7 @@ import { resolveProjectCloud } from '../cloud/cloud-config.js';
 import type { FileSystemPort } from '../project/fs-port.js';
 
 /** Named so a read from the tool surface is distinguishable from the CLI's and from replay's. */
-export const MCP_AGENT_ID = 'reticle-mcp';
+const MCP_AGENT_ID = 'reticle-mcp';
 
 /** Why a lookup returned nothing. Each one is a different thing for the agent to do next. */
 export const MemoryUnavailable = {
@@ -37,7 +37,7 @@ export interface KnownThing {
   subject: string;
 }
 
-export type ProjectMemoryResult =
+type ProjectMemoryResult =
   | { ok: true; subject: string | null; known: KnownThing[]; total: number }
   | { ok: false; reason: MemoryUnavailable };
 

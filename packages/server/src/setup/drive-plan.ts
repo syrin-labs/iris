@@ -7,7 +7,7 @@
  */
 
 /** What a driver needs to build its own invocation. */
-export interface DriveInvocation {
+interface DriveInvocation {
   /** The tools the drive may use, comma-separated, in Claude Code's spelling. */
   readonly tools: string;
   readonly budgetUsd: number;
@@ -147,7 +147,7 @@ export function readAssertionsGrade(text: string | undefined): string | undefine
 /** The only grade that makes a saved flow worth replaying. */
 export const ASSERTED = 'asserted';
 
-export interface EscalationInput {
+interface EscalationInput {
   readonly escalationEnabled: boolean;
   /** Set only when a faster model was chosen, since escalation means retrying without it. */
   readonly fasterModel: string | undefined;

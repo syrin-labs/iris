@@ -118,7 +118,7 @@ export function craEnvPatch(existing: string | null, token: string, url?: string
 }
 
 /** Options for the CRA connect module. */
-export interface CraDevModuleOptions {
+interface CraDevModuleOptions {
   /**
    * When false, emit a `.js`-shaped body (no `export {}`). Default true for callers that predate
    * the language branch.

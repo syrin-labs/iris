@@ -66,6 +66,21 @@ class FakeSession implements FlowReplaySession {
         result: this.queryScript(value),
       });
     }
+    if (name === ReticleCommand.MATCH) {
+      const query = asRecord(args['query']);
+      const key = asString(query['testid']) ?? asString(query['name']) ?? '';
+      const script = this.queryScript(key);
+      return Promise.resolve({
+        kind: 'command_result',
+        id: 'm',
+        ok: true,
+        result: {
+          matched: 0 < script.elements.length,
+          count: script.elements.length,
+          elements: script.elements,
+        },
+      });
+    }
     if (name === ReticleCommand.ACT) {
       const ref = asString(args['ref']) ?? '';
       this.acts.push({ ref, action: asString(args['action']) ?? '' });
@@ -498,6 +513,31 @@ describe('replayFlow — anchor re-resolution + legible drift', () => {
     expect(last?.ok).toBe(false);
     expect(last?.drift?.reasonKind).toBe(DriftReason.STATE_MISMATCH);
     expect(last?.drift?.reason).toContain('queued');
+  });
+
+  it('a recorded until by role and name that is absent drifts, instead of passing', async () => {
+    // The action testid resolves; the consequence is a control located by role+name that is gone.
+    // Dropping that expect at capture — and again at replay — made this step green.
+    const script = (key: string): QueryScript =>
+      'ship' === key ? { elements: [el('e-ship', 'ship')] } : { elements: [] };
+    const session = new FakeSession(script, []);
+    const step: FlowStep = {
+      ...testidStep('ship'),
+      expect: { element: { role: 'button', name: '0 Clicks' } },
+    };
+    const steps = await replayFlow(session, flow([step]), waitForPredicate, FAST);
+    expect(steps.at(-1)?.ok, 'the asserted control was not on the page').toBe(false);
+  });
+
+  it('a recorded until by role and name that is present holds', async () => {
+    const script = (key: string): QueryScript => ({ elements: [el(`e-${key}`, key)] });
+    const session = new FakeSession(script, []);
+    const step: FlowStep = {
+      ...testidStep('ship'),
+      expect: { element: { role: 'button', name: '0 Clicks' } },
+    };
+    const steps = await replayFlow(session, flow([step]), waitForPredicate, FAST);
+    expect(steps.at(-1)?.ok).toBe(true);
   });
 });
 

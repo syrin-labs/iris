@@ -187,7 +187,7 @@ export function describeAttachState(state: AttachState): string | undefined {
 }
 
 /** What `reticle status` reports about the client side of the install. */
-export interface AttachStatusFields {
+interface AttachStatusFields {
   mcpClient: AttachState;
   mcpClientAction?: string;
 }

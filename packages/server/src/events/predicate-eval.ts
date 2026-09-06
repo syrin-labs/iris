@@ -397,6 +397,36 @@ function unobservedChannelReason(
   );
 }
 
+/**
+ * Appended to a zero-match `net` negative whose window starts at SDK attach.
+ *
+ * Every event's `t` is stamped `performance.now() - #start`, where `#start` is taken when the SDK
+ * is constructed, so `t` is never negative and a window with `since === 0` begins AT attach — never
+ * before it. Whatever the page did between navigation start and attach left no event at all, so
+ * "no matching call" over such a window cannot be told apart from "the call was made while nothing
+ * was watching yet".
+ *
+ * The gap is routine rather than exotic: a `fetch` from an effect in a root provider, or a classic
+ * `<script>` at the end of `<body>`, fires before a deferred module script has run. Reported from
+ * the field, the verdict then read as proof the request was never made, and reporters went looking
+ * for the defect in code that was working — restarting dev servers and re-reading providers to
+ * establish the request was invisible rather than absent.
+ *
+ * Same argument as DOCUMENT_ONLY_SUFFIXES one axis over: that one is a channel Reticle does not
+ * watch, this is a stretch of TIME it was not yet watching.
+ *
+ * The grade is deliberately NOT downgraded to `inconclusive`. A missing API call is the finding this
+ * oracle exists to make, and it is the strongest grade available for the startup class — session
+ * restore, feature flags, bootstrap config — which is exactly the class that silently breaks on
+ * reload. Every window an action opens carries `since > 0` and is untouched. What changes is only
+ * what the negative CLAIMS: it stops asserting the request never happened, and names the assertion
+ * that can settle it, because the state such a request produces IS observable after attach.
+ */
+const PRE_ATTACH_CAVEAT =
+  ' — note that this window starts where the SDK attached, and requests made before that are never ' +
+  'captured, so a miss here cannot tell a call that was never made apart from one made before the ' +
+  'page connected; if the call is expected during startup, assert on the state it produces instead';
+
 export function evalNet(
   events: ReticleEvent[],
   p: Extract<Predicate, { kind: typeof PredicateKind.NET }>,
@@ -542,13 +572,20 @@ export function evalNet(
         assertion: 'net.count',
       };
     }
-    return evalExactCount({
+    const counted = evalExactCount({
       matched: matches.length,
       want: p.count,
       noun: 'network call(s)',
       filter: describeNetFilter(p),
       assertion: 'net.count',
     });
+    // Same blind head, second door: "saw 0" over a whole-session window is the same claim the
+    // presence branch makes, and just as unable to see a startup call. A `count: 0` assertion is
+    // left alone on purpose — it PASSES here, and turning that green into a non-pass is a grade
+    // change, not a wording one.
+    return 0 === matches.length && 0 === since && counted.failureReason !== undefined
+      ? { ...counted, failureReason: `${counted.failureReason}${PRE_ATTACH_CAVEAT}` }
+      : counted;
   }
   const hit = matches[0];
   if (hit === undefined && targetsUnobservedChannel(p) && !sawSubresources) {
@@ -566,7 +603,7 @@ export function evalNet(
     ? { pass: true, evidence: netEvidence(hit.data) }
     : {
         pass: false,
-        failureReason: `no network call matched ${JSON.stringify(p)}`,
+        failureReason: `no network call matched ${JSON.stringify(p)}${0 === since ? PRE_ATTACH_CAVEAT : ''}`,
         // Same reasoning as the signal miss: "no matching call" cannot be told apart from "the app
         // made no calls at all", and those need different fixes.
         observed: observedNetCalls(events, p.urlContains),

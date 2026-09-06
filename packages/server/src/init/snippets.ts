@@ -547,6 +547,110 @@ declare const __RETICLE_SDK_VERSION__: string | undefined;
 `;
 }
 
+/** The react-scripts major below which webpack cannot parse what @reticlehq/browser ships. */
+export const WEBPACK4_REACT_SCRIPTS_MAJOR = 5;
+
+/**
+ * What to do when the bundler cannot parse our SDK at all.
+ *
+ * `@reticlehq/browser` ships untranspiled optional chaining and logical assignment.
+ * react-scripts 4 runs webpack 4, whose parser predates both, AND excludes `node_modules` from
+ * Babel -- so the build dies inside our `dist/` with a syntax error pointing at a file the user did
+ * not write, before any session can exist (#680).
+ *
+ * Nothing else in `init` can catch this. Every check we run passes: the package installs, the entry
+ * import is written, the token is inlined. The app simply does not compile, and the error names
+ * `@reticlehq/browser/dist/index.js` rather than anything about Reticle.
+ *
+ * Two ways out, in the order a reader should consider them, because the second is the one that does
+ * not require editing a bundler config to run a dev-only tool.
+ */
+export function webpack4TranspileNote(reactScriptsMajor: number): string {
+  return `react-scripts ${String(reactScriptsMajor)} runs webpack 4, whose parser predates optional
+  chaining and logical assignment. @reticlehq/browser ships both untranspiled, and react-scripts
+  excludes node_modules from Babel — so \`npm start\` fails with a syntax error inside
+  @reticlehq/browser/dist/index.js and no session is ever possible. Nothing else in this report can
+  see that: the install, the import and the token are all correct.
+
+  Either upgrade to react-scripts 5 (webpack 5 parses both natively, and needs no change on your
+  side), or transpile this one package. With react-app-rewired or craco, add it to Babel's include:
+
+      // config-overrides.js (react-app-rewired)
+      const path = require('path');
+      module.exports = (config) => {
+        const rule = config.module.rules.find((r) => Array.isArray(r.oneOf))
+          .oneOf.find((r) => String(r.test).includes('js') && r.include);
+        rule.include = [rule.include, path.resolve('node_modules/@reticlehq/browser')];
+        return config;
+      };
+
+  Scope it to @reticlehq/browser and nothing else: widening Babel across node_modules costs every
+  rebuild in the project, for a dev-only dependency.`;
+}
+
+/** React Router's client-entry override point, in framework mode. */
+export const REACT_ROUTER_ENTRY_PATH = 'app/entry.client.tsx';
+
+/**
+ * The React Router framework-mode recipe, printed rather than written.
+ *
+ * `app/entry.client.tsx` is an OVERRIDE: React Router supplies a default client entry, and the file
+ * only exists once an app opts out of it. Generating one containing our import and nothing else
+ * would replace that default with a file that never hydrates — an app that connected to Reticle and
+ * rendered nothing. Same judgement `astroSteps` already makes about a layout: a half-written entry
+ * is worse than a documented manual step.
+ *
+ * Two shapes, because the file may or may not be there, and the answer is different:
+ *   - it exists  -> add one line to it, and only that line
+ *   - it does not -> create it from React Router's own default, plus that line
+ */
+export function reactRouterManual(
+  port: number | undefined,
+  projectId?: string,
+  entryExists = false,
+): string {
+  const connect = connectArg(port, projectId);
+  const line = `if (import.meta.env.DEV) void import('/@reticle-connect');`;
+  const head = `React Router framework mode renders HTML through its own request handler, so the Vite
+  plugin's index.html injection never fires and the connect script never reaches the page. The
+  plugin is still required — it stamps data-reticle-source, which is what puts file:line on every
+  verdict — but connect() has to come from the client entry.`;
+  if (entryExists) {
+    return `${head}
+
+  Add this to the TOP of ${REACT_ROUTER_ENTRY_PATH}, above the hydration call:
+
+      ${line}
+
+  The import is the module @reticlehq/vite-plugin serves; it carries the port, the project id and
+  this machine's pairing token already, so there is nothing to fill in${0 === connect.length ? '' : ` (connect args: ${connect})`}.`;
+  }
+  return `${head}
+
+  ${REACT_ROUTER_ENTRY_PATH} does not exist yet. It is an OVERRIDE of React Router's default client
+  entry, so it has to hydrate as well as connect — a file containing only the import would replace
+  the default with one that never hydrates. Create it with React Router's own default plus the
+  import:
+
+      import { HydratedRouter } from 'react-router/dom';
+      import { StrictMode, startTransition } from 'react';
+      import { hydrateRoot } from 'react-dom/client';
+
+      ${line}
+
+      startTransition(() => {
+        hydrateRoot(
+          document,
+          <StrictMode>
+            <HydratedRouter />
+          </StrictMode>,
+        );
+      });
+
+  Check it against your React Router version's documented default entry before saving — this is the
+  v7 shape, and it is the half that must be right whether or not Reticle is in it.`;
+}
+
 /** Where a Nuxt dev-only client plugin belongs. `.client` keeps it out of SSR; Nuxt auto-registers it. */
 export const NUXT_PLUGIN_PATH = 'app/plugins/reticle.client.ts';
 

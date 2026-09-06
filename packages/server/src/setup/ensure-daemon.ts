@@ -19,7 +19,7 @@ import { waitForDaemon, probeDaemon } from '../mcp/mcp-proxy.js';
 import { daemonSpawnArgs } from '../cli/daemon-start-options.js';
 import { fetchStatus } from '../cli/cli-launch.js';
 
-export interface EnsureDaemonDeps {
+interface EnsureDaemonDeps {
   readonly usable: (port: number) => Promise<boolean>;
   readonly spawn: (port: number) => boolean;
   readonly waitReady: (port: number) => Promise<unknown>;

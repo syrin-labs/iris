@@ -32,7 +32,7 @@ import {
 } from './cloud-kit.js';
 
 /** Run `reticle link` with these arguments. Injected; see the note at the top of this file. */
-export type Linker = (argv: readonly string[]) => Promise<number>;
+type Linker = (argv: readonly string[]) => Promise<number>;
 
 const LoginSchema = z.object({
   token: z.string(),

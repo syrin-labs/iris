@@ -11,7 +11,7 @@
 import { InstrumentationGapKind } from '@reticlehq/core';
 
 /** The three core kinds a located proposal can close. Other kinds are verdict-side, not insert-side. */
-export type LocatableGapKind =
+type LocatableGapKind =
   | typeof InstrumentationGapKind.NO_SIGNAL_ON_MUTATION
   | typeof InstrumentationGapKind.NO_STORE_REGISTERED
   | typeof InstrumentationGapKind.MISSING_TESTID;

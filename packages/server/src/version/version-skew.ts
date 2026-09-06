@@ -163,7 +163,7 @@ export function daemonFix(
  * and the agent spends turns re-acquiring leases and asking a human to sign into a fresh profile
  * (#688). Matched only so we can replace it with the skew sentence already on the session.
  */
-export const PLAYWRIGHT_CLOSED_ERROR =
+const PLAYWRIGHT_CLOSED_ERROR =
   /target (?:page|context|browser) has been closed|browser has been closed|browser has disconnected/i;
 
 /** True when `error` is Playwright's closed-target class — not proof the tab is gone. */

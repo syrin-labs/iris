@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs';
 import { reticleDepsOf } from '../update/reticle-deps.js';
 
 /** What a project contributes to the remedy, when we were able to read one. */
-export interface SdkFixContext {
+interface SdkFixContext {
   /** `@reticlehq/*` packages declared in package.json. Empty / omitted means none yet. */
   packages?: readonly string[];
   packageManager: PackageManagerName;

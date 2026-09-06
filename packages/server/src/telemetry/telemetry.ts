@@ -98,9 +98,9 @@ const SEND_TIMEOUT_MS = 2000;
  * short-lived CLI process pays cold DNS and a cold route on top, which is exactly the case that
  * failed in the field and then succeeded on retry from a warmer process.
  */
-export const FEEDBACK_TIMEOUT_MS = 15_000;
-export const FEEDBACK_RETRIES = 1;
-export const FEEDBACK_RETRY_BACKOFF_MS = 750;
+const FEEDBACK_TIMEOUT_MS = 15_000;
+const FEEDBACK_RETRIES = 1;
+const FEEDBACK_RETRY_BACKOFF_MS = 750;
 
 /**
  * The sender a `detach: true` emit runs in a disowned child (argv: [url, body]) — an in-process fetch

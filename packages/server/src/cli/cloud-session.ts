@@ -11,7 +11,7 @@ import { join } from 'node:path';
 /** Where per-host sessions live under the reticle home directory. */
 export const SESSIONS_DIR = 'sessions';
 
-export const SessionSchema = z.object({
+const SessionSchema = z.object({
   url: z.string(),
   token: z.string(),
   orgName: z.string(),

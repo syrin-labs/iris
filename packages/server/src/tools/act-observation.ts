@@ -15,7 +15,7 @@ import type { Session } from '../session/session.js';
 import { awaitDocumentSuccessor, type SuccessorRegistry } from '../session/session-successor.js';
 import type { EvalResult } from '../events/predicate-eval.js';
 
-export interface FollowSuccessor {
+interface FollowSuccessor {
   sessions: SuccessorRegistry;
   session: Session;
   verdict: EvalResult;
@@ -27,7 +27,7 @@ export interface FollowSuccessor {
   reevaluate: (next: Session, budgetMs: number) => Promise<EvalResult>;
 }
 
-export interface FollowedOutcome {
+interface FollowedOutcome {
   session: Session;
   verdict: EvalResult;
   /** True when the wait moved to a new document, so the caller must reset its event cursor. */

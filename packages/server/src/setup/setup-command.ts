@@ -36,7 +36,7 @@ import {
 /** The capabilities file init scaffolds, in the order a project is likely to have it. */
 const CAPABILITY_FILES = ['reticle-dev.tsx', 'reticle-dev.ts', 'reticle-dev.jsx', 'reticle-dev.js'];
 
-export interface SetupCommandInput extends Omit<SetupInput, 'shape'> {
+interface SetupCommandInput extends Omit<SetupInput, 'shape'> {
   /** Where setup was invoked, which is not the app directory in a monorepo. */
   readonly invokedAt: string;
   readonly bridgePort: number;
@@ -105,7 +105,7 @@ export function registerOtherAgents(print: (line: string) => void): void {
   }
 }
 
-export interface SetupCommandResult extends SetupOutcome {
+interface SetupCommandResult extends SetupOutcome {
   /** Set when a weak flow was re-recorded with the stronger model. */
   readonly escalated?: { readonly from: string; readonly to: string } | undefined;
   readonly driveTurns?: number | undefined;

@@ -21,7 +21,7 @@
  */
 
 /** The structured cause of a crash, when the error carries one. Every field is optional. */
-export interface CrashCause {
+interface CrashCause {
   syscall?: string;
   errno?: string;
   loopback?: boolean;

@@ -17,7 +17,7 @@ import type { FileSystemPort } from './fs-port.js';
 /** POSIX form, so a `\`-joined path and a `/`-joined one are the same key. */
 const norm = (path: string): string => path.split('\\').join('/');
 
-export interface MemoryFs {
+interface MemoryFs {
   fs: FileSystemPort;
   /** Every file written, keyed by normalised absolute path. */
   written: Map<string, string>;

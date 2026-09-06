@@ -127,12 +127,12 @@ const FIELD_CAPS: Record<string, number> = {
 };
 
 /** What the author supplies; the environment context is detected, never asked for. */
-export type FeedbackInput = Pick<
+type FeedbackInput = Pick<
   Feedback,
   'source' | 'kind' | 'text' | 'trace' | 'rating' | 'need' | 'impact' | 'currentApproach' | 'model'
 >;
 
-export interface FeedbackReceipt {
+interface FeedbackReceipt {
   /**
    * DELIVERY confirmed. Only ever true when the send was awaited and the endpoint accepted it —
    * never as an optimistic stand-in for "we handed it to the emitter". That distinction is the whole

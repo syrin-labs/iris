@@ -150,7 +150,7 @@ export async function actCommand(
  */
 const ACTION_TYPE_VALUES = Object.values(ActionType);
 const ACTION_TYPE_LIST = ACTION_TYPE_VALUES.join(' | ');
-export const actionTypeEnum = z.enum(ACTION_TYPE_VALUES as [string, ...string[]]);
+const actionTypeEnum = z.enum(ACTION_TYPE_VALUES as [string, ...string[]]);
 
 export const ACT_TOOLS: ToolDef[] = [
   {

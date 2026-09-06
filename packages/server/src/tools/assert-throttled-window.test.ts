@@ -12,23 +12,14 @@
  * starvation in its own failureReason; a healthy tab's failure says exactly what it said before.
  */
 import { describe, expect, it } from 'vitest';
-import { SessionState } from '@reticlehq/core';
-import { LastAct } from '../session/last-act.js';
 import { TOOLS, type ToolDef, type ToolDeps } from './tools.js';
 import { ReticleTool } from './tool-names.js';
-import type { Session, SessionManager } from '../session/session.js';
+import type { SessionManager } from '../session/session.js';
+import { createFakeSession } from '../session/fake-session.js';
 
 function depsWithThrottle(throttled: boolean): ToolDeps {
-  const session: Partial<Session> = {
-    id: 'demo',
-    recordAction: () => 'a1',
-    lastAct: new LastAct(),
+  const session = createFakeSession({
     bufferHealth: () => ({ total: 4, dropped: 0 }),
-    lostSince: () => false,
-    blindSpots: () => ({}),
-    eventsSince: () => [],
-    queryEvents: () => Promise.resolve([]),
-    onEvent: () => () => {},
     elapsed: () => 1000,
     throttled: () => throttled,
     health: () => ({
@@ -37,10 +28,8 @@ function depsWithThrottle(throttled: boolean): ToolDeps {
       focused: !throttled,
       ...(throttled ? { recommendation: 'refocus it' } : {}),
     }),
-    getState: () => SessionState.ACTIVE,
-    drainInbox: () => [],
-  };
-  const sessions: Partial<SessionManager> = { resolve: () => session as Session };
+  });
+  const sessions: Partial<SessionManager> = { resolve: () => session };
   return { sessions: sessions as SessionManager } as unknown as ToolDeps;
 }
 

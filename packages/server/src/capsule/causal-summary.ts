@@ -76,7 +76,7 @@ export interface CausalSummary {
 }
 
 /** What only the SESSION knows — level facts the event window cannot contain. See `stateUnwatched`. */
-export interface SummaryContext {
+interface SummaryContext {
   stateUnwatched?: boolean;
 }
 

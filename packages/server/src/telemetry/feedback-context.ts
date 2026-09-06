@@ -24,7 +24,7 @@ import { findWorkspaceApps } from '../init/workspace-apps.js';
 import type { InitIo } from '../init/run.js';
 
 /** The context fields — the whole `Feedback` shape minus what the author supplies. */
-export type FeedbackContext = Pick<
+type FeedbackContext = Pick<
   Feedback,
   'stack' | 'stackMajor' | 'runtime' | 'engine' | 'driver' | 'client' | 'clientVersion' | 'mcpScope'
 >;

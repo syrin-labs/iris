@@ -24,7 +24,7 @@ import { collectEnv, DEFAULT_DRIVE_BUDGET_USD, DEFAULT_PHASE_TIMEOUT_MS } from '
 const POLL_MS = 250;
 
 /** Just enough of the parsed command to decide and run. */
-export interface InitRuntimeArgs {
+interface InitRuntimeArgs {
   readonly port: number | undefined;
   readonly dryRun: boolean;
   readonly filesOnly?: boolean | undefined;
@@ -57,7 +57,7 @@ function wantsAgents(parsed: InitRuntimeArgs): boolean {
   return false !== parsed.agents && false !== parsed.mcp;
 }
 
-export interface RuntimePrintIo {
+interface RuntimePrintIo {
   readonly print: (line: string) => void;
 }
 

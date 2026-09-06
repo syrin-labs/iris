@@ -37,6 +37,25 @@ export interface PooledPage {
    * reports dispatched/settled while the styles never ran.
    */
   hover?(x: number, y: number): Promise<void>;
+  /**
+   * Install (or clear) network mocks on this page. OPTIONAL: a fake that does not implement it
+   * makes `reticle_network_mock` refuse rather than claiming it stubbed a request it cannot intercept.
+   */
+  installMocks?(rules: readonly PooledMockRule[]): Promise<void>;
+}
+
+/**
+ * One interception rule the pool can install. Same fields as the drive-path mock rule, kept here so
+ * the pool does not import Playwright.
+ */
+export interface PooledMockRule {
+  urlContains: string;
+  method?: string;
+  status?: number;
+  body?: string;
+  contentType?: string;
+  delayMs?: number;
+  abort?: boolean;
 }
 
 /** An isolated browsing context (cookies/storage). Real Playwright `BrowserContext` satisfies this. */
@@ -291,6 +310,25 @@ export class BrowserPool {
     this.touch(sessionId);
     try {
       await lease.page.hover(x, y);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Install network mocks on a leased page, or false when this session is not a lease or cannot
+   * intercept. Same optional-capability contract as screenshotLease: absence must read as "could not
+   * mock", never as a stub that applied to nothing.
+   *
+   * Touches the lease like any other tool call, so mocking keeps it alive.
+   */
+  async setMocksLease(sessionId: string, rules: readonly PooledMockRule[]): Promise<boolean> {
+    const lease = this.#active.get(sessionId);
+    if (lease === undefined || lease.page.installMocks === undefined) return false;
+    this.touch(sessionId);
+    try {
+      await lease.page.installMocks(rules);
       return true;
     } catch {
       return false;

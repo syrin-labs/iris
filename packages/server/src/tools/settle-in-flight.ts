@@ -142,7 +142,7 @@ export function repeatedRequestLabels(
     .map(([key, count]) => `${key} ×${String(count)}`);
 }
 
-export interface SettleResult {
+interface SettleResult {
   /** True when nothing this window started is still outstanding. */
   settled: boolean;
   /** What was still open when the wait ended — empty when `settled`. */
