@@ -9,6 +9,7 @@ raw/*
 !raw/suite-rre.json
 !raw/leak-stress.json
 !raw/stress-tiers.json
+!raw/tool-profile.baseline.json
 logs/
 # Ignore run artifacts, but keep the two SVGs embedded in docs/benchmarks.md so the flagship doc
 # renders on a fresh clone (they were previously broken image links).
