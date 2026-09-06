@@ -85,6 +85,17 @@ const absentElementInScope = {
   timeout_ms: 0,
 };
 
+const notWrappedAbsentElement = {
+  predicate: {
+    kind: 'not',
+    predicate: {
+      kind: 'element',
+      query: { by: 'testid', value: 'shipment-row' },
+    },
+  },
+  timeout_ms: 0,
+};
+
 describe('reticle_assert discloses partial coverage', () => {
   it('a PASSING assertion on a page with a cross-origin iframe reports partial coverage', async () => {
     const result = (await tool(ReticleTool.ASSERT).handler(
@@ -134,6 +145,17 @@ describe('reticle_assert discloses partial coverage', () => {
     const result = (await tool(ReticleTool.ASSERT).handler(
       depsWithBlindSpots({ 'closed-shadow-root': 1 }),
       absentElement,
+    )) as Record<string, unknown>;
+
+    expect(result['pass']).toBe(true);
+    expect(result['verified']).toBe(Verified.UNKNOWN);
+    expect(result['verifiedReason']).toBe(VerifiedReason.ABSENCE_BLIND_SPOT);
+  });
+
+  it('downgrades a not-wrapped element absence when virtualized rows are unobserved', async () => {
+    const result = (await tool(ReticleTool.ASSERT).handler(
+      depsWithBlindSpots({ 'virtualized-unmounted': 1 }),
+      notWrappedAbsentElement,
     )) as Record<string, unknown>;
 
     expect(result['pass']).toBe(true);

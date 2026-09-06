@@ -5,6 +5,7 @@ import {
   buildCoverageStatement,
   blindSpotsFromEvents,
   spotsForRuntime,
+  absenceBlindSpotNote,
 } from './blind-spots.js';
 
 function ev(type: EventType, data: Record<string, unknown>, t = 1): ReticleEvent {
@@ -110,5 +111,66 @@ describe('blindSpotsFromEvents', () => {
     const spots = blindSpotsFromEvents([ev(EventType.NET_REQUEST, {})]);
     expect(spots).toEqual([]);
     expect(buildCoverageStatement(spots).coverage).toBe('full');
+  });
+});
+
+describe('absenceBlindSpotNote', () => {
+  type AbsencePred = Parameters<typeof absenceBlindSpotNote>[0];
+  const virtualizedSpot = [{ kind: BlindSpotKind.VIRTUALIZED_UNMOUNTED, count: 5 }];
+  const crossOriginSpot = [{ kind: BlindSpotKind.CROSS_ORIGIN_IFRAME, count: 1 }];
+
+  it('returns a note for a direct element absence with a hiding blind spot', () => {
+    const pred: AbsencePred = { kind: 'element', absent: true };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toContain('cannot prove absence');
+  });
+
+  it('returns undefined for a non-absence element predicate', () => {
+    const pred: AbsencePred = { kind: 'element' };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('unwraps a not-wrapped element and still detects the blind spot', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'element' } };
+    const note = absenceBlindSpotNote(pred, virtualizedSpot);
+    expect(note).toContain('cannot prove absence');
+  });
+
+  it('returns undefined for a not-wrapped non-element predicate', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'signal' } };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('returns undefined when no relevant blind spot is present', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'element' } };
+    expect(absenceBlindSpotNote(pred, [])).toBeUndefined();
+  });
+
+  it('not(element { absent: true }) is a double negative — presence — no note', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'element', absent: true } };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('scoped cross-origin check works through not-unwrap', () => {
+    const pred: AbsencePred = {
+      kind: 'not',
+      predicate: { kind: 'element', query: { scope: '#iframe-region' } },
+    };
+    expect(absenceBlindSpotNote(pred, crossOriginSpot)).toContain('cannot prove absence');
+  });
+
+  // Suggested by Chirag6722 in #815 — pins the recursion-depth decision so the next reader does
+  // not re-open the question #774 raised about how deep to recurse.
+  it('not(not(element)) is itself a presence claim — silence is correct, not a gap', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'not' } };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('both spellings produce the identical note, not merely a non-empty one', () => {
+    const direct: AbsencePred = { kind: 'element', absent: true };
+    const wrapped: AbsencePred = { kind: 'not', predicate: { kind: 'element' } };
+    const directNote = absenceBlindSpotNote(direct, virtualizedSpot);
+    const wrappedNote = absenceBlindSpotNote(wrapped, virtualizedSpot);
+    expect(directNote).toBeDefined();
+    expect(wrappedNote).toBe(directNote);
   });
 });

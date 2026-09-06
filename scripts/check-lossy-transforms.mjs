@@ -156,6 +156,23 @@ export const READ_PATH = Object.freeze({
       'eviction is counted and surfaced by bufferHealth() as { total, dropped }, which session health and act summaries read to mark a window truncated',
     ],
   },
+  'packages/server/src/input/network-detail.ts': {
+    NetworkDetail: [Declaration.NONE, 'the payload type'],
+    ResponseLike: [Declaration.NONE, 'type: the Playwright surface the attachment reads'],
+    PageLike: [Declaration.NONE, 'type: the Playwright surface the attachment reads'],
+    buildNetworkDetail: [
+      Declaration.REPORT,
+      'bounds the request body it takes raw off the network stack and returns requestBodyTruncated beside it, so a capped payload cannot be read as a whole one; redaction inside that body and the headers replaces values in place with REDACTED_VALUE, an in-band marker',
+    ],
+    mergeNetworkDetail: [
+      Declaration.REPORT,
+      'the wire body is the one field that REPLACES the in-page one rather than filling a gap, so both caveats ride with it: requestBodyTruncated follows the body that won, and requestBodyDivergedFromPage states that the two disagreed',
+    ],
+    attachNetworkDetail: [
+      Declaration.SILENT,
+      'a response whose headers() rejects is dropped with nothing said. It rejects when the page or CDP session is closing, which is exactly when responses race teardown, and the alternative on the stdio start() path is an unhandled rejection that takes down the MCP server. A real gap: a drive that navigates away mid-flight loses those details and the window does not say so',
+    ],
+  },
   'packages/core/src/toon.ts': {
     ToonElement: [Declaration.NONE, 'type'],
     toToon: [
@@ -186,6 +203,7 @@ export const CONFORMANCE_TESTS = Object.freeze([
   'packages/browser/src/security/serialization.test.ts',
   'packages/browser/src/transport/transport.overflow-marker.test.ts',
   'packages/server/src/events/ring-buffer.test.ts',
+  'packages/server/src/input/network-detail.lossy-conformance.test.ts',
 ]);
 
 const IDENTIFIER = '[A-Za-z_$][\\w$]*';
