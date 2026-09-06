@@ -21,7 +21,7 @@ import { buildHonestyBlock } from '../honesty/honesty.js';
 import { hasAcceptedWrite } from '../honesty/accepted-write.js';
 import { unreadWriteLabels } from '../honesty/unread-outcome.js';
 import { decideVerified } from '../honesty/verified.js';
-import { describeWaitTarget } from '../honesty/unsettled.js';
+import { describeWaitTarget, namedNetIsInFlight } from '../honesty/unsettled.js';
 import { inFlightRequestLabels, repeatedRequestLabels } from './settle-in-flight.js';
 import { gradeOfPredicate } from './assert-grade.js';
 import { assertSource } from './assert-source.js';
@@ -128,6 +128,7 @@ export async function assertVerdict(
   const impeachingNotes = [impeaching.note, gap].filter((n): n is string => n !== undefined);
   const outcomePending = hasAcceptedWrite(windowEvents);
   const outcomeUnread = unreadWriteLabels(windowEvents);
+  const stillInFlight = inFlightRequestLabels(windowEvents);
   const decision = decideVerified({
     pass,
     // Same rule as the act path: the caller named a consequence, so a settlement-only finding must
@@ -138,6 +139,7 @@ export async function assertVerdict(
     ...(inconclusive === undefined ? {} : { inconclusive }),
     ...(true === observationLost ? { observationLost: true } : {}),
     ...(absenceBlindSpot === undefined ? {} : { absenceBlindSpot }),
+    ...(namedNetIsInFlight(predicate, stillInFlight) ? { namedRequestInFlight: true } : {}),
     honesty: buildHonestyBlock({
       grade: gradeOfPredicate(predicate),
       attribution: 'window',
@@ -173,7 +175,7 @@ export async function assertVerdict(
     // contradiction, and "the window closed before the app finished" is no more actionable here.
     unsettled: {
       waitedFor: describeWaitTarget(predicate),
-      stillInFlight: inFlightRequestLabels(windowEvents),
+      stillInFlight,
       repeated: repeatedRequestLabels(windowEvents),
     },
   });
