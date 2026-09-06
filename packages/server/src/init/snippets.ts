@@ -438,6 +438,35 @@ export function staticPageSnippet(connectArgLiteral: string): string {
       </script>`;
 }
 
+/**
+ * Streamlit has no served HTML template, and `st.markdown` inserts script markup without executing
+ * it. A custom component does execute in a same-origin iframe; this helper uses that supported
+ * boundary to append one module script to the parent document, where Reticle can observe the app
+ * rather than the component frame. The id guard makes Streamlit reruns idempotent.
+ */
+export function streamlitPageSnippet(connectArgLiteral: string): string {
+  const moduleSource =
+    `import { reticle } from '${CDN_SDK_URL}';\n` + `reticle.connect(${connectArgLiteral});`;
+  return `import streamlit.components.v1 as components
+
+components.html(
+    """
+    <script>
+      (() => {
+        const document = window.parent.document;
+        if (document.getElementById('reticle-streamlit-connect')) return;
+        const script = document.createElement('script');
+        script.id = 'reticle-streamlit-connect';
+        script.type = 'module';
+        script.textContent = ${JSON.stringify(moduleSource)};
+        document.head.appendChild(script);
+      })();
+    </script>
+    """,
+    height=0,
+)`;
+}
+
 export function htmlManual(
   port: number | undefined,
   projectId?: string,

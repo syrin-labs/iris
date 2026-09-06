@@ -232,6 +232,20 @@ describe('runInit', () => {
     expect(out).not.toMatch(/from '@reticlehq\/\w+'/);
   });
 
+  it('hands a Streamlit app its parent-document component helper', () => {
+    const io = memoryIo({
+      'requirements.txt': 'streamlit==1.49.1\n',
+      'app.py': 'import streamlit as st\n',
+    });
+    runInit(OPTS, io);
+    const out = io.lines.join('\n');
+    expect(out).toContain('components.html');
+    expect(out).toContain('window.parent.document');
+    expect(out).toContain("script.id = 'reticle-streamlit-connect'");
+    expect(out).toContain('reticle.connect(');
+    expect(out).not.toMatch(/paste this into the page|script-tag snippet below/i);
+  });
+
   it('mints a pairing token into that snippet when none exists yet', () => {
     // The CDN path has no build step. An empty token here is a page that can never authenticate,
     // and regenerating the file later makes the pasted literal stale as well as wrong.
