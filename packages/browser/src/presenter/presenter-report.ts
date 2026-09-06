@@ -211,7 +211,7 @@ function localOnly(scope: ImpactScope, dashboardUrl: string | undefined): string
   return `<p class="reticle-report-local-only">${REPORT_TEXT.LOCAL_ONLY} <code>${REPORT_TEXT.LOCAL_ONLY_ACTION}</code> ${REPORT_TEXT.LOCAL_ONLY_TAIL}</p>`;
 }
 
-export interface ReportHost {
+interface ReportHost {
   /** Opened from the toolbar and from the chat, so the shell decides what else must close. */
   onBeforeOpen?: () => void;
 }

@@ -51,6 +51,20 @@ interface NextActionFacts {
    * that works.
    */
   previouslyConnected?: boolean;
+  /**
+   * A page reached this daemon and was REFUSED on the pairing token.
+   *
+   * Positive evidence, and the only fact here that proves the app is both running and instrumented:
+   * nothing dials the bridge but an SDK, so a refused hello means the wiring works and the daemon
+   * would not serve it. That happens whenever an IDE registers the MCP server GLOBALLY -- the daemon
+   * starts with a cwd of `/` or `$HOME`, finds no `.reticle.json` there, and refuses every page
+   * while `doctor` run from the app directory reports the project wired (#685).
+   *
+   * Without it, `initialized: false` plus a listening port reads as "the app may carry no SDK" and
+   * the action handed back is `reticle init` -- over a config that already works, which is the one
+   * action that cannot help and can overwrite it.
+   */
+  authRefused?: boolean;
 }
 
 /** `reticle init`, the only command here that is Reticle's own and so cannot be wrong. */
@@ -158,6 +172,26 @@ export function nextActionFor(facts: NextActionFacts): NoSessionNextAction {
   // a second port is the exact confusion the probe exists to prevent.
   const ports = facts.listening.join(', ');
   const only = 1 === facts.listening.length ? facts.listening[0] : undefined;
+
+  // A refused dial outranks the absence of a local config, for the same reason `previouslyConnected`
+  // does: it is positive evidence about the app, and `initialized` only ever answers "is there a
+  // `.reticle.json` in the ONE directory this daemon stands in". A globally-registered daemon stands
+  // in `/` or `$HOME`, so that answer is no for every project it serves -- and every page it turns
+  // away is proof that the project it turned away is wired.
+  if (!facts.initialized && true === facts.authRefused) {
+    return {
+      action: NoSessionAction.OPEN_APP,
+      ...(only === undefined ? {} : { port: only }),
+      reason:
+        `a page dialled this daemon and was refused on the pairing token, so the app IS running ` +
+        `and instrumented (${ports} listening) — this is a SCOPE problem, not an install problem. ` +
+        'This daemon was started outside the project (an IDE that registers the MCP server ' +
+        'globally starts it in `/` or your home directory), so it has no `.reticle.json` to match ' +
+        'the page against. Do NOT run `reticle init`: the config it would write is already correct ' +
+        'somewhere else. Take a context you own instead with reticle_lease {action:"acquire", url, ' +
+        "projectId}, or restart the daemon from the app's own directory.",
+    };
+  }
 
   if (!facts.initialized && true !== facts.previouslyConnected) {
     return {

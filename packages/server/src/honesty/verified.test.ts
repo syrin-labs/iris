@@ -342,6 +342,17 @@ describe('every verdict names the clause that decided it', () => {
       settled: true,
       observationLost: true,
     },
+    [VerifiedReason.WINDOW_CLOSED_EARLY]: {
+      pass: false,
+      declaredConsequence: true,
+      honesty: clean(),
+      settled: false,
+      namedRequestInFlight: true,
+      unsettled: {
+        waitedFor: "a request POST matching '/api/v1/auth/register'",
+        stillInFlight: ['POST /api/v1/auth/register'],
+      },
+    },
     [VerifiedReason.CONTRADICTED]: {
       pass: true,
       honesty: clean(),
@@ -468,6 +479,47 @@ describe('a settle that never happened is not a failed assertion', () => {
     const declared = decideVerified({ ...settleTimedOut, declaredConsequence: true });
     expect(declared.verified).toBe(Verified.NO);
     expect(declared.verifiedReason).toBe(VerifiedReason.ASSERTION_FAILED);
+  });
+});
+
+/**
+ * A net predicate that misses while its own request is still open is not a failed assertion.
+ *
+ * Field: `verified: "no"` / `assertion_failed` beside `contradictions[0].kind: request-never-settled`
+ * naming `POST /api/v1/auth/register`, with `firstDivergence.observed: "no request to …"`. The
+ * request completed 200 ~500ms after the window. Cold backend → no; warm backend → yes. That red
+ * is a race, not a defect, and grading it `no` teaches the agent to weaken the check.
+ */
+describe('an in-flight named request is not a failed assertion', () => {
+  const inFlightMiss = {
+    pass: false,
+    declaredConsequence: true,
+    honesty: clean(),
+    settled: false,
+    namedRequestInFlight: true,
+    unsettled: {
+      waitedFor: "a request POST matching '/api/v1/auth/register'",
+      stillInFlight: ['POST /api/v1/auth/register'],
+    },
+  } as VerifiedVerdictInput;
+
+  it('grades unknown, not no', () => {
+    expect(decideVerified(inFlightMiss).verified).toBe(Verified.UNKNOWN);
+    expect(decideVerified(inFlightMiss).verifiedReason).toBe(VerifiedReason.WINDOW_CLOSED_EARLY);
+  });
+
+  it('does not say the declared consequence did not hold', () => {
+    expect(decideVerified(inFlightMiss).because).not.toMatch(/declared consequence did not hold/);
+    expect(decideVerified(inFlightMiss).because).toMatch(/in flight/i);
+  });
+
+  it('still fails when the named request is not the one left open', () => {
+    const unrelatedOpen = decideVerified({
+      ...inFlightMiss,
+      namedRequestInFlight: false,
+    });
+    expect(unrelatedOpen.verified).toBe(Verified.NO);
+    expect(unrelatedOpen.verifiedReason).toBe(VerifiedReason.ASSERTION_FAILED);
   });
 });
 
