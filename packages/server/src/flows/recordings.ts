@@ -35,6 +35,12 @@ export interface CompiledProgram {
    * because it started one route further along.
    */
   startPath?: string;
+  /**
+   * Pages the recording sat on, in order, consecutive stays collapsed. In-memory only — not written
+   * to the flow file. Lets save warn about a backtrack (a journey that cannot replay) without a
+   * format change.
+   */
+  routes?: string[];
 }
 
 /**

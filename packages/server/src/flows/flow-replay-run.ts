@@ -14,6 +14,7 @@ import {
   type ReticleEvent,
 } from '@reticlehq/core';
 import { asRecord, asString } from '../tools/tools-helpers.js';
+import { routeOfEvent, routeOfUrl } from '../events/predicate-route.js';
 import type { ArrivalClock } from '../tools/navigate-arrival.js';
 import { carryReticleIdentity } from '../tools/lease-tools.js';
 import type { SessionManager } from '../session/session-manager.js';
@@ -136,19 +137,15 @@ interface StartPathSession {
  */
 function currentPathOf(session: StartPathSession): string | undefined {
   const routes = session.eventsSince(0).filter((e) => e.type === EventType.ROUTE_CHANGE);
-  const data = routes.at(-1)?.data ?? {};
+  const last = routes.at(-1);
   // pathname + hash, because `startPath` is compared against this and must stay NAVIGABLE. Reading
   // the pathname alone made both sides `/` on a hash router — always "same path", so the hint never
   // fired however far the tab had drifted, on the router desktop renderers use by default.
-  const observed = asString(data['pathname']) ?? asString(data['to']);
-  if (observed !== undefined) return `${observed}${asString(data['hash']) ?? ''}`;
+  const observed = last === undefined ? undefined : routeOfEvent(last);
+  if (observed !== undefined) return `${observed.docPath}${observed.hash}`;
   if (session.url === undefined) return undefined;
-  try {
-    const parsed = new URL(session.url);
-    return `${parsed.pathname}${parsed.hash}`;
-  } catch {
-    return undefined;
-  }
+  const fromUrl = routeOfUrl(session.url);
+  return fromUrl === undefined ? undefined : `${fromUrl.docPath}${fromUrl.hash}`;
 }
 
 /** Pathname equality up to a trailing slash — a router normalising one must not read as "elsewhere". */

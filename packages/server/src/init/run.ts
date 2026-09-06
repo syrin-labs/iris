@@ -726,11 +726,14 @@ function applyEffects(
         degraded.set(s.target, retry.note);
         continue;
       }
+      // Verify, don't re-run: give the install step itself the same sdkPackagesPresent benefit
+      // already given to the wiring it gates below (#683).
+      if (s.target === DEPS_TARGET && sdkPackagesPresent(plan.framework, plan.uiLibrary, io))
+        continue;
       failed.add(s.target);
       // A failed install only blocks the wiring when the packages are genuinely ABSENT. See
       // sdkPackagesPresent: the guard protects "the import resolves", not "our subprocess exited 0".
-      if (s.target === DEPS_TARGET && !sdkPackagesPresent(plan.framework, plan.uiLibrary, io))
-        installFailed = true;
+      if (s.target === DEPS_TARGET) installFailed = true;
     }
   }
   // Where this project lives, remembered for a daemon that will be started somewhere else.
