@@ -6,6 +6,7 @@ import { daemonFix, describeSkew } from '../version/version-skew.js';
 import { CONTRACT_FINGERPRINT } from '@reticlehq/core';
 import { SERVER_VERSION } from '../version/server-version.js';
 import { log } from '../log.js';
+import { loopbackAgent } from '../loopback-agent.js';
 
 /**
  * CLI launch + status helpers — the daemon-introspection (`reticle status`) and the one-command
@@ -20,6 +21,8 @@ interface StatusSession {
   throttled: boolean;
   stale: boolean;
   pendingMarks: number;
+  /** The tab is attached and answering nothing — see Session.unresponsive. Absent on an older daemon. */
+  unresponsive?: true;
 }
 
 /**
@@ -50,6 +53,7 @@ export function summarizeStatus(payload: unknown): {
         throttled: true === r['throttled'],
         stale: true === r['stale'],
         pendingMarks: 'number' === typeof r['pendingMarks'] ? r['pendingMarks'] : 0,
+        ...(true === r['unresponsive'] ? { unresponsive: true as const } : {}),
       };
     })
     .filter((s): s is StatusSession => s !== null);
@@ -95,7 +99,15 @@ const STATUS_PROBE_TIMEOUT_MS = 1000;
 export function fetchStatus(port: number): Promise<unknown> {
   return new Promise((resolve) => {
     const req = http.get(
-      { host: LOOPBACK_HOST, port, path: STATUS_PATH, timeout: STATUS_PROBE_TIMEOUT_MS },
+      {
+        host: LOOPBACK_HOST,
+        port,
+        path: STATUS_PATH,
+        timeout: STATUS_PROBE_TIMEOUT_MS,
+        // Shares the proxy's keep-alive agent: the proxy calls this on every reconnect, and a socket
+        // per probe is the same churn the POST leg was fixed for.
+        agent: loopbackAgent,
+      },
       (res) => {
         let body = '';
         res.setEncoding('utf8');
@@ -152,7 +164,14 @@ function sameOrigin(a: string, b: string): boolean {
  * is run by a human whose browser this is, and yanking the page they are looking at to somewhere else
  * is a bigger surprise than being told where the tab actually is.
  */
-export function decideOpen(sessions: { url: string }[], url: string | undefined): OpenDecision {
+export function decideOpen(
+  all: { url: string; unresponsive?: boolean }[],
+  url: string | undefined,
+): OpenDecision {
+  // A tab that has stopped answering is not a tab you can be handed. `open` is the command a caller
+  // reaches for to RECOVER, and reusing the wedged one left no way out short of killing the daemon:
+  // ending the session only flips a flag on the record, it does not make the page answer.
+  const sessions = all.filter((s) => true !== s.unresponsive);
   if (url === undefined) {
     const first = sessions[0];
     return first !== undefined ? { action: 'reuse', url: first.url } : { action: 'need-url' };
@@ -203,16 +222,50 @@ export async function openInBrowser(
   return run(cmd, args);
 }
 
-/** null when the launcher started; the failure message when it could not be run at all. */
+/**
+ * What a finished launcher means, or null when nothing is wrong.
+ *
+ * Exported for its own tests: the headless case is the one that matters and it cannot be produced
+ * by spawning a real launcher on a developer machine.
+ */
+export function launcherFailure(code: number | null, signal: NodeJS.Signals | null): string | null {
+  if (null !== signal) return `the browser launcher was killed by ${signal}`;
+  // null code with no signal: it never reported an outcome in the window we waited. Some desktop
+  // launchers stay attached rather than handing off, and inventing a failure there would be worse
+  // than the silence — it would send someone to fix a browser that opened.
+  if (null === code || 0 === code) return null;
+  return (
+    `the browser launcher exited ${String(code)} — on a machine with no browser (CI, a container, ` +
+    'an SSH session, WSL with no host browser) it starts fine and then has nothing to open'
+  );
+}
+
+/** How long to wait for the launcher to hand off before assuming it did. */
+const LAUNCHER_EXIT_MS = 2_000;
+
+/** null when the launcher opened something; the failure message when it did not. */
 function defaultRun(cmd: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+    let settled = false;
+    const finish = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     // An unhandled 'error' on a ChildProcess throws — and ENOENT on the launcher is exactly the case
     // this function exists to report, so it must be listened for either way.
-    child.on('error', (err: Error) => resolve(err.message));
-    child.on('spawn', () => {
+    child.on('error', (err: Error) => finish(err.message));
+    // The EXIT, not the spawn. Answering "did the command begin" reported success on every headless
+    // box, where the launcher begins perfectly well and then finds nothing to open — see
+    // launcherFailure. Every launcher we use hands off and exits immediately, so this costs nothing
+    // on the path where it works.
+    child.on('exit', (code, signal) => finish(launcherFailure(code, signal)));
+    // ...and a launcher that stays attached must not hold up the install.
+    const timer = setTimeout(() => {
       child.unref();
-      resolve(null);
-    });
+      finish(null);
+    }, LAUNCHER_EXIT_MS);
+    timer.unref?.();
   });
 }

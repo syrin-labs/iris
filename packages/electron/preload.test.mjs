@@ -262,3 +262,47 @@ describe('electron preload IPC records', () => {
     expect(second.length).toBe(4);
   });
 });
+
+describe('IPC that happened before the SDK was watching', () => {
+  it('replays the calls an app made on mount, which is where its data comes from', async () => {
+    const { exposed, ipcRenderer } = loadPreload();
+    // The app loads its todos before connect() has finished. This is the ordinary case on desktop,
+    // not an edge one: connect() is injected and asynchronous, React mounts immediately.
+    await ipcRenderer.invoke('todos:load');
+
+    const records = [];
+    exposed.api.subscribe((record) => records.push(record));
+    expect(records.map((r) => `${r.phase}:${r.channel}`)).toEqual([
+      'start:todos:load',
+      'end:todos:load',
+    ]);
+    for (const record of records) assertPreloadRecord(record);
+  });
+
+  it('delivers the backlog once, so a call is not counted twice', async () => {
+    const { exposed, ipcRenderer } = loadPreload();
+    await ipcRenderer.invoke('todos:load');
+    exposed.api.subscribe(() => undefined);
+    const second = [];
+    exposed.api.subscribe((record) => second.push(record));
+    expect(second).toEqual([]);
+  });
+
+  it('keeps delivering live once someone is listening', async () => {
+    const { exposed, ipcRenderer } = loadPreload();
+    await ipcRenderer.invoke('todos:load');
+    const records = [];
+    exposed.api.subscribe((record) => records.push(record));
+    await ipcRenderer.invoke('todos:add');
+    expect(records.filter((r) => r.channel === 'todos:add')).toHaveLength(2);
+  });
+
+  it('does not grow without bound when no SDK ever attaches', async () => {
+    const { exposed, ipcRenderer } = loadPreload();
+    for (let i = 0; i < 400; i++) await ipcRenderer.invoke(`ch:${String(i)}`);
+    const records = [];
+    exposed.api.subscribe((record) => records.push(record));
+    expect(records.length).toBeLessThanOrEqual(200);
+    expect(records.length).toBeGreaterThan(0);
+  });
+});

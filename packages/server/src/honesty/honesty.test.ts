@@ -60,3 +60,26 @@ describe('meetsHonestyBar', () => {
     expect(meetsHonestyBar(dirty, { requireIntegrityClean: true }).ok).toBe(false);
   });
 });
+
+describe('coverage note', () => {
+  // `partial: true` on its own is an unanswerable flag. The verdict prose says "coverage was
+  // PARTIAL — see `coverage` for what went unobserved", and for every non-impeaching blind spot
+  // that field held nothing to see: the sentence naming WHAT went unobserved was built by
+  // buildCoverageStatement, dropped at both call sites, and never reached the agent. Found by
+  // driving a one-way IPC send, where the missing sentence is the whole warning.
+  it('carries the sentence that says what went unobserved', () => {
+    const block = buildHonestyBlock({
+      grade: HonestyGrade.NET,
+      coveragePartial: true,
+      coverageNote: 'partial — 1 one-way IPC send dispatched with NO verdict',
+    });
+    expect(block.coverage.partial).toBe(true);
+    expect(block.coverage.note).toBe('partial — 1 one-way IPC send dispatched with NO verdict');
+  });
+
+  it('omits the note when coverage is full', () => {
+    const block = buildHonestyBlock({ grade: HonestyGrade.NET });
+    expect(block.coverage.partial).toBe(false);
+    expect(block.coverage.note).toBeUndefined();
+  });
+});

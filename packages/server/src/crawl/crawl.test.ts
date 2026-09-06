@@ -87,6 +87,27 @@ describe('crawl — autonomous smart-monkey', () => {
     expect(r.anomalies.map((a) => a.kind)).toEqual([ContradictionKind.ROUTE_RENDERED_NOTHING]);
   });
 
+  it('1c: a same-page skip link is not a blank destination', async () => {
+    const session = fakeSession(tree(['link "Skip to content" (ref=e1)']), {
+      e1: {
+        events: [
+          {
+            type: EventType.ROUTE_CHANGE,
+            data: {
+              from: 'http://localhost:5173/app',
+              to: 'http://localhost:5173/app#main-content',
+              pathname: '/app',
+              search: '',
+              hash: '#main-content',
+            },
+          },
+        ],
+      },
+    });
+    const r = await crawl(session, {}, noSleep);
+    expect(r.anomalies.map((a) => a.kind)).not.toContain(ContradictionKind.ROUTE_RENDERED_NOTHING);
+  });
+
   it('2: a console error during a click is reported with its control', async () => {
     const session = fakeSession(tree(['button "Boom" (ref=e1)']), {
       e1: { events: [{ type: EventType.CONSOLE_ERROR, data: { message: 'kaboom' } }] },

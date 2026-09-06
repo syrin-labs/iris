@@ -152,6 +152,15 @@ export interface QueryEmptyHint {
   presentTestids: string[];
   /** True if a capability-registered testid is present in the scope. */
   knownEmptyState: boolean;
+  /**
+   * Present only when a TEXT search missed and the string is nonetheless on the page, split across
+   * this element's children — so no single element's own text carries it and no `by: text` query can
+   * ever match it.
+   *
+   * The descriptor is the tightest container that holds the whole string; its `ref` is a locator, so
+   * the recovery is `{ scope: <ref>, self: true }` rather than another guess at the text.
+   */
+  splitText?: ElementDescriptor;
 }
 
 /** Result of the QUERY command / reticle_query tool. `hint` present ONLY on zero matches. */

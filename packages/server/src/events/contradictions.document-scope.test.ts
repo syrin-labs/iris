@@ -27,8 +27,10 @@ const failedCall = (documentId?: string): ReticleEvent =>
     documentId,
   );
 
+// `actionSince: 0` states the premise every consequence rule now requires — these windows were
+// always an action's, they simply never had to say so. See contradictions.attribution.test.ts.
 const kinds = (events: ReticleEvent[], currentDocumentId?: string): string[] =>
-  findContradictions(events, { currentDocumentId }).map((c) => c.kind);
+  findContradictions(events, { currentDocumentId, actionSince: 0 }).map((c) => c.kind);
 
 describe('contradiction evidence is scoped to the document currently under observation', () => {
   it('cites same-document evidence exactly as before', () => {

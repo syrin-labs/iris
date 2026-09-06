@@ -19,7 +19,17 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,18 +68,44 @@ const shippedDocs = (dir = DOCS, prefix = ''): string[] => {
 };
 
 describe('the published package does not carry the docs site assets', () => {
+  // RUN, not read. This used to string-match the prepack for `docs/images`; when the copy moved out
+  // of the shell into pack-docs.mjs so it could run on Windows, the match was satisfied by a COMMENT
+  // in that script quoting the shell it replaced — the guard went green with the pruning deleted.
+  // Verified the new one by deleting the prune loop and watching it redden.
   it('prepack prunes every asset directory after copying docs', () => {
-    const script = prepack();
-    expect(script, 'prepack no longer copies docs at all; this guard needs rewriting').toContain(
-      'cp -R ../../docs .',
+    expect(prepack(), 'prepack no longer stages docs; this guard needs rewriting').toContain(
+      'pack-docs.mjs',
     );
-    const kept = PRUNED.filter((d) => !script.includes(`docs/${d}`));
-    expect(
-      kept,
-      `prepack copies docs/ but does not prune ${kept.join(', ')}. Those are site assets: every ` +
-        `image reference in the docs is an absolute site path, so they resolve on docs.reticle.sh ` +
-        `and nowhere inside node_modules. Shipping them only makes the tarball too large to publish.`,
-    ).toEqual([]);
+
+    // A fixture standing in for the repo: one file per asset directory, plus one real doc.
+    const src = mkdtempSync(join(tmpdir(), 'reticle-packdocs-src-'));
+    const dest = mkdtempSync(join(tmpdir(), 'reticle-packdocs-dest-'));
+    try {
+      writeFileSync(join(src, 'SKILL.md'), '# skill');
+      mkdirSync(join(src, 'docs'), { recursive: true });
+      writeFileSync(join(src, 'docs', 'usage.md'), '# usage');
+      for (const dir of PRUNED) {
+        mkdirSync(join(src, 'docs', dir), { recursive: true });
+        writeFileSync(join(src, 'docs', dir, 'asset.bin'), 'x');
+      }
+
+      execFileSync(process.execPath, [join(REPO, 'scripts/pack-docs.mjs'), src, dest], {
+        stdio: 'ignore',
+      });
+
+      const staged = readdirSync(join(dest, 'docs'));
+      expect(staged, 'the docs themselves must still be staged').toContain('usage.md');
+      const kept = PRUNED.filter((d) => staged.includes(d));
+      expect(
+        kept,
+        `pack-docs copied docs/ but left ${kept.join(', ')} in place. Those are site assets: every ` +
+          `image reference in the docs is an absolute site path, so they resolve on docs.reticle.sh ` +
+          `and nowhere inside node_modules. Shipping them only makes the tarball too large to publish.`,
+      ).toEqual([]);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(dest, { recursive: true, force: true });
+    }
   });
 
   it('nothing large has appeared in the part of docs/ that ships', () => {

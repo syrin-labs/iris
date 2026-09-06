@@ -12,6 +12,15 @@
 # `text=auto` still detects binary and leaves it alone, so images and fonts are unaffected.
 * text=auto eol=lf
 
+# The exception, and it is cmd.exe's rule rather than a preference. A batch file checked out with
+# LF-only endings is parsed unreliably: multi-line `if ... (` blocks are the usual casualty, and the
+# failure is SILENT — the interpreter runs some prefix of the file and exits without a message, so
+# `setup\reticle.cmd` produced no output at all on a Windows runner and the launcher gate failed with
+# nothing to read. Everything else here stays LF for the reason above; a `.cmd` is not read by any
+# tool but cmd.exe, so there is nothing for CRLF to break.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
 # Genuinely binary, named explicitly so no heuristic has to decide.
 *.png binary
 *.jpg binary

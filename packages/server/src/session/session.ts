@@ -6,27 +6,13 @@ import { GapLedger } from '../honesty/gap-ledger.js';
 import { CaptureLedger } from '../honesty/feature-capture.js';
 import { commandTimeoutMessage, type PageRuntime } from './command-timeout.js';
 import { readHealthEvent, type SessionHealth } from './session-health.js';
+import { MIRRORED_COMMANDS, mirroredNarration } from './session-mirror.js';
 
 export type { SessionHealth };
 
 /** The HUD does not need 200 frames to watch a counter climb; the last state always lands. */
 const IMPACT_PUSH_DEBOUNCE_MS = 700;
 
-/**
- * How a mirrored row is introduced on a tab that is only WATCHING.
- *
- * The row happened somewhere else, and a HUD that prints it unlabelled tells the reader their own
- * tab was driven. Naming the session is also the handle they need to address it.
- */
-function mirroredNarration(sessionId: string, text: string): string {
-  return `${sessionId} \u2192 ${text}`;
-}
-
-/** The pushes that are a REPORT of what happened, and so are worth showing to a watching tab. */
-const MIRRORED_COMMANDS: ReadonlySet<string> = new Set<string>([
-  ReticleCommand.NARRATE,
-  ReticleCommand.IMPACT,
-]);
 import { PendingCommands, CommandTimeoutError } from './pending-commands.js';
 import { span } from '../trace.js';
 import {
@@ -109,6 +95,13 @@ const REBINDABLE_COMMANDS: ReadonlySet<string> = new Set<string>([
 /** Prefix on minted action ids (a1, a2, …) — the journal's action identity, independent of commands. */
 const ACTION_ID_PREFIX = 'a';
 
+/**
+ * How many consecutive unanswered commands make a tab unresponsive. One is a page that was merely
+ * busy for its budget; two in a row with no reply between them is a wedge, and the cost of being
+ * wrong about that is one extra browser tab.
+ */
+const UNRESPONSIVE_AFTER_TIMEOUTS = 2;
+
 /** ws readyState for an OPEN socket — guard fire-and-forget pushes against a closing tab. */
 const WS_OPEN = 1;
 
@@ -120,6 +113,17 @@ export class Session {
   readonly id: string;
   /** Stable build-stamped project identity; undefined for v1.0 SDKs that omit it. */
   readonly projectId: string | undefined;
+  /**
+   * The `.reticle` directory this session's evidence belongs in — impact counters AND capsules.
+   *
+   * Stamped once when the session is created, from the project it declared in HELLO, rather than
+   * resolved per call: the answer cannot change while the tab is connected, and resolving it once
+   * means every counter that fires for this session agrees about where it goes.
+   *
+   * Undefined when nothing could name a project — the caller then falls back to the daemon's own
+   * root, which is what every counter did unconditionally before this existed.
+   */
+  artifactRoot: string | undefined;
   url: string;
   title: string;
   adapters: string[];
@@ -141,6 +145,8 @@ export class Session {
   readonly #listeners = new Set<(event: ReticleEvent) => void>();
   readonly #disconnectListeners = new Set<() => void>();
   #actionSeq = 0;
+  /** Consecutive missed command budgets — free liveness evidence. Any reply resets it. */
+  #unansweredCommands = 0;
   #lastSeenAt: number;
   #hidden = false;
   /** Which shell the page reported (PAGE_HEALTH). Undefined until the first report lands. */
@@ -277,6 +283,9 @@ export class Session {
       hidden: this.#hidden,
       throttled: base.throttled,
       focused: base.focused,
+      // Without this the desktop branch is unreachable in production: every unit test would pass and
+      // every real Electron window would still be told to open a browser.
+      runtime: this.#runtime,
     });
     return recommendation === undefined ? base : { ...base, recommendation };
   }
@@ -289,12 +298,24 @@ export class Session {
       title: this.title,
       adapters: this.adapters,
       hasCapabilities: this.hasCapabilities,
+      runtime: this.#runtime,
       versionSkew: this.versionSkew,
       hidden: this.#hidden,
       health: () => this.health(),
       staleMs: () => this.staleMs(),
       pendingMarkCount: () => this.#review.pendingCount(),
+      unresponsive: () => this.unresponsive(),
     });
+  }
+
+  /**
+   * Attached but not answering. A tab can be `connected` with a fresh `lastSeenMs` and still answer
+   * nothing: `lastSeenMs` measures the events the SDK streams, not the commands it replies to. Reuse
+   * and auto-selection read that as health, so `reticle open` handed a wedged tab back forever and
+   * `reticle_session{action:"end"}` — a flag on the record, not on the page — could not help.
+   */
+  unresponsive(): boolean {
+    return this.#unansweredCommands >= UNRESPONSIVE_AFTER_TIMEOUTS;
   }
 
   /** Wall-clock age of the session in milliseconds. */
@@ -344,7 +365,7 @@ export class Session {
         this.#review.add(parsed.data, this.elapsed());
         // The impact record's `marks` field existed and nothing ever wrote it: the report would
         // have shown a permanent zero next to a page covered in pins.
-        recordImpact({ marks: 1 });
+        recordImpact({ marks: 1 }, {}, this.artifactRoot);
       }
     }
     if (event.type === EventType.ROUTE_CHANGE) {
@@ -658,6 +679,8 @@ export class Session {
     // the app taking its time — the split telemetry reports in aggregate, made visible per call.
     return span('browser.command', { command: name, sessionId: this.id }, () => awaited)
       .then((result) => {
+        // Answered — whatever the reply said, the command channel is alive.
+        this.#unansweredCommands = 0;
         // The label is only knowable from the REPLY — the request carries a ref, and a ref dies with
         // the next re-render. Recorded here so coverage survives frameworks that replace nodes.
         if (name === ReticleCommand.ACT) this.recordActedLabelFrom(result);
@@ -672,6 +695,7 @@ export class Session {
         // simply not been answered in budget was read as "you were replaced, ask again" — and
         // against a page re-dialling in a loop that turned one read into hundreds of commands on the
         // wire, minutes of wall clock, and an answer still quoting the budget it had blown.
+        if (error instanceof CommandTimeoutError) this.#unansweredCommands += 1;
         const next = error instanceof CommandTimeoutError ? undefined : this.#liveSuccessor();
         if (next === undefined || !REBINDABLE_COMMANDS.has(name)) throw error;
         // What is LEFT of the caller's budget, not a fresh copy of it. Re-issuing with the original
@@ -685,6 +709,9 @@ export class Session {
   }
 
   handleResult(result: CommandResult): void {
+    // Any reply at all clears the wedge, including one for a command that already timed out: it is
+    // still proof that bridge→page→bridge works right now, which is the only thing being claimed.
+    this.#unansweredCommands = 0;
     this.#pending.settle(result);
   }
 
@@ -741,7 +768,7 @@ export class Session {
   disconnect(reason: string, replaced = false): void {
     // "Longest run" means the longest SESSION, and it used to be fed a single tool call's duration
     // - so the report's superlative was a number in milliseconds that never grew past a click.
-    recordImpact({}, { runMs: this.elapsed() });
+    recordImpact({}, { runMs: this.elapsed() }, this.artifactRoot);
     this.rejectAll(reason, replaced);
     try {
       this.#socket.close(1008, reason);

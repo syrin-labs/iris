@@ -11,6 +11,7 @@
  */
 import { TelemetryEventKind } from '@reticlehq/core';
 import { getTelemetry } from './telemetry.js';
+import { appEverConnected } from './app-instrumented.js';
 
 let connectsSeen = 0;
 /** Set when the daemon starts, so the FIRST connect can report how long Reticle sat unused. */
@@ -33,6 +34,12 @@ export function reportMcpConnected(client?: string, now: () => number = () => Da
         // sat there. On a reconnect it is just how long the daemon has been up.
         daemonAgeMs: daemonStartedAt === undefined ? 0 : Math.max(0, now() - daemonStartedAt),
         ...(client !== undefined ? { client } : {}),
+        // WHAT THE AGENT HAD TO LOOK AT. Most clients that attach never call a tool, and that cohort
+        // emits nothing at all — an agent that reads the instructions, learns nothing is wired and
+        // stops has refused nothing, so `tool_refused` cannot see it either. Read off the same flag
+        // `app_instrumented` sets, never a second counter, so the two halves of the funnel cannot
+        // disagree about one daemon run.
+        appConnected: appEverConnected(),
       },
     });
   } catch {

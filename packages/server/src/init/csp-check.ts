@@ -33,16 +33,32 @@ function bridgeOrigins(port: number): string[] {
  * Matches to the end of the directive (`;`) or the end of the enclosing quoted string, which is how
  * these are written in both a Next `headers()` value and a `<meta content="...">`.
  */
-function connectSrcSources(text: string): string[] | undefined {
+function directiveSources(text: string, directive: string): string[] | undefined {
   // Stops at the directive separator or the closing double quote of the enclosing string. Single
   // quotes are NOT terminators: `'self'` is a source, not the end of the list.
-  const match = /connect-src([^;"]*)/i.exec(text);
+  const match = new RegExp(`${directive}([^;"]*)`, 'i').exec(text);
   const list = match?.[1];
   if (list === undefined) return undefined;
   return list
     .split(/\s+/)
     .map((source) => source.trim())
     .filter((source) => source.length > 0);
+}
+
+/**
+ * What this policy allows a WebSocket to reach — `connect-src`, or `default-src` when it is absent.
+ *
+ * The fallback is the CSP spec's, and leaving it out made the check blind to the commonest strict
+ * policy there is. MarkText, a production Electron editor, declares
+ * `default-src 'self'; script-src 'self'; …` with NO `connect-src`: its WebSockets are restricted to
+ * 'self', the bridge is blocked, and this returned "no problem" because it was looking for a
+ * directive that was not written. Every fetch-directive falls back to `default-src`; that is what
+ * `default` means, and it is why an author does not repeat themselves.
+ *
+ * Still undefined when NEITHER is present — a policy that constrains neither is not blocking us.
+ */
+function connectSrcSources(text: string): string[] | undefined {
+  return directiveSources(text, 'connect-src') ?? directiveSources(text, 'default-src');
 }
 
 /**

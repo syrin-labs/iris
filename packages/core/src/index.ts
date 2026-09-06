@@ -13,6 +13,7 @@ export * from './constants.js'; // EventType, ActionType, wire constants, TRANSP
 export * from './source-constants.js'; // DATA_RETICLE_SOURCE_ATTR, RETICLE_ROOT_GLOBAL
 export * from './event-classification.js'; // CHURN_TYPES — shared eviction priority for buffer/queue
 export * from './verified-constants.js'; // Verified — the one field an agent gates on
+export * from './verify-progress.js'; // VerifyPhase — what a run is doing while it is still doing it
 export * from './session-constants.js';
 export * from './document-identity.js'; // which document an observation belongs to
 export * from './edit-epoch.js'; // which round of source edits an observation belongs to
@@ -36,6 +37,7 @@ export * from './browser-misdirect.js';
 
 // ── INTERNAL cross-package plumbing (shared impl; not a stable outside API — may change in a minor) ─
 export * from './daemon-registry.js'; // daemon discovery, used by the vite plugin + server
+export * from './dev-server-registry.js'; // the return leg: dev servers announcing themselves
 export * from './project-registry.js'; // projectId -> directory, so a cross-repo daemon can still resolve
 export * from './intent.js'; // what a change was supposed to make true, captured while somebody knows
 export * from './run-context.js'; // what a run established, folded and capped, for the agent to pull back
@@ -46,6 +48,9 @@ export * from './state-select.js'; // selectPath / capDepth — shared by browse
 export * from './toon.js'; // TOON encoding used by the server's result encoder
 export * from './upgrade.js'; // self-update policy shared by the CLI
 export * from './telemetry.js';
+// Split out of telemetry.js at the 1000-line cap; the barrel keeps the import path callers use.
+export * from './no-session-reason.js';
+export * from './telemetry-refusal.js';
 export * from './telemetry-session.js'; // the session/project rollup payloads
 export * from './telemetry-license.js'; // LicenseActivation — shared by the licence gate and telemetry
 export * from './telemetry-feedback.js'; // the two things a PERSON writes: feedback + a self-declared identity // anonymous adoption telemetry wire contract (DAU/WAU/MAU/installs)

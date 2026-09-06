@@ -27,7 +27,23 @@ import { diskSink, diskSource, readCloudState } from './sync-disk.js';
 import type { ProjectCloud } from './cloud-config.js';
 
 /** How often the daemon cycles. See the note above on why this is a constant and not a curve. */
-export const DAEMON_SYNC_INTERVAL_MS = 60_000;
+const DAEMON_SYNC_INTERVAL_MS = 60_000;
+
+/**
+ * The cadence while something is actually happening.
+ *
+ * A fixed minute is the wrong shape for both states it has to cover. During a drive the ledger
+ * changes on every tool call and a minute of lag is what makes a dashboard feel dead; idle, a minute
+ * is already more often than nothing has changed deserves.
+ *
+ * So the interval follows the work: a cycle that MOVED something earns the fast rate, a cycle that
+ * moved nothing backs off to the slow one. No session plumbing and no new configuration — activity
+ * is inferred from what the last cycle actually sent, which is the only honest evidence available.
+ *
+ * Deliberately not per-tool-call. A push in the tool path would put the network in the agent's inner
+ * loop, and verification working with the network down is a promise this product makes.
+ */
+const DAEMON_SYNC_ACTIVE_INTERVAL_MS = 5_000;
 
 /** Given to the first cycle so a freshly-started daemon does not race the session that woke it. */
 const FIRST_CYCLE_DELAY_MS = 5_000;
@@ -42,10 +58,23 @@ const FIRST_CYCLE_DELAY_MS = 5_000;
  */
 const NUDGE_DELAY_MS = 1_500;
 
-export interface SyncDaemonDeps {
+interface SyncDaemonDeps {
   reticleRoot: string;
   /** Resolved per tick, not once: a repo linked while the daemon is alive starts syncing itself. */
   cloud: () => Promise<ProjectCloud>;
+  /**
+   * Every OTHER `.reticle` root on this machine that might be linked.
+   *
+   * One daemon serves many projects — that is what `artifactRootFor` exists for — and this loop
+   * pushed exactly one of them: whichever directory the daemon happened to be started in. Every
+   * other linked repo went silent, and silent is indistinguishable from "nobody verified anything",
+   * which is the worst possible failure for a dashboard somebody is deciding budget on.
+   *
+   * Optional: a caller that does not supply it gets exactly the old single-root behaviour.
+   */
+  otherRoots?: () => Promise<readonly string[]>;
+  /** Resolve the link for a root that is not this daemon's own. Required to use `otherRoots`. */
+  cloudFor?: (root: string) => Promise<ProjectCloud>;
   now?: () => number;
   intervalMs?: number;
   /** Injected for the test; the real one is `fetch`. */
@@ -55,7 +84,7 @@ export interface SyncDaemonDeps {
   ) => Promise<{ status: number; text: string }>;
 }
 
-export interface SyncDaemon {
+interface SyncDaemon {
   /** Run one cycle now, whatever the timer is doing. Returns undefined when not linked. */
   syncNow: () => Promise<SyncReport | undefined>;
   /**
@@ -86,6 +115,9 @@ const defaultRequest = async (
  */
 export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
   const intervalMs = deps.intervalMs ?? DAEMON_SYNC_INTERVAL_MS;
+  // Never slower than the idle rate: a deployment that lengthens the interval means "sync less", and
+  // an active burst must not quietly re-introduce the cost it was lowering.
+  const activeIntervalMs = Math.min(DAEMON_SYNC_ACTIVE_INTERVAL_MS, intervalMs);
   const now = deps.now ?? ((): number => Date.now());
   const request = deps.request ?? defaultRequest;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -106,6 +138,71 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
    * so too. Once per transition, never per tick — a line every minute is a line people stop reading.
    */
   let wasLinked: boolean | undefined;
+
+  /** One root's bundle. The state, source and sink are already per-root; only the caller was not. */
+  const pushRoot = async (root: string, cloud: ProjectCloud): Promise<SyncReport | undefined> => {
+    if (null === cloud.config) return undefined;
+    const full = diskSource(root);
+    return runSyncCycle({
+      config: cloud.config,
+      source: {
+        runs: () => (cloud.policy.runs ? full.runs() : []),
+        flows: () => (cloud.policy.flows ? full.flows() : []),
+        derived: (kind) => (cloud.policy.memory ? full.derived(kind) : undefined),
+      },
+      sink: diskSink(root),
+      state: readCloudState(root),
+      now,
+      request,
+    });
+  };
+
+  /**
+   * Push every other linked root this machine knows about.
+   *
+   * Isolated per root on purpose. A revoked credential, a deleted directory or an unreachable
+   * self-hosted server in ONE repo is a fact about that repo; letting it throw would take the
+   * daemon's own push down with it and turn one broken link into a machine-wide outage.
+   */
+  const syncOtherRoots = async (): Promise<void> => {
+    const roots = deps.otherRoots;
+    const cloudFor = deps.cloudFor;
+    if (roots === undefined || cloudFor === undefined) return;
+    let list: readonly string[] = [];
+    try {
+      list = await roots();
+    } catch {
+      // Enumeration is best-effort: a registry that cannot be read must not stop this daemon
+      // syncing the root it is standing in.
+      return;
+    }
+    for (const root of list) {
+      if (root === deps.reticleRoot) continue;
+      try {
+        const cloud = await cloudFor(root);
+        if (null === cloud.config) continue;
+        const report = await pushRoot(root, cloud);
+        if (report === undefined) continue;
+        if (report.error !== undefined) {
+          log('reticle_cloud_sync_failed', { root, error: report.error });
+          continue;
+        }
+        const moved =
+          report.runsSent > 0 ||
+          report.flowsSent > 0 ||
+          report.derivedSent.length > 0 ||
+          report.pulled > 0;
+        // The root is NAMED here and not in the single-root log below, because with several repos
+        // reporting, "synced 3 runs" without a directory is not an answer to "synced from where".
+        if (moved) log('reticle_cloud_synced', { root, summary: describeSync(report) });
+      } catch (error: unknown) {
+        log('reticle_cloud_sync_failed', {
+          root,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
 
   const cycle = async (): Promise<SyncReport | undefined> => {
     // Overlap guard: a slow cycle must not have a second one started on top of it, or two bundles
@@ -130,20 +227,14 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
             fix: 'run `reticle link` in this directory, or start the daemon in the linked one — nothing is being synced from here',
           });
       }
+      // Every OTHER linked root, first. Their failures are logged and never abort this daemon's own
+      // push: one repo whose credential was revoked must not silence the rest of the machine.
+      await syncOtherRoots();
+
       if (null === cloud.config) return undefined;
-      const full = diskSource(deps.reticleRoot);
-      const report = await runSyncCycle({
-        config: cloud.config,
-        source: {
-          runs: () => (cloud.policy.runs ? full.runs() : []),
-          flows: () => (cloud.policy.flows ? full.flows() : []),
-          derived: (kind) => (cloud.policy.memory ? full.derived(kind) : undefined),
-        },
-        sink: diskSink(deps.reticleRoot),
-        state: readCloudState(deps.reticleRoot),
-        now,
-        request,
-      });
+      const report = await pushRoot(deps.reticleRoot, cloud);
+      // `pushRoot` returns undefined only for an unlinked root, which the guard above has ruled out.
+      if (report === undefined) return undefined;
       if (report.error !== undefined) {
         if (report.error !== reportedError) {
           reportedError = report.error;
@@ -159,6 +250,13 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
           report.derivedSent.length > 0 ||
           report.pulled > 0;
         if (moved) log('reticle_cloud_synced', { summary: describeSync(report) });
+        /*
+         * A cycle that moved something means a drive is in progress, so the next one comes sooner;
+         * one that moved nothing means the machine is idle, so it backs straight off. The rate
+         * follows the work without needing to be told about sessions, and an idle laptop settles at
+         * the same cost it had before this existed.
+         */
+        nextDelay = moved ? activeIntervalMs : intervalMs;
       }
       return report;
     } catch (error: unknown) {
@@ -174,13 +272,16 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
     }
   };
 
+  /** The delay for the NEXT cycle: fast while the last one moved something, slow once it stops. */
+  let nextDelay = intervalMs;
+
   const schedule = (delay: number): void => {
     if (stopped) return;
     // Replace, never stack. `nudge` and the interval both schedule, and leaving the old timer armed
     // would let every nudge add a permanent extra cycle per minute for the life of the process.
     if (timer !== undefined) clearTimeout(timer);
     timer = setTimeout(() => {
-      void cycle().finally(() => schedule(intervalMs));
+      void cycle().finally(() => schedule(nextDelay));
     }, delay);
     // Unref'd: a pending sync must never be the reason a process refuses to exit.
     timer.unref?.();

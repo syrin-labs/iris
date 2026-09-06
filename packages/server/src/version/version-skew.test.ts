@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { describeSkew, sdkFix, daemonFix, type PeerIdentity } from './version-skew.js';
+import {
+  describeSkew,
+  sdkFix,
+  daemonFix,
+  isPlaywrightClosedError,
+  rewriteClosedAsSkew,
+  type PeerIdentity,
+} from './version-skew.js';
 
 /**
  * A 2.2.1 SDK against a 2.4.0 daemon agrees on `protocolVersion`, connects fine, and then disagrees
@@ -44,7 +51,7 @@ describe('describeSkew — the contract decides, not the version', () => {
     const msg = describeSkew(page({ version: '2.2.1', contract: 'bbbb2222' }), SELF) ?? '';
     expect(msg).toContain('2.2.1');
     expect(msg).toContain('2.4.1');
-    expect(msg).toMatch(/npm i -D @reticlehq\/react@2\.4\.1|reticle update/);
+    expect(msg).toMatch(/npm i -D @reticlehq\/browser@2\.4\.1|reticle update/);
   });
 
   it('treats a missing fingerprint plus a different version as skew — it predates the field', () => {
@@ -95,6 +102,30 @@ describe('the daemon pair', () => {
  * two numbers, which is the cheapest way for this to regress and the hardest to notice: the sentence
  * would still read fluently.
  */
+describe('Playwright closed-target wording under skew (#688)', () => {
+  const SKEW =
+    'version skew: the page is 2.2.1; this daemon is 2.4.1, and they speak DIFFERENT wire contracts. Tell the human to install the matching SDK.';
+
+  it('recognises the closed-page class Playwright puts on CDP tools', () => {
+    expect(
+      isPlaywrightClosedError(
+        new Error('page.screenshot: Target page, context or browser has been closed'),
+      ),
+    ).toBe(true);
+    expect(
+      isPlaywrightClosedError(new Error('page.setViewportSize: Target page has been closed')),
+    ).toBe(true);
+    expect(isPlaywrightClosedError(new Error('no browser session connected'))).toBe(false);
+  });
+
+  it('rewrites that class to the session skew sentence, and leaves other throws alone', () => {
+    const closed = new Error('page.screenshot: Target page, context or browser has been closed');
+    expect(rewriteClosedAsSkew(closed, SKEW)?.message).toBe(SKEW);
+    expect(rewriteClosedAsSkew(closed, undefined)).toBeUndefined();
+    expect(rewriteClosedAsSkew(new Error('no browser session connected'), SKEW)).toBeUndefined();
+  });
+});
+
 describe('a skew sentence names BOTH versions, not just the peer', () => {
   const SELF = { version: '2.5.0', contract: 'abc123' };
 

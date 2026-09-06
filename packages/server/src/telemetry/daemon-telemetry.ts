@@ -9,11 +9,34 @@
 import { TelemetryEventKind, type SessionSummary } from '@reticlehq/core';
 import { getTelemetry } from './telemetry.js';
 import { getSessionMetrics } from './session-metrics.js';
-import { profileProject } from './project-profile.js';
-import { startUpdateCheck } from '../update/update-nudge.js';
+import { profileProject, type InstallFacts } from './project-profile.js';
+import { hasProjectConnectedBefore } from '../session/connection-memory.js';
+import { readProjectId } from '../cli/cli-port.js';
+import { reticleStateHome } from '../daemon/daemon.js';
+import { startUpdateCheck, updateNudgeState } from '../update/update-nudge.js';
 import { markDaemonStart } from './mcp-connection.js';
 import { markInstrumentationClock } from './app-instrumented.js';
 import { markStallClock, STALL_AFTER_MS, stallUptime } from '../session/stall-clock.js';
+
+/**
+ * Whether an app for this project has ever reached Reticle, read from the same durable memory the
+ * no-session diagnosis and the server instructions read.
+ *
+ * Best-effort: an unreadable state home must never be the reason a daemon start emits nothing, and
+ * `undefined` here means "not measured" rather than "no". A `false` invented from a read error is
+ * exactly the lie this field exists to avoid — it would put the working installs into the cohort we
+ * are trying to size.
+ */
+function installFacts(cwd: string, port: number | undefined): InstallFacts | undefined {
+  if (port === undefined) return undefined;
+  try {
+    return {
+      appConnectedBefore: hasProjectConnectedBefore(reticleStateHome(), port, readProjectId(cwd)),
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /** Let the daemon finish coming up before walking the source tree for a profile. */
 const PROJECT_PROFILE_DELAY_MS = 5_000;
@@ -47,8 +70,25 @@ export const SESSION_FLUSH_MS = 5 * 60 * 1000;
  */
 export const FIRST_FLUSH_MS = 90 * 1000;
 
+/**
+ * Attach what the update nudge did to a summary that is about to be sent.
+ *
+ * Merged HERE rather than inside `SessionMetrics` deliberately: the nudge's state lives in the
+ * update module, and a second copy of it in the metrics object would be one more thing that can
+ * drift from the flag the delivery path actually reads. `summarize()` stays a pure roll-up of
+ * counters.
+ */
+function withNudgeState(summary: SessionSummary): SessionSummary {
+  const nudge = updateNudgeState();
+  return {
+    ...summary,
+    updateNudged: nudge.shown,
+    ...(nudge.offered === undefined ? {} : { updateOffered: nudge.offered }),
+  };
+}
+
 /** Stops the timers this installed. Called from the daemon's shutdown path. */
-export interface DaemonTelemetry {
+interface DaemonTelemetry {
   /**
    * Emit the final, rich session summary and stop flushing. Safe to call more than once.
    *
@@ -69,6 +109,13 @@ export interface DaemonTelemetry {
 export function installDaemonTelemetry(
   cwd: string,
   now: () => number = () => Date.now(),
+  /**
+   * The bridge port this daemon bound, so the profile can say whether an app for this project has
+   * EVER connected. Optional: a caller that does not know the port gets a profile without that bit
+   * rather than one with a guessed `false`, which is the value the whole field exists to make
+   * trustworthy.
+   */
+  port?: number,
 ): DaemonTelemetry {
   const metrics = getSessionMetrics(now);
   void getTelemetry().emit(TelemetryEventKind.DAEMON_STARTED);
@@ -88,7 +135,7 @@ export function installDaemonTelemetry(
   setTimeout(() => {
     try {
       void getTelemetry().emit(TelemetryEventKind.PROJECT_PROFILED, {
-        project: profileProject(cwd, now()),
+        project: profileProject(cwd, now(), installFacts(cwd, port)),
       });
     } catch {
       /* a profile is a nice-to-have; it must never touch the daemon */
@@ -117,7 +164,7 @@ export function installDaemonTelemetry(
     if (metrics.empty) return; // an idle window is not worth an event
     // NOT daemon_stopped: the daemon is still running. See SESSION_PROGRESS.
     void getTelemetry().emit(TelemetryEventKind.SESSION_PROGRESS, {
-      session: metrics.summarize(false),
+      session: withNudgeState(metrics.summarize(false)),
     });
     metrics.reset();
   };
@@ -139,7 +186,7 @@ export function installDaemonTelemetry(
         // The rich one: the whole session in a single event — duration, the tool histogram, error
         // shapes, verifications, browser launches. This is what replaced the per-tool-call event.
         await getTelemetry().emit(TelemetryEventKind.DAEMON_STOPPED, {
-          session: metrics.summarize(true, exit),
+          session: withNudgeState(metrics.summarize(true, exit)),
         });
       })();
       return stopped;

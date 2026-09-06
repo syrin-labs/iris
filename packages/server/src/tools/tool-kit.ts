@@ -161,7 +161,12 @@ export const intentArg = z
   .string()
   .optional()
   .describe(
-    'What this change is meant to make true, in your own words, or the id of an intent you already declared. ' +
+    'What this change is meant to make true — as a durable statement ABOUT THE PRODUCT, or the id of an intent you already declared. ' +
+      'Write it so a teammate who was not here understands it in six months: name the behaviour, not this run. ' +
+      'GOOD: "a filtered issue queue is a shareable link — the filter is in the URL". ' +
+      'BAD: "P1 step 5", "drive 2 of 2", "same as before the fix", "the board renders cleanly" — these name a session, ' +
+      'a step number or nothing checkable, and the person reading them later has none of that context. ' +
+      'This is shared memory: it is pooled per project and later agents read it back to avoid re-deriving what you just established. ' +
       'Recorded in .reticle/intent.json, the same ledger reticle_intent writes, and marked proved by this verdict if it passes.',
   );
 

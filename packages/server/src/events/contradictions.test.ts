@@ -18,6 +18,17 @@ const failedCall = (method = 'POST', url = '/api/x'): ReticleEvent =>
 
 const kinds = (events: ReticleEvent[]): string[] => findContradictions(events).map((c) => c.kind);
 
+/**
+ * The same window, stated as an ACTION's window.
+ *
+ * Every rule that reasons from "the UI moved forward" now requires an action to have moved it: over
+ * a window nothing is attributed to, a re-render and a failed poll merely co-occurred, and calling
+ * that a contradiction is how an app with any background traffic came to fail every verdict. These
+ * cases were always about a click's window — they simply never had to say so.
+ */
+const causedKinds = (events: ReticleEvent[]): string[] =>
+  findContradictions(events, { actionSince: 0 }).map((c) => c.kind);
+
 describe('findContradictions — cross-channel disagreement', () => {
   /**
    * The archetype, and the exact bug both desktop demo apps plant: the row disappears, the status
@@ -43,7 +54,9 @@ describe('findContradictions — cross-channel disagreement', () => {
   });
 
   it('catches a UI that advanced while its request failed', () => {
-    const found = findContradictions([domChanged(), failedCall('IPC', 'ipc://todos:archive')]);
+    const found = findContradictions([domChanged(), failedCall('IPC', 'ipc://todos:archive')], {
+      actionSince: 0,
+    });
     expect(found).toHaveLength(1);
     expect(found[0]?.kind).toBe(ContradictionKind.UI_ADVANCED_REQUEST_FAILED);
     expect(found[0]?.detail).toContain('ipc://todos:archive');
@@ -74,7 +87,7 @@ describe('findContradictions — cross-channel disagreement', () => {
       ev(EventType.STATE_CHANGE, { name: 'app', path: 'status', value: 'archived' }),
       failedCall(),
     ];
-    expect(kinds(silent)).toEqual([ContradictionKind.UI_ADVANCED_REQUEST_FAILED]);
+    expect(causedKinds(silent)).toEqual([ContradictionKind.UI_ADVANCED_REQUEST_FAILED]);
   });
 
   /**
@@ -87,11 +100,11 @@ describe('findContradictions — cross-channel disagreement', () => {
       ev(EventType.CONSOLE_ERROR, { message: 'save failed' }),
       failedCall(),
     ];
-    expect(kinds(logged)).toEqual([ContradictionKind.UI_ADVANCED_REQUEST_FAILED]);
+    expect(causedKinds(logged)).toEqual([ContradictionKind.UI_ADVANCED_REQUEST_FAILED]);
   });
 
   it('treats a store mutation as the UI advancing, not just the DOM', () => {
-    expect(kinds([stateChanged(), failedCall()])).toEqual([
+    expect(causedKinds([stateChanged(), failedCall()])).toEqual([
       ContradictionKind.UI_ADVANCED_REQUEST_FAILED,
     ]);
   });
@@ -113,7 +126,9 @@ describe('findContradictions — cross-channel disagreement', () => {
   });
 
   it('catches a successful write that changed nothing on the client', () => {
-    expect(kinds([okCall('POST', '/api/save')])).toEqual([ContradictionKind.RESPONSE_IGNORED]);
+    expect(causedKinds([okCall('POST', '/api/save')])).toEqual([
+      ContradictionKind.RESPONSE_IGNORED,
+    ]);
   });
 
   /**
@@ -221,7 +236,7 @@ describe('findContradictions — cross-channel disagreement', () => {
 
   it('catches the UI advancing over a request that never settled', () => {
     const pending = ev(EventType.NET_PENDING, { id: 'n99', method: 'POST', url: '/api/slow' });
-    expect(kinds([pending, domChanged()])).toEqual([ContradictionKind.REQUEST_NEVER_SETTLED]);
+    expect(causedKinds([pending, domChanged()])).toEqual([ContradictionKind.REQUEST_NEVER_SETTLED]);
   });
 
   it('does not flag an in-flight request when the UI did not move (the app is still waiting)', () => {
@@ -280,9 +295,9 @@ describe('the action landed on something that does not react', () => {
     expect(findContradictions([domChanged()], { action: 'click' })).toHaveLength(0);
     // A window that is NOT empty falls through to the ordinary rules — a successful write with no
     // client movement is still `response-ignored`, and must not be relabelled as "no effect".
-    expect(findContradictions([okCall()], { action: 'click' }).map((c) => c.kind)).toEqual([
-      ContradictionKind.RESPONSE_IGNORED,
-    ]);
+    expect(
+      findContradictions([okCall()], { action: 'click', actionSince: 0 }).map((c) => c.kind),
+    ).toEqual([ContradictionKind.RESPONSE_IGNORED]);
   });
 
   it('does not fire for actions that can legitimately move nothing', () => {
@@ -362,6 +377,47 @@ describe('the route moved and nothing was rendered for it', () => {
       ev(EventType.STATE_CHANGE, { path: 'view', value: 'deployments' }),
     ];
     expect(kinds(measured)).not.toContain(ContradictionKind.ROUTE_RENDERED_NOTHING);
+  });
+
+  /**
+   * A skip link (`href="#main-content"`) is a same-document hash change: the observable
+   * consequences are location.hash, focus, and scroll — not a DOM mutation or a route render.
+   * Grading it `route-rendered-nothing` made "did my skip link work" unanswerable.
+   */
+  it('stays silent for a same-page hash anchor — skip links do not render a new view', () => {
+    const skip = ev(EventType.ROUTE_CHANGE, {
+      from: 'http://localhost:5173/app',
+      to: 'http://localhost:5173/app#main-content',
+      pathname: '/app',
+      search: '',
+      hash: '#main-content',
+    });
+    expect(kinds([skip])).not.toContain(ContradictionKind.ROUTE_RENDERED_NOTHING);
+    expect(kinds([skip, attrOnly()])).not.toContain(ContradictionKind.ROUTE_RENDERED_NOTHING);
+  });
+
+  it('stays silent for href="#" (scroll to top), which is also same-document', () => {
+    const top = ev(EventType.ROUTE_CHANGE, {
+      from: 'http://localhost:5173/app#section',
+      to: 'http://localhost:5173/app#',
+      pathname: '/app',
+      search: '',
+      hash: '#',
+    });
+    expect(kinds([top])).not.toContain(ContradictionKind.ROUTE_RENDERED_NOTHING);
+  });
+
+  it('still flags a hash-router navigation to a blank view (`#/invoices`)', () => {
+    // Hash routers keep the route in the fragment. That IS a new view, and a blank one is
+    // the original true positive — silencing every hash change would hide it.
+    const hashRoute = ev(EventType.ROUTE_CHANGE, {
+      from: 'http://localhost:5173/#/home',
+      to: 'http://localhost:5173/#/invoices',
+      pathname: '/',
+      search: '',
+      hash: '#/invoices',
+    });
+    expect(kinds([hashRoute])).toContain(ContradictionKind.ROUTE_RENDERED_NOTHING);
   });
 });
 
@@ -521,11 +577,14 @@ describe('acknowledgement without relying on English', () => {
   });
 
   it('still reports when the state moved but never echoed the failure', () => {
-    const found = findContradictions([
-      failed500(),
-      ev(EventType.STATE_CHANGE, { name: 'app', path: 'zustand', value: 'gespeichert' }),
-      domChanged(),
-    ]);
+    const found = findContradictions(
+      [
+        failed500(),
+        ev(EventType.STATE_CHANGE, { name: 'app', path: 'zustand', value: 'gespeichert' }),
+        domChanged(),
+      ],
+      { actionSince: 0 },
+    );
     expect(found.map((c) => c.kind)).toEqual([ContradictionKind.UI_ADVANCED_REQUEST_FAILED]);
   });
 
@@ -538,11 +597,14 @@ describe('acknowledgement without relying on English', () => {
       ok: false,
       error: 'no',
     });
-    const found = findContradictions([
-      shortErr,
-      ev(EventType.STATE_CHANGE, { name: 'app', path: 'x', value: 'now saved' }),
-      domChanged(),
-    ]);
+    const found = findContradictions(
+      [
+        shortErr,
+        ev(EventType.STATE_CHANGE, { name: 'app', path: 'x', value: 'now saved' }),
+        domChanged(),
+      ],
+      { actionSince: 0 },
+    );
     expect(found.map((c) => c.kind)).toEqual([ContradictionKind.UI_ADVANCED_REQUEST_FAILED]);
   });
 });
@@ -623,7 +685,9 @@ describe('a consequence handed to another browsing context', () => {
   });
 
   it('keeps response-ignored when nothing opened', () => {
-    expect(kinds([okCall('POST', '/api/save')])).toEqual([ContradictionKind.RESPONSE_IGNORED]);
+    expect(causedKinds([okCall('POST', '/api/save')])).toEqual([
+      ContradictionKind.RESPONSE_IGNORED,
+    ]);
   });
 });
 

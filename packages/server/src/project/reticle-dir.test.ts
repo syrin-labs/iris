@@ -14,6 +14,9 @@ import {
   reticleDirPaths,
   readContract,
   sessionDirPath,
+  visualDir,
+  visualDiffPath,
+  visualPath,
   writeContract,
 } from './reticle-dir.js';
 import { createNodeFileSystem, type FileSystemPort } from './fs-port.js';
@@ -194,5 +197,50 @@ describe('reticle-dir — temp-dir filesystem, never touches the repo', () => {
     await writeFile(reticleDirPaths(root).contract, '[]', 'utf8');
     const r = await readContract(fs, root);
     expect(r).toEqual({ ok: false, reason: ContractReadError.MALFORMED });
+  });
+});
+
+/**
+ * A visual baseline is only comparable within the runtime that produced it.
+ *
+ * An Electron window, a Tauri webview and a browser tab render the same url differently — different
+ * chrome, different fonts, different device pixel ratio, a webview that is not the browser at all.
+ * Sharing one baseline across them makes every cross-runtime diff wrong in one of two directions,
+ * and the quiet direction is the dangerous one: a baseline overwritten from another runtime turns a
+ * later real regression into a pass.
+ *
+ * Scoped the way flows already are — a subdir when there is something to scope by, the flat path
+ * otherwise, so pre-existing baselines stay exactly where they are and keep matching. `web` stays
+ * flat for the same reason: every baseline captured before this existed came from a driven browser,
+ * because the SDK has no screenshotter.
+ */
+describe('visual baselines are scoped to the runtime that produced them', () => {
+  it('keeps a desktop runtime in its own subdirectory', () => {
+    expect(visualPath('/p/.reticle', 'home', 'electron')).toBe(
+      join('/p/.reticle', 'visual', 'electron', 'home.png'),
+    );
+    expect(visualPath('/p/.reticle', 'home', 'tauri')).toBe(
+      join('/p/.reticle', 'visual', 'tauri', 'home.png'),
+    );
+  });
+
+  it('leaves web and unknown runtimes on the flat legacy path', () => {
+    const flat = join('/p/.reticle', 'visual', 'home.png');
+    expect(visualPath('/p/.reticle', 'home', 'web')).toBe(flat);
+    expect(visualPath('/p/.reticle', 'home')).toBe(flat);
+  });
+
+  it('scopes the overlay diff the same way, so it lands beside its baseline', () => {
+    expect(visualDiffPath('/p/.reticle', 'home', 'electron')).toBe(
+      join('/p/.reticle', 'visual', 'electron', 'home.diff.png'),
+    );
+    expect(visualDiffPath('/p/.reticle', 'home')).toBe(
+      join('/p/.reticle', 'visual', 'home.diff.png'),
+    );
+  });
+
+  it('names the directory a write has to create', () => {
+    expect(visualDir('/p/.reticle', 'electron')).toBe(join('/p/.reticle', 'visual', 'electron'));
+    expect(visualDir('/p/.reticle')).toBe(join('/p/.reticle', 'visual'));
   });
 });

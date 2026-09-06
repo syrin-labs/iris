@@ -196,7 +196,7 @@ describe('shapes the panel must survive', () => {
 
   it('renders the REST of the report when the defect list is missing', () => {
     const { defects: _dropped, ...older } = scope([]);
-    expect(reportBodyHtml(older as ImpactScope)).toContain('defects caught');
+    expect(reportBodyHtml(older as ImpactScope)).toContain('refused to pass');
   });
 
   it('repaints when a later snapshot arrives while the panel is open', () => {

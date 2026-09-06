@@ -130,9 +130,123 @@ describe('a quiet machine costs nothing', () => {
     expect(calls.some((c) => c.url.includes('/v1/sync/pull'))).toBe(true);
   });
 
-  it('says so in words a human can read', async () => {
-    const { report } = await cycle({ status: {} });
-    expect(describeSync(report)).toBe('nothing to send');
+  it('says so in words a human can read, and distinguishes quiet from empty', async () => {
+    /*
+     * A machine that has recorded something and already pushed it is QUIET, and says the quiet
+     * thing. A repo holding no artifacts at all is a different situation wearing the same words —
+     * usually an app announcing no projectId, whose runs are pooling under another root — so it
+     * gets its own sentence. Conflating them cost a full investigation: a linked repo answered
+     * "nothing to send" straight after two verdicts had been driven through it.
+     */
+    const quiet = await cycle(
+      { status: { knownRunIds: ['a'], stateHashes: { impact: hashPayload(IMPACT) } } },
+      source({
+        runs: () => [{ runId: 'a', payload: { runId: 'a' } }],
+        derived: (kind) => ('impact' === kind ? IMPACT : undefined),
+      }),
+    );
+    expect(describeSync(quiet.report)).toBe('nothing to send');
+
+    const empty = await cycle({ status: {} });
+    expect(describeSync(empty.report)).toContain('nothing recorded');
+  });
+});
+
+/**
+ * What the user is told when the server took the push and threw all of it away.
+ *
+ * The summary counted rejections but printed the reason for none of them, and — because it builds
+ * the sentence from what was ACCEPTED — a bundle that was entirely refused read as "nothing to
+ * send, 3 rejected". Both halves wrong in the same breath: something was very much sent, and the
+ * one fact that would let anybody act (why) was the one fact dropped. This is the shape a version
+ * skew takes in the field, where an older client's payloads are refused one by one.
+ */
+/**
+ * "Nothing to send" answers two very different questions with one sentence.
+ *
+ * Healthy: everything local has already been pushed, so this cycle is a no-op — the normal steady
+ * state. Broken: this repo has recorded NOTHING, because the app announces no project and its runs
+ * are pooling into some other root entirely. The second is a silent data-loss bug and it wore the
+ * first one's words.
+ *
+ * That ambiguity cost a full investigation here: a linked repo answered "nothing to send"
+ * immediately after two verdicts had been driven through it, and the message gave no way to tell
+ * which of the two situations it was.
+ */
+describe('an empty repo and an up-to-date repo do not say the same thing', () => {
+  const line = (over: Partial<Parameters<typeof describeSync>[0]>): string =>
+    describeSync({
+      ok: true,
+      runsSent: 0,
+      runsRejected: [],
+      flowsSent: 0,
+      derivedSent: [],
+      pulled: 0,
+      morePending: false,
+      ...over,
+    });
+
+  it('says nothing is RECORDED when the repo holds no artifacts at all', () => {
+    expect(line({ localIsEmpty: true })).toContain('nothing recorded');
+  });
+
+  it('still says nothing to send when there is local data, all of it already pushed', () => {
+    // The steady state must stay quiet — a warning every cycle is a warning nobody reads.
+    expect(line({ localIsEmpty: false })).toBe('nothing to send');
+  });
+
+  it('says nothing about emptiness when something actually went', () => {
+    expect(line({ localIsEmpty: false, runsSent: 2 })).toContain('2 run(s)');
+    expect(line({ localIsEmpty: false, runsSent: 2 })).not.toContain('nothing');
+  });
+});
+
+describe('when the server refuses what was pushed', () => {
+  const refused = (rejected: Array<{ index: number; reason: string }>): string =>
+    describeSync({
+      ok: true,
+      runsSent: 0,
+      runsRejected: rejected,
+      flowsSent: 0,
+      derivedSent: [],
+      pulled: 0,
+      morePending: false,
+    });
+
+  it('does not claim there was nothing to send', () => {
+    const line = refused([{ index: 0, reason: 'unknown field "verdicts"' }]);
+    expect(line).not.toContain('nothing to send');
+  });
+
+  it('names the reason, not just the count — a number alone is not actionable', () => {
+    const line = refused([{ index: 0, reason: 'unknown field "verdicts"' }]);
+    expect(line).toContain('unknown field "verdicts"');
+  });
+
+  it('gives one reason and the remaining count when several disagree', () => {
+    // A run per line would bury the summary. One example plus a count is enough to act on, and
+    // `reticle sync` prints the full list separately.
+    const line = refused([
+      { index: 0, reason: 'unknown field "verdicts"' },
+      { index: 1, reason: 'unknown field "verdicts"' },
+      { index: 2, reason: 'missing runId' },
+    ]);
+    expect(line).toContain('unknown field "verdicts"');
+    expect(line).toContain('3');
+  });
+
+  it('still reports what DID land when only some were refused', () => {
+    const line = describeSync({
+      ok: true,
+      runsSent: 2,
+      runsRejected: [{ index: 2, reason: 'missing runId' }],
+      flowsSent: 0,
+      derivedSent: [],
+      pulled: 0,
+      morePending: false,
+    });
+    expect(line).toContain('2 run(s)');
+    expect(line).toContain('missing runId');
   });
 });
 

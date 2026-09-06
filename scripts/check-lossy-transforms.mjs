@@ -118,6 +118,8 @@ export const READ_PATH = Object.freeze({
     registerStore: [Declaration.NONE, 'registration, reads nothing'],
     unregisterStore: [Declaration.NONE, 'registration, reads nothing'],
     storeNames: [Declaration.NONE, 'names only, never truncated'],
+    sourceOwner: [Declaration.NONE, 'a registered name or undefined; reads no store state'],
+    markAdapterSource: [Declaration.NONE, 'records what an adapter wraps; reads nothing'],
     subscribableStores: [Declaration.NONE, 'registry projection, never truncated'],
     readStoresRaw: [
       Declaration.NONE,

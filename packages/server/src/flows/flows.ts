@@ -6,6 +6,7 @@ import {
   FlowErrorCode,
   FlowFileSchema,
   QueryBy,
+  defaultIsSensitiveKey,
 } from '@reticlehq/core';
 import type {
   ActionType,
@@ -24,6 +25,7 @@ import { IntentStore } from '../intent/intent-store.js';
 import type { CompiledProgram, RecordedStep } from './recordings.js';
 import type { FileSystemPort } from '../project/fs-port.js';
 import { flowDir, flowPath, reticleDirPaths, isValidFlowName } from '../project/reticle-dir.js';
+import { describeFlowZodFailure, parseFlowFileText } from './flow-expect-grammar.js';
 
 /**
  * A projectId only scopes storage when it's a safe single path segment (it's stamped from the
@@ -39,7 +41,8 @@ export interface Clock {
 }
 
 /** Discriminated result so callers never branch on free strings. */
-export type FlowResult<T> = { ok: true; value: T } | { ok: false; code: FlowErrorCode };
+export type FlowResult<T> =
+  { ok: true; value: T } | { ok: false; code: FlowErrorCode; detail?: string };
 
 /**
  * The anchor for a DEGRADED step (no resolvable testid). A volatile eXX ref is NEVER persisted —
@@ -126,6 +129,463 @@ function subStepToFlowStep(raw: unknown): FlowStep {
   return buildStep(ReticleTool.ACT, anchor, action, args, degraded);
 }
 
+/**
+ * What a redacted fill value is replaced WITH.
+ *
+ * Replaced, never dropped. Replay still needs a step there, and a flow that silently loses its
+ * password step drifts at sign-in forever with no explanation of why. The placeholder also tells a
+ * reader what to do: the value belongs in the environment, not in a file they are about to commit.
+ */
+export const REDACTED_FILL = '<redacted: supply at replay>';
+
+/**
+ * Strip credentials from what gets written to disk.
+ *
+ *  is the GIT-CHECKED flow store — that is its whole purpose, and this file's own
+ * header already insists a volatile ref must never "leak into a git-checked file". A password did:
+ * recording a sign-in captures the fill VALUE verbatim, so the first flow anybody records on an
+ * authenticated app writes their password into a file they then commit. Found by driving a fresh
+ * workspace, where .claude/scheduled_tasks.lock
+.claude/skills/reticle-ui/SKILL.md
+.env.example
+.gcloudignore
+.gitattributes
+.github/workflows/ci.yml
+.gitignore
+.prettierignore
+.prettierrc
+.reticle/flows/console-4734c2f0/sign-in.json
+.reticle/flows/console-4734c2f0/triage-filter-link.json
+.reticle/flows/console-4734c2f0/triage-queue.json
+CLAUDE.md
+LICENSE
+README.md
+apps/api/.env.example
+apps/api/.gitignore
+apps/api/.prettierrc.json
+apps/api/certs/supabase-prod-ca.crt
+apps/api/eslint.config.mjs
+apps/api/package.json
+apps/api/pnpm-lock.yaml
+apps/api/scripts/gen-license-keypair.mjs
+apps/api/scripts/purge-test-user.mjs
+apps/api/scripts/setup-razorpay-plans.mjs
+apps/api/src/constants/auth.constants.ts
+apps/api/src/constants/billing.constants.ts
+apps/api/src/constants/corpus.constants.ts
+apps/api/src/constants/http.constants.ts
+apps/api/src/constants/identity.constants.ts
+apps/api/src/constants/issues.constants.ts
+apps/api/src/constants/overview.constants.ts
+apps/api/src/constants/project.constants.ts
+apps/api/src/constants/review.constants.ts
+apps/api/src/constants/runs.constants.ts
+apps/api/src/constants/verification.constants.ts
+apps/api/src/domain/admin/admin-gate.test.ts
+apps/api/src/domain/admin/admin.routes.test.ts
+apps/api/src/domain/admin/admin.routes.ts
+apps/api/src/domain/admin/admin.service.ts
+apps/api/src/domain/billing/billing.routes.ts
+apps/api/src/domain/billing/coupon.routes.test.ts
+apps/api/src/domain/billing/coupons.service.ts
+apps/api/src/domain/billing/entitlements.test.ts
+apps/api/src/domain/billing/entitlements.ts
+apps/api/src/domain/billing/plans.routes.test.ts
+apps/api/src/domain/billing/subscription.routes.test.ts
+apps/api/src/domain/corpus/corpus.service.test.ts
+apps/api/src/domain/corpus/corpus.service.ts
+apps/api/src/domain/flows/flows.routes.ts
+apps/api/src/domain/flows/flows.service.test.ts
+apps/api/src/domain/flows/flows.service.ts
+apps/api/src/domain/identity/access-control.routes.test.ts
+apps/api/src/domain/identity/api-key.test.ts
+apps/api/src/domain/identity/api-key.ts
+apps/api/src/domain/identity/auth-audit.service.ts
+apps/api/src/domain/identity/create-org.routes.test.ts
+apps/api/src/domain/identity/device-auth.service.ts
+apps/api/src/domain/identity/identity.routes.ts
+apps/api/src/domain/identity/identity.service.test.ts
+apps/api/src/domain/identity/identity.service.ts
+apps/api/src/domain/identity/identity.types.test.ts
+apps/api/src/domain/identity/identity.types.ts
+apps/api/src/domain/identity/invites.test.ts
+apps/api/src/domain/identity/join-workspace.test.ts
+apps/api/src/domain/identity/login-code.ts
+apps/api/src/domain/identity/members.routes.test.ts
+apps/api/src/domain/identity/members.routes.ts
+apps/api/src/domain/identity/oauth.routes.test.ts
+apps/api/src/domain/identity/oauth.routes.ts
+apps/api/src/domain/identity/password-auth.test.ts
+apps/api/src/domain/identity/password-routes.test.ts
+apps/api/src/domain/identity/password.test.ts
+apps/api/src/domain/identity/password.ts
+apps/api/src/domain/identity/permissions.test.ts
+apps/api/src/domain/identity/permissions.ts
+apps/api/src/domain/identity/project-scope.routes.test.ts
+apps/api/src/domain/identity/team-scenarios.test.ts
+apps/api/src/domain/ingest/agent-attribution.test.ts
+apps/api/src/domain/ingest/ingest.service.ts
+apps/api/src/domain/insights/insights.routes.test.ts
+apps/api/src/domain/insights/insights.routes.ts
+apps/api/src/domain/insights/insights.service.ts
+apps/api/src/domain/issues/attribution-filter.test.ts
+apps/api/src/domain/issues/issue-extract.test.ts
+apps/api/src/domain/issues/issue-extract.ts
+apps/api/src/domain/issues/issue-owner.test.ts
+apps/api/src/domain/issues/issue-repair.test.ts
+apps/api/src/domain/issues/issues.routes.test.ts
+apps/api/src/domain/issues/issues.routes.ts
+apps/api/src/domain/issues/issues.service.test.ts
+apps/api/src/domain/issues/issues.service.ts
+apps/api/src/domain/licensing/licensing.service.test.ts
+apps/api/src/domain/licensing/licensing.service.ts
+apps/api/src/domain/licensing/subscription.service.test.ts
+apps/api/src/domain/licensing/subscription.service.ts
+apps/api/src/domain/memory/memory-constants.ts
+apps/api/src/domain/memory/memory-from-intent.test.ts
+apps/api/src/domain/memory/memory-from-intent.ts
+apps/api/src/domain/memory/memory-merge.test.ts
+apps/api/src/domain/memory/memory-merge.ts
+apps/api/src/domain/memory/memory.routes.test.ts
+apps/api/src/domain/memory/memory.routes.ts
+apps/api/src/domain/memory/memory.service.ts
+apps/api/src/domain/overview/honesty.test.ts
+apps/api/src/domain/overview/overview.routes.ts
+apps/api/src/domain/overview/overview.service.test.ts
+apps/api/src/domain/overview/overview.service.ts
+apps/api/src/domain/project/project-access.routes.ts
+apps/api/src/domain/project/project-access.test.ts
+apps/api/src/domain/project/project-cascade.test.ts
+apps/api/src/domain/project/project-name.test.ts
+apps/api/src/domain/project/project.routes.ts
+apps/api/src/domain/project/project.service.test.ts
+apps/api/src/domain/project/project.service.ts
+apps/api/src/domain/reviews/review.service.test.ts
+apps/api/src/domain/reviews/review.service.ts
+apps/api/src/domain/runs/regrade-backfill.test.ts
+apps/api/src/domain/runs/regrade-backfill.ts
+apps/api/src/domain/runs/run-grade.test.ts
+apps/api/src/domain/runs/run-grade.ts
+apps/api/src/domain/runs/runs.routes.ts
+apps/api/src/domain/runs/runs.service.test.ts
+apps/api/src/domain/runs/runs.service.ts
+apps/api/src/domain/sync/permutations.test.ts
+apps/api/src/domain/sync/sync.routes.test.ts
+apps/api/src/domain/sync/sync.routes.ts
+apps/api/src/domain/sync/sync.service.ts
+apps/api/src/domain/verifications/verifications.routes.ts
+apps/api/src/domain/verifications/verifications.service.test.ts
+apps/api/src/domain/verifications/verifications.service.ts
+apps/api/src/http/app-context.ts
+apps/api/src/http/app.test.ts
+apps/api/src/http/app.ts
+apps/api/src/http/cookies.ts
+apps/api/src/http/guards.ts
+apps/api/src/http/http-kit.ts
+apps/api/src/http/malformed-body.test.ts
+apps/api/src/http/server.ts
+apps/api/src/http/spa.test.ts
+apps/api/src/platform/auth/session.test.ts
+apps/api/src/platform/auth/session.ts
+apps/api/src/platform/clock.ts
+apps/api/src/platform/config.test.ts
+apps/api/src/platform/config.ts
+apps/api/src/platform/db/database.test.ts
+apps/api/src/platform/db/database.ts
+apps/api/src/platform/db/schema.ts
+apps/api/src/platform/google-id-token.test.ts
+apps/api/src/platform/google-id-token.ts
+apps/api/src/platform/id.ts
+apps/api/src/platform/license-signer.ts
+apps/api/src/platform/mailer.test.ts
+apps/api/src/platform/mailer.ts
+apps/api/src/platform/oauth.test.ts
+apps/api/src/platform/oauth.ts
+apps/api/src/platform/payment.ts
+apps/api/src/platform/rate-limit.test.ts
+apps/api/src/platform/rate-limit.ts
+apps/api/src/platform/razorpay.test.ts
+apps/api/src/platform/razorpay.ts
+apps/api/src/platform/reticle-runner.test.ts
+apps/api/src/platform/reticle-runner.ts
+apps/api/src/platform/runner.ts
+apps/api/src/platform/verification-worker.ts
+apps/api/src/test-support/flow-fixture.ts
+apps/api/src/test-support/run-fixture.ts
+apps/api/src/types/brand.ts
+apps/api/src/types/fastify.d.ts
+apps/api/tsconfig.json
+apps/api/vitest.config.ts
+apps/console/.env.example
+apps/console/.gitignore
+apps/console/.prettierrc.json
+apps/console/.reticle/cloud.json
+apps/console/components.json
+apps/console/eslint.config.mjs
+apps/console/index.html
+apps/console/package.json
+apps/console/pnpm-lock.yaml
+apps/console/scripts/selfcheck.mjs
+apps/console/src/App.tsx
+apps/console/src/api/client.ts
+apps/console/src/api/endpoints.ts
+apps/console/src/api/types.ts
+apps/console/src/app/app-shell.tsx
+apps/console/src/app/auth-context.tsx
+apps/console/src/app/live.ts
+apps/console/src/app/new-workspace.tsx
+apps/console/src/app/org-switcher.tsx
+apps/console/src/app/project-context.test.tsx
+apps/console/src/app/project-context.tsx
+apps/console/src/app/project-switcher.tsx
+apps/console/src/app/scope-notice.tsx
+apps/console/src/app/theme.ts
+apps/console/src/app/toast.tsx
+apps/console/src/components/ui.tsx
+apps/console/src/constants/api.constants.ts
+apps/console/src/design/tailwind.css
+apps/console/src/design/theme.css
+apps/console/src/design/tokens.ts
+apps/console/src/features/auth/device-view.tsx
+apps/console/src/features/auth/login-view.tsx
+apps/console/src/features/billing/billing-view.tsx
+apps/console/src/features/billing/redeem-panel.tsx
+apps/console/src/features/connect/connect-view.test.tsx
+apps/console/src/features/connect/connect-view.tsx
+apps/console/src/features/connect/copy-button.tsx
+apps/console/src/features/issues/assignee.tsx
+apps/console/src/features/issues/expected-actual.tsx
+apps/console/src/features/issues/fix-prompt.tsx
+apps/console/src/features/issues/issues-view.test.tsx
+apps/console/src/features/issues/issues-view.tsx
+apps/console/src/features/issues/source-link.tsx
+apps/console/src/features/keys/keys-view.test.tsx
+apps/console/src/features/keys/keys-view.tsx
+apps/console/src/features/memory/memory-view.tsx
+apps/console/src/features/overview/getting-started.test.tsx
+apps/console/src/features/overview/getting-started.tsx
+apps/console/src/features/overview/impact-board.test.tsx
+apps/console/src/features/overview/impact-board.tsx
+apps/console/src/features/overview/impact-format.ts
+apps/console/src/features/overview/overview-view.test.tsx
+apps/console/src/features/overview/overview-view.tsx
+apps/console/src/features/overview/people-panel.tsx
+apps/console/src/features/overview/trust-panels.test.tsx
+apps/console/src/features/overview/trust-panels.tsx
+apps/console/src/features/runs/runs-view.tsx
+apps/console/src/features/settings/members-panel.test.tsx
+apps/console/src/features/settings/members-panel.tsx
+apps/console/src/features/settings/plan-panel.tsx
+apps/console/src/features/settings/project-access-panel.test.tsx
+apps/console/src/features/settings/project-access-panel.tsx
+apps/console/src/features/settings/settings-view.test.tsx
+apps/console/src/features/settings/settings-view.tsx
+apps/console/src/lib/utils.ts
+apps/console/src/main.tsx
+apps/console/src/test-setup.ts
+apps/console/src/test-support.ts
+apps/console/src/ui/alert-dialog.tsx
+apps/console/src/ui/avatar.tsx
+apps/console/src/ui/badge.tsx
+apps/console/src/ui/button.tsx
+apps/console/src/ui/card.tsx
+apps/console/src/ui/checkbox.tsx
+apps/console/src/ui/command.tsx
+apps/console/src/ui/dialog.tsx
+apps/console/src/ui/dropdown-menu.tsx
+apps/console/src/ui/index.ts
+apps/console/src/ui/input.tsx
+apps/console/src/ui/label.tsx
+apps/console/src/ui/popover.tsx
+apps/console/src/ui/scroll-area.tsx
+apps/console/src/ui/select.tsx
+apps/console/src/ui/separator.tsx
+apps/console/src/ui/sheet.tsx
+apps/console/src/ui/skeleton.tsx
+apps/console/src/ui/sonner.tsx
+apps/console/src/ui/switch.tsx
+apps/console/src/ui/table.tsx
+apps/console/src/ui/tabs.tsx
+apps/console/src/ui/textarea.tsx
+apps/console/src/ui/tooltip.tsx
+apps/console/tsconfig.json
+apps/console/vite.config.ts
+apps/console/vitest.config.ts
+apps/verifier/package.json
+apps/verifier/src/anthropic-driver.test.ts
+apps/verifier/src/anthropic-driver.ts
+apps/verifier/src/bench.ts
+apps/verifier/src/best-effort.ts
+apps/verifier/src/call-tool.test.ts
+apps/verifier/src/call-tool.ts
+apps/verifier/src/capability.ts
+apps/verifier/src/cli.ts
+apps/verifier/src/coverage.test.ts
+apps/verifier/src/coverage.ts
+apps/verifier/src/differential.test.ts
+apps/verifier/src/differential.ts
+apps/verifier/src/explore/routes-memory.test.ts
+apps/verifier/src/explore/routes.test.ts
+apps/verifier/src/explore/routes.ts
+apps/verifier/src/explore/scope.test.ts
+apps/verifier/src/explore/scope.ts
+apps/verifier/src/explore/verify-routes-live.test.ts
+apps/verifier/src/explore/verify-routes.test.ts
+apps/verifier/src/explore/verify-routes.ts
+apps/verifier/src/gateway-live.test.ts
+apps/verifier/src/gateway.test.ts
+apps/verifier/src/gateway.ts
+apps/verifier/src/grade-reconcile.test.ts
+apps/verifier/src/grade.ts
+apps/verifier/src/harness.test.ts
+apps/verifier/src/harness.ts
+apps/verifier/src/index.ts
+apps/verifier/src/inject/inject-live.test.ts
+apps/verifier/src/inject/inject-run.test.ts
+apps/verifier/src/inject/injecting-launcher.test.ts
+apps/verifier/src/inject/injecting-launcher.ts
+apps/verifier/src/inject/origin-bridges.test.ts
+apps/verifier/src/inject/origin-bridges.ts
+apps/verifier/src/inject/sdk-bundle.test.ts
+apps/verifier/src/inject/sdk-bundle.ts
+apps/verifier/src/memory/knowledge-store.test.ts
+apps/verifier/src/memory/knowledge-store.ts
+apps/verifier/src/model/app-model-starting-route.test.ts
+apps/verifier/src/model/app-model.test.ts
+apps/verifier/src/model/app-model.ts
+apps/verifier/src/oracles/crawl-artifact.test.ts
+apps/verifier/src/oracles/crawl-artifact.ts
+apps/verifier/src/oracles/finding.ts
+apps/verifier/src/oracles/history.test.ts
+apps/verifier/src/oracles/history.ts
+apps/verifier/src/oracles/index.ts
+apps/verifier/src/oracles/metamorphic.test.ts
+apps/verifier/src/oracles/metamorphic.ts
+apps/verifier/src/oracles/state-write-drift.test.ts
+apps/verifier/src/oracles/state-write-drift.ts
+apps/verifier/src/parallel/fanout.test.ts
+apps/verifier/src/parallel/fanout.ts
+apps/verifier/src/path-segment.test.ts
+apps/verifier/src/path-segment.ts
+apps/verifier/src/precision.test.ts
+apps/verifier/src/precision.ts
+apps/verifier/src/preview/readiness-run.test.ts
+apps/verifier/src/preview/readiness.test.ts
+apps/verifier/src/preview/readiness.ts
+apps/verifier/src/promote.test.ts
+apps/verifier/src/promote.ts
+apps/verifier/src/regression.test.ts
+apps/verifier/src/regression.ts
+apps/verifier/src/report-gaps.test.ts
+apps/verifier/src/report-routes.test.ts
+apps/verifier/src/report.test.ts
+apps/verifier/src/report.ts
+apps/verifier/src/reticle-toolset.test.ts
+apps/verifier/src/reticle-toolset.ts
+apps/verifier/src/runner.test.ts
+apps/verifier/src/runner.ts
+apps/verifier/src/serve.ts
+apps/verifier/src/store-fs.test.ts
+apps/verifier/src/store-fs.ts
+apps/verifier/src/suite/derive-expect.test.ts
+apps/verifier/src/suite/derive-expect.ts
+apps/verifier/src/suite/domains.test.ts
+apps/verifier/src/suite/domains.ts
+apps/verifier/src/suite/flow-health.test.ts
+apps/verifier/src/suite/flow-health.ts
+apps/verifier/src/suite/flow-identity.test.ts
+apps/verifier/src/suite/flow-identity.ts
+apps/verifier/src/suite/replay-live.test.ts
+apps/verifier/src/suite/replay.test.ts
+apps/verifier/src/suite/replay.ts
+apps/verifier/src/suite/route-set.test.ts
+apps/verifier/src/suite/route-set.ts
+apps/verifier/src/suite/route-tagging.test.ts
+apps/verifier/src/suite/segment.test.ts
+apps/verifier/src/suite/segment.ts
+apps/verifier/src/suite/suite-store.test.ts
+apps/verifier/src/suite/suite-store.ts
+apps/verifier/src/suite/unproven.test.ts
+apps/verifier/src/suite/unproven.ts
+apps/verifier/src/suite/write-set.ts
+apps/verifier/src/tool-contract.test.ts
+apps/verifier/src/transport.test.ts
+apps/verifier/src/transport.ts
+apps/verifier/src/with-timeout.test.ts
+apps/verifier/src/with-timeout.ts
+apps/verifier/tsconfig.json
+deploy/README.md
+deploy/api.Dockerfile
+deploy/deploy.sh
+deploy/secrets.env.example
+deploy/verifier.Dockerfile
+docs/fixtures.md
+docs/gates.md
+docs/persona.md
+docs/service-api.md
+eslint.config.mjs
+eval/fixtures/index.html
+eval/fixtures/package.json
+eval/fixtures/src/main.ts
+eval/fixtures/src/manifest.ts
+eval/fixtures/src/scenario.ts
+eval/fixtures/src/scenarios/canvas.ts
+eval/fixtures/src/scenarios/checkout.ts
+eval/fixtures/src/scenarios/dashboard.ts
+eval/fixtures/src/scenarios/game.ts
+eval/fixtures/src/scenarios/index.ts
+eval/fixtures/src/scenarios/landing.ts
+eval/fixtures/src/scenarios/realtime.ts
+eval/fixtures/src/scenarios/trading.ts
+eval/fixtures/src/scenarios/video.ts
+eval/fixtures/src/scenarios/workspace.ts
+eval/fixtures/src/styles.css
+eval/fixtures/tsconfig.json
+eval/fixtures/vite.config.ts
+package.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+pre-commit.sh
+scripts/capacity.mjs
+scripts/eval-env.sh
+scripts/token-cost.mjs
+tsconfig.base.json
+tsconfig.json
+turbo.json confirmed a tracked flow holding a plaintext password.
+ *
+ * The decision keys off the ANCHOR, not the value. The anchor names the field — ,
+ *  — so a credential is recognised by WHERE it was typed rather than by guessing whether
+ * the characters look secret, which is the guess that both over-redacts a search box and misses a
+ * password that happens to be a dictionary word.
+ *
+ *  is the same rule the network channel already redacts by. One rule, so a
+ * field considered sensitive on the wire cannot be considered safe on disk.
+ */
+function redactSecretFill(
+  anchor: FlowAnchor,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof args['value'] !== 'string') return args;
+  const field = anchorFieldName(anchor);
+  if (field === undefined || !defaultIsSensitiveKey(field)) return args;
+  return { ...args, value: REDACTED_FILL };
+}
+
+/**
+ * What the anchor CALLS the field it points at.
+ *
+ * Every anchor kind names its target differently and all of them can name a password: a testid
+ * (auth-password), an accessible name (role=textbox, name="Password"), a signal. Checking only the
+ * testid variant would redact the app that uses test ids and quietly leak the one that does not —
+ * and an app without test ids is exactly the app whose flows were recorded by role.
+ */
+function anchorFieldName(anchor: FlowAnchor): string | undefined {
+  if (AnchorKind.TESTID === anchor.kind) return anchor.value;
+  if (AnchorKind.ROLE === anchor.kind) return anchor.name;
+  if (AnchorKind.SIGNAL === anchor.kind) return anchor.name;
+  return undefined;
+}
+
 function buildStep(
   tool: string,
   anchor: FlowAnchor,
@@ -133,7 +593,7 @@ function buildStep(
   args: Record<string, unknown>,
   degraded: boolean,
 ): FlowStep {
-  const step: FlowStep = { tool, anchor, args };
+  const step: FlowStep = { tool, anchor, args: redactSecretFill(anchor, args) };
   if (action !== undefined) step.action = action;
   if (degraded) step.degraded = true;
   return step;
@@ -315,7 +775,15 @@ export class FlowStore {
     // per-project subdir. Both come from the same `pid`, so on-disk location and content always agree.
     const stamped = pid === undefined ? flow : { ...flow, projectId: pid };
     const parsed = FlowFileSchema.safeParse(stamped);
-    if (!parsed.success) return { ok: false, code: FlowErrorCode.PARSE_FAILED };
+    if (!parsed.success) {
+      // Named, not bare: the load path already says which step and key it choked on, and a save
+      // that refuses in silence sends the caller to the file to guess at what a load would tell it.
+      return {
+        ok: false,
+        code: FlowErrorCode.PARSE_FAILED,
+        detail: describeFlowZodFailure(parsed.error),
+      };
+    }
     const valid = await this.#linkIntent(parsed.data);
     await this.#fs.mkdir(flowDir(this.#root, pid));
     await this.#fs.writeFile(
@@ -453,15 +921,7 @@ export class FlowStore {
       };
     }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return { ok: false, code: FlowErrorCode.PARSE_FAILED };
-    }
-    const result = FlowFileSchema.safeParse(parsed);
-    if (!result.success) return { ok: false, code: FlowErrorCode.PARSE_FAILED };
-    return { ok: true, value: result.data };
+    return parseFlowFileText(text);
   }
 
   /**

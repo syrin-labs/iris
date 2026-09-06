@@ -1,3 +1,4 @@
+import { REDACTED_FILL } from './flows.js';
 import {
   DANGEROUS_ACTION_CONFIRM_ARG,
   ReticleCommand,
@@ -32,14 +33,41 @@ export function queryRefs(result: CommandResult): string[] {
   return elements.map((e) => asString(asRecord(e)['ref']) ?? '').filter((r) => r.length > 0);
 }
 
-/** A destructive-action confirmation is one-shot and must never persist into a recording. */
+/**
+ * The environment variable that supplies one redacted field.
+ *
+ * Named after the field so it is guessable from the flow alone: `auth-password` is read from
+ * `RETICLE_SECRET_AUTH_PASSWORD`. A scheme requiring a lookup table would mean the flow says a
+ * value is missing and cannot say what to set.
+ */
+const secretEnvKey = (field: string): string =>
+  `RETICLE_SECRET_${field.replace(/[^a-zA-Z0-9]+/g, '_').toUpperCase()}`;
+
+/**
+ * A destructive-action confirmation is one-shot and must never persist into a recording.
+ *
+ * This is also where a REDACTED fill is supplied back. Stripping credentials out of a git-checked
+ * flow is only half a fix: sign-in still has to replay, and a flow that drifts at step two forever
+ * because its own password was removed is a flow nobody keeps — along with everything behind the
+ * login it guards. The value comes from the environment, the one place a secret can live that is
+ * neither the customer's repository nor our database.
+ *
+ * Left as the PLACEHOLDER when nothing supplies it, rather than blanked. The replay then fails at
+ * the login form with `<redacted: supply at replay>` visible in the field, which names its own fix;
+ * an empty box fails identically and tells the reader nothing.
+ */
 export function replayActionArgs(
   value: unknown,
   confirmDangerous = false,
+  field?: string,
 ): Record<string, unknown> {
   const args = { ...asRecord(value) };
   delete args[DANGEROUS_ACTION_CONFIRM_ARG];
   if (confirmDangerous) args[DANGEROUS_ACTION_CONFIRM_ARG] = true;
+  if (REDACTED_FILL === args['value'] && field !== undefined) {
+    const supplied = process.env[secretEnvKey(field)];
+    if (supplied !== undefined && supplied.length > 0) args['value'] = supplied;
+  }
   return args;
 }
 

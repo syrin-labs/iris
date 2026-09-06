@@ -4,7 +4,7 @@ description: Every reticle command. What it does, what it prints, and what it ex
 icon: terminal
 ---
 
-The `reticle` CLI wires Reticle into a project (`init`), runs and diagnoses the daemon your app connects to (`serve`, `status`, `doctor`, `kill`, `restart`), and gates a build on verification in CI (`verify`, `affected`, `gate`). This page is the index; each command has its own page with real captured output and measured exit codes.
+The `reticle` CLI installs Reticle into a project and proves the install works (`init`), runs and diagnoses the daemon your app connects to (`serve`, `status`, `doctor`, `kill`, `restart`), and gates a build on verification in CI (`verify`, `affected`, `gate`). This page is the index; each command has its own page with real captured output and measured exit codes.
 
 The CLI is mostly for you, not your agent. Your agent talks MCP; you use these to set things up, work out why nothing connected, and wire verification into CI.
 
@@ -32,11 +32,15 @@ npx @reticlehq/server <command>
 
 ### `reticle init`
 
-Wires Reticle into the project in the current directory.
+Wires Reticle into the project in the current directory, then boots the app, proves a session connected and drives one flow to a verdict. It exits non-zero if no verdict was produced, and prints what is left to do.
 
 ```
-reticle init  [--dry-run] [--port N] [--no-mcp] [--no-install] [--app <dir>]
+reticle init  [--flow "<what to drive>"] [--env KEY=VALUE]... [--app <dir>] [--license <key>]
+              [--json] [--files-only] [--no-open] [--no-drive] [--dry-run]
+              [--port N] [--no-mcp] [--no-install] [--timeout S] [--drive-model M]
 ```
+
+`--flow`, `--env` and `--app` are the answers the command cannot work out for itself: which journey proves what you care about, what the app needs to reach a usable state, and which app in a monorepo. `--files-only` is what `init` did before it learned to boot the app: it still registers the MCP server and pre-approves Reticle's tools, so it doubles as the upgrade path for an existing install.
 
 <Card title="Full walkthrough with real output" icon="wand-magic-sparkles" href="/install-agentic">
   What it writes, and how to read its four status marks.

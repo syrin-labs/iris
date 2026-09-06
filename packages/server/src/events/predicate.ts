@@ -14,6 +14,7 @@ import { log } from '../log.js';
 import { bindSpanContext } from '../trace.js';
 import { selectPath, capDepth } from '../session/state-select.js';
 import { describeTestidMiss } from './testid-near-miss.js';
+import { describeSplitTextMiss } from './split-text-miss.js';
 import { predicateToExpectedLinks } from '../capsule/predicate-to-links.js';
 import type { ExpectedLink } from '../capsule/divergence.js';
 import { isAmbient, ambientKeyOf, type AmbientCounts } from '../journal/ambient.js';
@@ -246,7 +247,12 @@ async function evalElement(
   const present = match.hint?.presentTestids ?? [];
   const alsoHere =
     query.testid === undefined ? undefined : describeTestidMiss(query.testid, present);
-  const suffix = alsoHere === undefined || '' === alsoHere ? '' : ` — ${alsoHere}`;
+  // A text miss where the string is on the page but split across children reads exactly like an
+  // element that never rendered. Naming the container is the difference between a retry and a bug
+  // report against working code. See split-text-miss.ts.
+  const splitText = describeSplitTextMiss(match.hint?.splitText);
+  const clause = splitText ?? (alsoHere === undefined || '' === alsoHere ? undefined : alsoHere);
+  const suffix = clause === undefined ? '' : ` — ${clause}`;
   return {
     pass: false,
     failureReason: `no element matched ${subject}${state === undefined ? '' : ` in state '${state}'`}${suffix}`,

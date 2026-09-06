@@ -7,6 +7,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 // Kept in sync with @reticlehq/core (ReticleDir / ReticleEnv). This package is plain CJS tooling and
 // deliberately has no ESM/TS dependency on core, so the two constants are mirrored here.
@@ -25,22 +26,45 @@ const RETICLE_CLIENT_HOST = 'localhost';
 const RETICLE_WS_PATH = '/reticle';
 
 /**
- * Read the daemon's auto-provisioned pairing token (~/.reticle/pairing-token, or the
- * RETICLE_PAIRING_TOKEN_DIR override). Node-side only. Returns undefined if the daemon hasn't started
- * yet (start it before `next dev`); the client then connects without a token and the page reloads once
- * the daemon is up and the config is re-read.
+ * Read the pairing token, or create it — whichever process gets there first.
+ *
+ * The token used to be read ONCE, when next.config was evaluated. Start `next dev` before the
+ * daemon and that value was empty, every page was refused, and a reload could not help: there was
+ * no token page-side to pick up. The comment that claimed "the client then connects without a token
+ * and the page reloads once it has" was false for Next.
+ *
+ * Same mint as the daemon (24 random bytes, 0600 file, never overwrite). An existing token is
+ * reused so a plugin-injected page keeps working after the daemon bounces.
+ * @param {string} dir
  * @returns {string | undefined}
  */
-function readPairingToken() {
-  const override = process.env[PAIRING_TOKEN_DIR_ENV];
-  const dir =
-    override !== undefined && override.length > 0 ? override : path.join(os.homedir(), '.reticle');
+function ensurePairingToken(dir) {
+  const file = path.join(dir, PAIRING_TOKEN_FILE);
   try {
-    const token = fs.readFileSync(path.join(dir, PAIRING_TOKEN_FILE), 'utf8').trim();
-    return token.length > 0 ? token : undefined;
+    const existing = fs.readFileSync(file, 'utf8').trim();
+    if (existing.length > 0) return existing;
+  } catch {
+    /* missing or unreadable — fall through and create one */
+  }
+  try {
+    const token = crypto.randomBytes(24).toString('hex');
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, token, { encoding: 'utf8', mode: 0o600 });
+    fs.chmodSync(file, 0o600);
+    return token;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Read or mint the daemon's auto-provisioned pairing token (~/.reticle/pairing-token, or the
+ * RETICLE_PAIRING_TOKEN_DIR override). Node-side only. Minting here is what makes `next dev` before
+ * the daemon still authenticate.
+ * @returns {string | undefined}
+ */
+function readPairingToken() {
+  return ensurePairingToken(reticleHomeDir());
 }
 
 /**
@@ -249,8 +273,9 @@ function withReticle(nextConfig = {}) {
     ...nextConfig,
     ...(supportsTurbopackKey() ? { turbopack: turbopackConfig(nextConfig.turbopack) } : {}),
     // Expose the token to the client bundle as process.env.NEXT_PUBLIC_RETICLE_TOKEN (Next's convention
-    // for client-readable env), so a dev-only client connect can present it. Omitted when the daemon
-    // hasn't provisioned one yet — the client then connects without it and the page reloads once it has.
+    // for client-readable env), so a dev-only client connect can present it. Minted here if the file
+    // is missing: Next evaluates this once, so an empty value is frozen and a reload cannot pick a
+    // later token up. Omitted only when the directory is unwritable.
     env: {
       ...nextConfig.env,
       ...(token !== undefined ? { NEXT_PUBLIC_RETICLE_TOKEN: token } : {}),

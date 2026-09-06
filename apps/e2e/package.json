@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/e2e",
-  "version": "2.12.0",
+  "version": "2.13.1",
   "private": true,
   "type": "module",
   "description": "Committed end-to-end batteries: the web battery boots api+bench-app+next-smoke and drives Reticle in a real headless browser; the desktop battery starts a real Electron main process and a packaged Tauri binary. The product regression safety net.",

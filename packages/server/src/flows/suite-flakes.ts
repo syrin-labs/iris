@@ -20,7 +20,7 @@ import { FlakeStore } from './flake-store.js';
 import type { FileSystemPort } from '../project/fs-port.js';
 
 /** Just the shape this needs from a replay — so a test does not have to build a whole result. */
-export interface FlakeOutcome {
+interface FlakeOutcome {
   readonly name: string;
   readonly status: ReplayStatus;
 }

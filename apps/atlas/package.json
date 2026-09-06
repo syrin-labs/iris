@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/atlas",
-  "version": "2.12.0",
+  "version": "2.13.1",
   "private": true,
   "description": "The hard fixture: a logistics console with server-authoritative state, push updates, virtualization and a branching flow — built to find what Reticle cannot see.",
   "type": "module",

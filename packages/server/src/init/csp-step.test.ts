@@ -30,6 +30,7 @@ function input(partial: Partial<PlanInput>): PlanInput {
     nextConfigSource: partial.nextConfigSource,
     nextLayout: partial.nextLayout,
     nextReticleDevExists: false,
+    cspSources: partial.cspSources,
     options: { port: undefined, mcp: true, install: false },
   };
 }
@@ -96,5 +97,48 @@ describe('a CSP that blocks the bridge is reported by init', () => {
       }),
     );
     expect(cspSteps(plan)).toHaveLength(1);
+  });
+});
+
+// The regression this whole path was rewritten for. MarkText — a production Electron editor —
+// declares `default-src 'self'` with no `connect-src` in `src/renderer/index.html`. The browser
+// blocked the bridge WebSocket, the daemon never saw a dial to refuse, and `init` printed a clean
+// plan: the step read a hand-written pair of Next sources while csp-doctor.ts already carried the
+// full list, `index.html` included. The check you run BEFORE anything works looked at less than the
+// one you run after it has failed.
+describe('the policy is read wherever an app actually declares one', () => {
+  it('warns on a meta CSP in an Electron renderer index.html', () => {
+    const plan = buildPlan(
+      input({
+        cspSources: {
+          'src/renderer/index.html': `<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self';">`,
+        },
+      }),
+    );
+    const [step] = cspSteps(plan);
+    expect(step?.target).toBe('src/renderer/index.html');
+    expect(step?.detail ?? '').toContain('ws://localhost:4400');
+  });
+
+  it('warns on a plain Vite index.html too', () => {
+    const plan = buildPlan(
+      input({
+        cspSources: {
+          'index.html': `<meta http-equiv="Content-Security-Policy" content="default-src 'self'">`,
+        },
+      }),
+    );
+    expect(cspSteps(plan)).toHaveLength(1);
+  });
+
+  it('stays silent when connect-src already admits the bridge', () => {
+    const plan = buildPlan(
+      input({
+        cspSources: {
+          'index.html': `<meta http-equiv="Content-Security-Policy" content="connect-src 'self' ws://localhost:4400 ws://127.0.0.1:4400">`,
+        },
+      }),
+    );
+    expect(cspSteps(plan)).toEqual([]);
   });
 });

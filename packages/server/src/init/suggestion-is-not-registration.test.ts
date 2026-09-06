@@ -68,9 +68,14 @@ describe('the capabilities notice tracks what the file REGISTERS', () => {
     expect(notices(plan)).toHaveLength(1);
   });
 
-  it('still fires when nothing at all was found', () => {
+  /**
+   * No state library detected is no longer a reason to nag. Testids are read from the live DOM and
+   * a context-provided store registers itself, so there is nothing specific to ask for — and a
+   * notice that names no library and no file to open is turns spent on generic advice.
+   */
+  it('stays quiet when no library it could name was detected', () => {
     const plan = buildPlan(input({ storeHints: [], foundStores: [] }));
-    expect(notices(plan)).toHaveLength(1);
+    expect(notices(plan)).toHaveLength(0);
   });
 });
 
@@ -86,9 +91,14 @@ describe('it stays quiet when the file really does register something', () => {
     expect(notices(plan)).toHaveLength(0);
   });
 
-  /** Testids are written into the array directly, so they are a real registration too. */
+  /** Testids are observed at runtime, so they neither cause the notice nor suppress a real one. */
   it('does not fire when testids were found', () => {
     const plan = buildPlan(input({ testids: ['pay', 'cart'], storeHints: [], foundStores: [] }));
     expect(notices(plan)).toHaveLength(0);
+  });
+
+  it('still fires for an unreachable store even when testids were found', () => {
+    const plan = buildPlan(input({ testids: ['pay'], storeHints: ['jotai'], foundStores: [] }));
+    expect(notices(plan)).toHaveLength(1);
   });
 });

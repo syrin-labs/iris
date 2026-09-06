@@ -4,7 +4,7 @@ description: 'Zero to your agent verifying your real app, step by step, with wor
 icon: rocket
 ---
 
-**To get started with Reticle: run `npx @reticlehq/server init` in your project root, restart your dev server, restart your coding agent, then open your app in a browser and ask the agent to drive a flow.** Reticle is a verification layer that embeds a dev-only SDK in your running web app so an AI coding agent can prove a change works instead of guessing. It needs Node 20 or newer, an app you run locally, and an agent that speaks MCP.
+**To get started with Reticle: run `npx @reticlehq/server init --flow "<the journey worth proving>"` in your project root.** That one command wires your project, starts your dev server, opens the app, waits for it to connect, and drives that flow to a verdict. You do not restart anything and you do not drive it yourself. Reticle is a verification layer that embeds a dev-only SDK in your running web app so an AI coding agent can prove a change works instead of guessing. It needs Node 20 or newer, an app you run locally, and an agent that speaks MCP.
 
 > **Looking for the fast path?** [Quickstart](/quickstart) gets you to a real verdict in five minutes, and every response on it was captured live. [Agentic install](/install-agentic) and [Manual install](/install-manual) cover setup in detail, per agent and per framework.
 >
@@ -76,7 +76,19 @@ It detects your framework, package manager, and React version, then:
 
 The bridge + MCP server is a single process that serves all your projects, so it's registered at **user scope**, not in a per-project `.mcp.json`. Only the SDK (the `reticle()` plugin / connect call) is added per project.
 
-Re-running is safe (already-registered/already-patched steps are skipped). Preview without writing via `npx @reticlehq/server init --dry-run`. Flags: `--dry-run`, `--port N`, `--no-mcp`, `--no-install`, `--app <dir>`.
+Re-running is safe: already-registered and already-patched steps are skipped, and on a wired project it goes straight to proving the app still works. Preview without writing via `npx @reticlehq/server init --dry-run`.
+
+`init` does not stop at writing files. It starts your dev server (restarting one whose bundle predates the config edit), opens the app, waits for a session to connect from inside it, and drives one flow to a verdict, which it saves so later checks are a single call with no model involved. It exits non-zero if no verdict was produced and prints what is left to do.
+
+Three flags carry what the command cannot work out for itself:
+
+| Flag | What only you know |
+| --- | --- |
+| `--flow "<what>"` | Which journey proves the thing you care about. It can list the buttons on your page; it cannot know that checkout matters and the theme toggle does not. |
+| `--env KEY=VALUE` | What your app needs to reach a usable state: the key from `.env.example`, the mock backend, the variable that skips an auth wall. Repeatable. |
+| `--app <dir>` | Which app in a monorepo. It finds the servable ones; only you know which you are working in. |
+
+The rest are dials: `--license <key>` (writes it to `.env` and keeps `.env` out of git), `--json` (one object for an agent to read), `--files-only` (write, register, pre-approve, and stop, which is what `init` did before it learned to boot the app, and what an existing install re-runs to pick up new wiring), `--no-open`, `--no-drive`, `--dry-run`, `--port N`, `--no-mcp`, `--no-install`.
 
 Then restart your dev server and skip to [Step 4](#step-4-run-it-and-verify-the-connection). The manual steps below explain what `init` sets up, if you prefer to wire it yourself.
 
@@ -310,6 +322,8 @@ export default defineConfig({
 
 ## Step 4: Run it and verify the connection
 
+> `reticle init` does this for you: it starts the dev server, opens the app and waits for the session. Read on only if you are wiring by hand, or if it told you it could not.
+
 1. Start your app's dev server as usual (`npm run dev`).
 2. Open it in the browser (the SDK connects when the page loads).
 3. In your agent, ask it to confirm the connection:
@@ -327,6 +341,8 @@ If the list is empty, see [Troubleshooting](#troubleshooting).
 ---
 
 ## Step 5: Your first verification
+
+> `reticle init --flow "<what>"` drives this for you and saves the flow. This section is what it does, for when you want to do it yourself.
 
 Now just talk to your agent in plain language. For example:
 
@@ -490,7 +506,7 @@ pnpm add @reticlehq/next
 
 ### What exactly does `reticle init` change in my project?
 
-Four things, and none of them are mysterious: a `.reticle.json` project config, your build config (the `reticle()` Vite plugin, or `withReticle` in `next.config`), a dev-only capabilities file at `src/reticle-dev.ts` (or `app/reticle-dev.tsx` on Next.js), and your agent's rule files. It also registers the MCP server globally, which is a once-per-machine step rather than a per-project one. Run `npx @reticlehq/server init --dry-run` first to see the exact plan before anything is written.
+Four files, and none of them are mysterious: a `.reticle.json` project config, your build config (the `reticle()` Vite plugin, or `withReticle` in `next.config`), a dev-only capabilities file at `src/reticle-dev.ts` (or `app/reticle-dev.tsx` on Next.js), and your agent's rule files. It then starts your dev server, opens the app and drives one flow, none of which changes your source: the dev server is left running for you afterwards, and the only file the drive may edit is the capabilities file, and only when your app registers none. It also registers the MCP server globally, which is a once-per-machine step rather than a per-project one. Run `npx @reticlehq/server init --dry-run` first to see the exact plan before anything is written.
 
 ### Do I have to re-register the MCP server for every project?
 

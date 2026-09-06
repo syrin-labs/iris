@@ -9,10 +9,13 @@
 // honesty-side imports keep working.
 export { BlindSpotKind } from '@reticlehq/core';
 import {
+  AppRuntime,
   BlindSpotKind,
   EventType,
+  PredicateKind,
   ReticleEnv,
   TRANSPORT_LIMITS,
+  isDesktopBlindSpot,
   type ReticleEvent,
 } from '@reticlehq/core';
 
@@ -142,6 +145,22 @@ export function blindSpotsFromEvents(events: readonly ReticleEvent[]): BlindSpot
 }
 
 /**
+ * Drop Electron-only coverage rows unless this session is actually an Electron renderer.
+ *
+ * The kinds live in the same vocabulary as "no store registered", so listing whatever is present
+ * reported a Vite + React tab as an un-instrumented Electron renderer. The session already knows
+ * the runtime (PAGE_HEALTH). Unknown runtime (older SDK) keeps the rows — dropping them would hide
+ * a real missing-preload warning.
+ */
+export function spotsForRuntime(
+  spots: readonly BlindSpot[],
+  runtime: string | undefined,
+): BlindSpot[] {
+  if (runtime === undefined || AppRuntime.ELECTRON === runtime) return [...spots];
+  return spots.filter((spot) => !isDesktopBlindSpot(spot.kind));
+}
+
+/**
  * Blind spots from the session's remembered LEVEL state rather than from a window of events.
  *
  * The SDK emits BLIND_SPOT only when the count changes, so a page that mounted cross-origin frames at
@@ -149,9 +168,19 @@ export function blindSpotsFromEvents(events: readonly ReticleEvent[]): BlindSpot
  * reports "full" for a page a third of which is unobservable — and the act tool's own description
  * tells harnesses to gate on that block. Ask the session what is true now instead of inferring it
  * from what happened to be said recently.
+ *
+ * `runtime` gates Electron-only kinds (see `spotsForRuntime`) so a web session cannot inherit them
+ * from the coverage vocabulary.
  */
-export function blindSpotsFromState(state: Readonly<Record<string, number>>): BlindSpot[] {
-  return Object.entries(state).map(([kind, count]) => ({ kind: kind as BlindSpotKind, count }));
+export function blindSpotsFromState(
+  state: Readonly<Record<string, number>>,
+  runtime?: string,
+): BlindSpot[] {
+  const spots = Object.entries(state).map(([kind, count]) => ({
+    kind: kind as BlindSpotKind,
+    count,
+  }));
+  return spotsForRuntime(spots, runtime);
 }
 
 /**
@@ -240,4 +269,36 @@ export function transportGapNote(events: readonly ReticleEvent[]): string | unde
  */
 export function isStateUnwatched(spots: readonly BlindSpot[]): boolean {
   return spots.some((spot) => spot.kind === BlindSpotKind.UNWATCHED_STATE && spot.count > 0);
+}
+
+/**
+ * Does a passing verdict on this predicate REST on the window being complete?
+ *
+ * Only an absence claim does. A positive assertion that passed found its evidence, and events aged
+ * out elsewhere in the buffer do not unmake it. An absence claim concluded "nothing is there" — and
+ * the thing the buffer dropped is precisely the disproof, so "absent" degrades to "absent in what I
+ * still hold".
+ *
+ * The distinction is not optional. Scarce-loss is recorded for AGE eviction too, so `lostSince(0)`
+ * is true on any session older than the 60s cutoff; impeaching every verdict over a caller-chosen
+ * window would make `unknown` the answer to everything, which this repo has already paid for once.
+ */
+export function restsOnCompleteWindow(predicate: {
+  kind: string;
+  absent?: boolean;
+  count?: number;
+  predicate?: unknown;
+}): boolean {
+  if (PredicateKind.NOT === predicate.kind) return true;
+  // An exact cardinality of ZERO is the third spelling of an absence claim, and reading only
+  // `absent` missed it: `{ kind: "net", urlContains: "/api/auth/sign-in", count: 0 }` says "this
+  // request was never made", and the call the buffer evicted is precisely the disproof. It was
+  // graded `yes` over a window known to have lost scarce evidence — the exact false green the two
+  // clauses above exist to prevent, reached by the one spelling they did not cover (#668).
+  //
+  // Only zero. `count: 2` asserts calls were MADE and found them; events aged out elsewhere in the
+  // buffer do not unmake a positive finding, which is the same reason a plain presence assertion is
+  // left alone here.
+  if (0 === predicate.count) return true;
+  return true === predicate.absent;
 }

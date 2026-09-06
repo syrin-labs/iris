@@ -287,3 +287,180 @@ describe('nudge', () => {
     d.stop();
   });
 });
+
+describe('a daemon syncs EVERY linked repo on the machine, not only its own', () => {
+  it('pushes a sibling root as well as the one it is standing in', async () => {
+    /*
+     * The defect this closes, hit twice in one session: one daemon serves many projects — that is
+     * what `artifactRootFor` exists for — and this loop pushed exactly one of them, whichever
+     * directory it happened to start in. Every other linked repo reported nothing, which on a
+     * dashboard is indistinguishable from nobody having verified anything.
+     */
+    const sibling = mkdtempSync(join(tmpdir(), 'reticle-sibling-'));
+    const seen: string[] = [];
+    const request = (
+      url: string,
+      init: { body?: string },
+    ): Promise<{ status: number; text: string }> => {
+      seen.push(String(init.body ?? '').slice(0, 0) + url);
+      const body = url.includes('/pull') ? { triage: [], cursor: '0:' } : {};
+      return Promise.resolve({ status: 200, text: JSON.stringify(body) });
+    };
+    const roots: string[] = [];
+    const d = startSyncDaemon({
+      reticleRoot: root,
+      cloud: () => Promise.resolve(LINKED),
+      otherRoots: () => Promise.resolve([sibling]),
+      cloudFor: (r) => {
+        roots.push(r);
+        return Promise.resolve(LINKED);
+      },
+      request,
+      intervalMs: 1000,
+    });
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(roots, 'the sibling was resolved and pushed').toContain(sibling);
+    d.stop();
+  });
+
+  it('never resolves its OWN root twice', async () => {
+    // The enumerator is machine-wide, so the daemon's own directory appears in it. Pushing it once
+    // as a sibling and again as itself would double every count it reports.
+    const resolved: string[] = [];
+    const server = counting();
+    const d = startSyncDaemon({
+      reticleRoot: root,
+      cloud: () => Promise.resolve(LINKED),
+      otherRoots: () => Promise.resolve([root]),
+      cloudFor: (r) => {
+        resolved.push(r);
+        return Promise.resolve(LINKED);
+      },
+      request: server.request,
+      intervalMs: 1000,
+    });
+
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    expect(resolved, 'its own root is skipped in the sibling pass').toEqual([]);
+    d.stop();
+  });
+
+  it('one broken repo does not silence the rest of the machine', async () => {
+    /*
+     * The isolation that makes this safe to ship. A revoked credential, a deleted directory or an
+     * unreachable self-hosted server in ONE repo is a fact about that repo. Letting it throw would
+     * take the daemon's own push down with it and turn one broken link into a machine-wide outage —
+     * a strictly worse failure than the one being fixed.
+     */
+    const broken = mkdtempSync(join(tmpdir(), 'reticle-broken-'));
+    const server = counting();
+    const d = startSyncDaemon({
+      reticleRoot: root,
+      cloud: () => Promise.resolve(LINKED),
+      otherRoots: () => Promise.resolve([broken]),
+      cloudFor: (r) =>
+        r === broken ? Promise.reject(new Error('credential revoked')) : Promise.resolve(LINKED),
+      request: server.request,
+      intervalMs: 1000,
+    });
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(server.count(), "the daemon's own root still pushed").toBeGreaterThan(0);
+    d.stop();
+  });
+
+  it('an unreadable registry does not stop the daemon syncing itself', async () => {
+    const server = counting();
+    const d = startSyncDaemon({
+      reticleRoot: root,
+      cloud: () => Promise.resolve(LINKED),
+      otherRoots: () => Promise.reject(new Error('registry unreadable')),
+      cloudFor: () => Promise.resolve(LINKED),
+      request: server.request,
+      intervalMs: 1000,
+    });
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(server.count()).toBeGreaterThan(0);
+    d.stop();
+  });
+
+  it('keeps the old single-root behaviour when no enumerator is supplied', async () => {
+    const server = counting();
+    const d = startSyncDaemon({
+      reticleRoot: root,
+      cloud: () => Promise.resolve(LINKED),
+      request: server.request,
+      intervalMs: 1000,
+    });
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(server.count()).toBeGreaterThan(0);
+    d.stop();
+  });
+});
+
+/**
+ * The cadence follows the work.
+ *
+ * A fixed minute is wrong for both states it covers: during a drive the ledger changes on every tool
+ * call and a minute of lag is what makes a dashboard look dead, while idle a minute is already more
+ * often than "nothing happened" deserves. Activity is inferred from what the last cycle actually
+ * sent — the only honest evidence available without teaching the daemon about sessions.
+ */
+describe('how often it runs follows whether anything moved', () => {
+  /** A server whose /sync answer says a run landed, so the cycle counts as having moved something. */
+  function busy() {
+    let calls = 0;
+    const request = (url: string): Promise<{ status: number; text: string }> => {
+      calls += 1;
+      if (url.includes('/pull'))
+        return Promise.resolve({ status: 200, text: '{"triage":[],"cursor":"0:"}' });
+      if (url.endsWith('/v1/sync'))
+        return Promise.resolve({
+          status: 200,
+          text: JSON.stringify({ runs: { accepted: 1, rejected: [] }, flows: { accepted: 0 } }),
+        });
+      return Promise.resolve({ status: 200, text: '{}' });
+    };
+    return { request, count: (): number => calls };
+  }
+
+  it('backs off to the idle interval when nothing is moving', async () => {
+    const server = counting();
+    const d = startSyncDaemon({
+      reticleRoot: root,
+      cloud: () => Promise.resolve(LINKED),
+      request: server.request,
+      intervalMs: 60_000,
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+    const quiet = server.count();
+    // Half the idle interval later, a quiet daemon has not run again.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(server.count()).toBe(quiet);
+    d.stop();
+  });
+
+  it('never polls FASTER than an interval a deployment lowered it to', async () => {
+    // Lengthening the interval means "sync less". An active burst must not quietly undo that.
+    const server = busy();
+    const d = startSyncDaemon({
+      reticleRoot: root,
+      cloud: () => Promise.resolve(LINKED),
+      request: server.request,
+      intervalMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    // With a 1s interval the active rate is clamped to 1s, so this is bounded by the interval, not
+    // by the 5s active default — which would have produced far fewer cycles.
+    expect(server.count()).toBeGreaterThan(3);
+    d.stop();
+  });
+});

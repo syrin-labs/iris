@@ -5,11 +5,18 @@ import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { stateDirProblem } from './daemon/state-dir.js';
 import { statusNextAction } from './cli/status-next-action.js';
-import { hasConnectedBefore } from './session/connection-memory.js';
+import { readDevServers } from './daemon/dev-servers.js';
+import { hasConnectedBefore, hasProjectConnectedBefore } from './session/connection-memory.js';
 import { attachStatusFields } from './mcp/attach-memory.js';
 import { reticleStateHome } from './daemon/daemon.js';
 import { handleMcp } from './cli/mcp-command.js';
-import { resolveDaemonForProject } from './daemon/daemon-resolve.js';
+import { daemonSpawnArgs, daemonStartOptions } from './cli/daemon-start-options.js';
+import {
+  daemonsServingProjectElsewhere,
+  resolveDaemonForProject,
+  splitBrainNote,
+  wrongDaemonNote,
+} from './daemon/daemon-resolve.js';
 import {
   handleWatch,
   handleCapsules,
@@ -17,15 +24,23 @@ import {
   loadNamedFlows,
   resolveChangedFiles,
 } from './cli/cli-flow-commands.js';
-import { RETICLE_DEFAULT_PORT, ReticleDir, ReticleEnv } from '@reticlehq/core';
+import {
+  RETICLE_DEFAULT_PORT,
+  ReticleDir,
+  ReticleEnv,
+  devServersForProject,
+} from '@reticlehq/core';
 import { loadDotEnv } from './telemetry/dev-repo.js';
+import { licenseKeyFromEnvFiles } from './license/license-env.js';
+import { LICENSE_KEY_ENV } from './license/license.js';
 import { createNodeFileSystem } from './project/fs-port.js';
 import { affectedSavedFlows } from './flows/flow-sources.js';
 
 import { availableUpdate } from './update/update-nudge.js';
 import { handleUpdate, handleRollback } from './cli/cli-update-commands.js';
 
-import { startDaemon } from './index.js';
+import { startDaemon, RETICLE_VERIFY_DEFAULT_PORT } from './index.js';
+import { verifyEndpointMismatch } from './status-payload.js';
 import { isCloudCommand, runCloudCommand } from './cli/cloud-cli.js';
 import { SERVER_VERSION } from './version/server-version.js';
 import { log } from './log.js';
@@ -66,7 +81,7 @@ import { handleVerify } from './cli/cli-verify.js';
 import { runKill } from './cli/cli-kill.js';
 import { summarizeHunt, type HuntAnomaly, type HuntRun } from './hunt/hunt-report.js';
 import { runInit } from './init/run.js';
-import { confirmInstall, nodeConfirmDeps } from './init/confirm.js';
+import { continueAfterInit } from './setup/init-runtime.js';
 import { handleDoctor } from './cli/cli-doctor.js';
 import { buildNodeIo } from './init/node-io.js';
 import { describeLicense } from './license/license.js';
@@ -78,17 +93,7 @@ import {
 } from './cli/cli-port.js';
 import type { StartOptions } from './index.js';
 
-import {
-  DAEMON_INNER_COMMAND,
-  PORT_FLAG,
-  DRIVE_FLAG,
-  HEADED_FLAG,
-  HTTP_FLAG,
-  HTTP_PORT_FLAG,
-  HTTP_TOKEN_FLAG,
-  parseCliArgs,
-  CLI_USAGE,
-} from './cli/cli-parse.js';
+import { DAEMON_INNER_COMMAND, PORT_FLAG, parseCliArgs, CLI_USAGE } from './cli/cli-parse.js';
 import { handleFeedback, handleIdentify, handleTelemetry } from './telemetry/feedback-cli.js';
 import { installDaemonTelemetry } from './telemetry/daemon-telemetry.js';
 import { reportCliRun } from './telemetry/cli-telemetry.js';
@@ -103,6 +108,18 @@ function handleInit(parsed: {
   dryRun: boolean;
   install: boolean;
   app?: string | undefined;
+  flow?: string | undefined;
+  env?: string[] | undefined;
+  filesOnly?: boolean | undefined;
+  captureBodies?: boolean | undefined;
+  licenseKey?: string | undefined;
+  json?: boolean | undefined;
+  drive?: boolean | undefined;
+  open?: boolean | undefined;
+  agents?: boolean | undefined;
+  url?: string | undefined;
+  timeoutSeconds?: number | undefined;
+  driveModel?: string | undefined;
 }): void {
   const cwd = process.cwd();
   const io = buildNodeIo(cwd);
@@ -114,15 +131,15 @@ function handleInit(parsed: {
       dryRun: parsed.dryRun,
       install: parsed.install,
       ...(parsed.app === undefined ? {} : { app: parsed.app }),
+      captureBodies: true === parsed.captureBodies,
       // The outcome is reported by confirmInstall instead, once it knows whether an app connected —
       // `init` writing files was never the same thing as `init` working (#269).
       deferOutcome: true,
+      continuesToRuntime: true !== parsed.filesOnly && true !== parsed.dryRun,
     },
     io,
   );
-  void confirmInstall(result, io, nodeConfirmDeps(parsed.port ?? RETICLE_DEFAULT_PORT)).then(() => {
-    if (!result.ok) process.exit(1);
-  });
+  void continueAfterInit(parsed, result, io, cwd);
 }
 
 function handleServe(parsed: {
@@ -160,6 +177,23 @@ async function serveWithHonestExit(parsed: {
     status: fetchStatus,
   });
   if (presence === PortPresence.DAEMON) {
+    // A daemon that is already up was started with ITS flags, not these — `serve` only attaches.
+    // Exiting 0 here regardless is how `--http-port` came to be accepted and ignored (#687): the
+    // running daemon kept serving whatever it was started with, and the flag vanished without a
+    // word. Ask the daemon which verify port it actually serves and refuse when it is not the one
+    // requested — a flag that cannot be honoured must say so, not report success.
+    if (parsed.http) {
+      const mismatch = verifyEndpointMismatch(
+        await fetchStatus(parsed.port),
+        parsed.httpPort ?? RETICLE_VERIFY_DEFAULT_PORT,
+      );
+      if (mismatch !== undefined) {
+        log('reticle_daemon_start_refused', { port: parsed.port, reason: mismatch });
+        process.stderr.write(`${mismatch}\n`);
+        process.exit(1);
+        return;
+      }
+    }
     log('reticle_daemon_already_running', { port: parsed.port });
     return;
   }
@@ -179,16 +213,7 @@ async function serveWithHonestExit(parsed: {
     process.exit(1);
     return;
   }
-  const daemonArgs = [DAEMON_INNER_COMMAND, PORT_FLAG, String(parsed.port)];
-  if (parsed.driveUrl !== undefined) {
-    daemonArgs.push(DRIVE_FLAG, parsed.driveUrl);
-    if (!parsed.headless) daemonArgs.push(HEADED_FLAG);
-  }
-  if (parsed.http) {
-    daemonArgs.push(HTTP_FLAG);
-    if (parsed.httpPort !== undefined) daemonArgs.push(HTTP_PORT_FLAG, String(parsed.httpPort));
-    if (parsed.httpToken !== undefined) daemonArgs.push(HTTP_TOKEN_FLAG, parsed.httpToken);
-  }
+  const daemonArgs = daemonSpawnArgs(parsed);
   spawnDaemon(process.execPath, scriptPath, daemonArgs, parsed.port);
   // The child binds asynchronously and, when it cannot, exits 1 long after this process would have
   // reported success. Wait for it to ANSWER — `/status` responding is the only evidence a daemon
@@ -312,12 +337,33 @@ function withNextAction(facts: {
   sessionCount: number;
   previouslyConnected: boolean;
   initialized: boolean;
+  devServerPorts?: readonly number[];
 }): { nextAction?: string } {
   const next = statusNextAction(facts);
   return next === undefined ? {} : { nextAction: next };
 }
 
-function handleStatus(port: number): void {
+/**
+ * What `status` says about a project whose daemons have split in two.
+ *
+ * Both halves in one place because they are one condition asked from two positions, and a command
+ * can be standing on either. Silent — no key at all — when there is nothing to report, so a healthy
+ * run reads exactly as it did.
+ */
+function splitBrainFields(port: number, projectId: string | undefined): { splitBrain?: string } {
+  const home = reticleStateHome();
+  const elsewhere = splitBrainNote(
+    port,
+    daemonsServingProjectElsewhere(projectId, port, home, isAlive, (other) =>
+      hasProjectConnectedBefore(home, other, projectId),
+    ),
+  );
+  const note =
+    elsewhere ?? wrongDaemonNote(port, resolveDaemonForProject(projectId, home, isAlive));
+  return note === undefined ? {} : { splitBrain: note };
+}
+
+export async function handleStatus(port: number): Promise<void> {
   const pid = readPid(port);
   // Durable, so it survives the daemon idling out — which is the state `status` is most often run in.
   const projectId = readProjectId(process.cwd());
@@ -330,52 +376,91 @@ function handleStatus(port: number): void {
   // Reticle and never lists its tools looks exactly like an abandoned install from here — same idle
   // daemon, same zero sessions — and the user sees a tool that does nothing. See attach-memory.ts.
   const client = attachStatusFields(reticleStateHome(), port);
-  if (null === pid || !isAlive(pid)) {
-    // `running: false` on its own has been reported about a port that was demonstrably occupied,
-    // because the pid file is not the port. Ask the port before answering.
-    void probePresence(port, { tcpOpen: probeDaemon, status: fetchStatus }).then((presence) => {
-      const running = presenceIsUsable(presence);
-      log('reticle_status', {
-        port,
-        running,
-        presence,
-        ...(presence === PortPresence.FOREIGN ? { reason: describePresence(presence, port) } : {}),
-        // `init` promises this command says why the app has not connected. Without it the answer was
-        // `running: false` and nothing else, which reads as "Reticle is broken" for what is usually
-        // just a daemon that has not been asked to do anything yet.
-        ...withNextAction({ running, sessionCount: 0, previouslyConnected, initialized }),
-        ...client,
-      });
+  // What the dev servers themselves said. The reason this command could previously only guess at
+  // whether the app was running is that it had no way to see one; now the ones carrying Reticle
+  // announce, and the advice below stops contradicting the terminal the reader is looking at.
+  // Scoped to THIS project: the registry is machine-wide, and an unrelated app's dev server must
+  // not make this project look like it is running.
+  const devServerPorts = devServersForProject(readDevServers(reticleStateHome()), {
+    projectId,
+    root: process.cwd(),
+  }).map((d) => d.port);
+  // The failure where every individual check is green and the chain is broken: the agent's proxy and
+  // the app resolved their ports independently and landed on two different daemons. Reported from
+  // BOTH stances, because neither one can see it alone.
+  const split = splitBrainFields(port, projectId);
+  // Doctor and status must answer the same liveness question. A live pid only says that some
+  // process exists; a Reticle daemon is running only when the shared port probe reaches /status.
+  const presence = await probePresence(port, { tcpOpen: probeDaemon, status: fetchStatus });
+  if (!presenceIsUsable(presence)) {
+    log('reticle_status', {
+      port,
+      running: false,
+      presence,
+      ...(presence === PortPresence.FOREIGN ? { reason: describePresence(presence, port) } : {}),
+      // `init` promises this command says why the app has not connected. Without it the answer was
+      // `running: false` and nothing else, which reads as "Reticle is broken" for what is usually
+      // just a daemon that has not been asked to do anything yet.
+      ...withNextAction({
+        running: false,
+        sessionCount: 0,
+        previouslyConnected,
+        initialized,
+        devServerPorts,
+      }),
+      ...client,
+      ...split,
     });
     return;
   }
-  // The daemon is up — ask it for live sessions + health so status is at-a-glance, not just a pid.
-  void fetchStatus(port).then((payload) => {
-    // `status` is the second-most-run command and the one a HUMAN types. The update nudge otherwise
-    // only rides a tool result, which the majority of daemons never produce — so the people most in
-    // need of an upgrade were the ones with no path to hearing about it.
-    const update = availableUpdate();
-    const nudge = update === undefined ? {} : { updateAvailable: update };
-    if (payload === undefined) {
-      log('reticle_status', {
-        port,
+  // The daemon answered the same probe doctor trusts — ask it for live sessions + health.
+  const payload = await fetchStatus(port);
+  // `status` is the second-most-run command and the one a HUMAN types. The update nudge otherwise
+  // only rides a tool result, which the majority of daemons never produce — so the people most in
+  // need of an upgrade were the ones with no path to hearing about it.
+  const update = availableUpdate();
+  const nudge = update === undefined ? {} : { updateAvailable: update };
+  if (payload === undefined) {
+    log('reticle_status', {
+      port,
+      running: true,
+      pid,
+      ...nudge,
+      ...withNextAction({
         running: true,
-        pid,
-        ...nudge,
-        ...withNextAction({ running: true, sessionCount: 0, previouslyConnected, initialized }),
-        ...client,
-      });
-      return;
-    }
-    const summary = summarizeStatus(payload);
-    // Only when the daemon did NOT already explain itself. It has the whole diagnosis in-process and
-    // puts it on the wire as `why`; printing a second, thinner opinion beside it risks two confident
-    // answers pointing different ways, which is worse than one.
-    const next =
-      summary.why === undefined
-        ? withNextAction({ running: true, ...summary, previouslyConnected, initialized })
-        : {};
-    log('reticle_status', { port, running: true, pid, ...summary, ...next, ...client, ...nudge });
+        sessionCount: 0,
+        previouslyConnected,
+        initialized,
+        devServerPorts,
+      }),
+      ...client,
+      ...split,
+    });
+    return;
+  }
+  const summary = summarizeStatus(payload);
+  // Only when the daemon did NOT already explain itself. It has the whole diagnosis in-process and
+  // puts it on the wire as `why`; printing a second, thinner opinion beside it risks two confident
+  // answers pointing different ways, which is worse than one.
+  const next =
+    summary.why === undefined
+      ? withNextAction({
+          running: true,
+          ...summary,
+          previouslyConnected,
+          initialized,
+          devServerPorts,
+        })
+      : {};
+  log('reticle_status', {
+    port,
+    running: true,
+    pid,
+    ...summary,
+    ...next,
+    ...client,
+    ...split,
+    ...nudge,
   });
 }
 
@@ -600,26 +685,14 @@ function handleDaemonInner(parsed: {
   httpPort?: number;
   httpToken?: string;
 }): void {
-  const options: StartOptions = {
-    port: parsed.port,
-    ...(parsed.driveUrl !== undefined
-      ? { driveUrl: parsed.driveUrl, headless: parsed.headless }
-      : {}),
-    ...(parsed.http
-      ? {
-          httpVerify: true,
-          ...(parsed.httpPort !== undefined ? { httpVerifyPort: parsed.httpPort } : {}),
-          ...(parsed.httpToken !== undefined ? { httpVerifyToken: parsed.httpToken } : {}),
-        }
-      : {}),
-  };
+  const options: StartOptions = daemonStartOptions(parsed);
 
   startDaemon(options)
     .then((server) => {
       log('reticle_daemon_ready', { port: parsed.port, pid: process.pid });
       // Daemon lifecycle telemetry: started, a one-shot project profile, the periodic counter flush,
       // and the rich summary on shutdown. All of it lives in one module — see daemon-telemetry.ts.
-      const daemonTelemetry = installDaemonTelemetry(process.cwd());
+      const daemonTelemetry = installDaemonTelemetry(process.cwd(), undefined, parsed.port);
       // Publish to the discovery registry so a build plugin can find this daemon by projectId — no
       // hand-reconciled port. Written from the child (only it knows its cwd); removePid drops it.
       const registryProjectId = readProjectId(process.cwd());
@@ -717,6 +790,13 @@ function main(): void {
   // Before anything reads process.env — notably the telemetry gate and the bridge's security
   // options — fold in a project-local `.env`. Values already in the environment always win.
   loadDotEnv(process.cwd());
+  // The licence key specifically is searched for HARDER than the rest of the environment, because
+  // the daemon is spawned without an explicit cwd and inherits the editor's. A key in the app's own
+  // `.env` — or in the repo root when the editor started inside the app — was never read, and the
+  // customer then produced events that said `missing`, which is indistinguishable from having no
+  // licence at all. Only the key is taken; see license-env.ts for why nothing else is.
+  const licenseKey = licenseKeyFromEnvFiles(process.cwd());
+  if (licenseKey !== undefined) process.env[LICENSE_KEY_ENV] = licenseKey;
   const argv = process.argv.slice(2);
   // Every invocation passes through here — the single chokepoint for the "how often is it used / how
   // many distinct machines + projects" metrics. Fire-and-forget: a metric must never delay or fail a run.
@@ -789,7 +869,7 @@ function main(): void {
       void handleRestart(parsed.port, parsed.force);
       break;
     case 'status':
-      handleStatus(parsed.port);
+      void handleStatus(parsed.port);
       break;
     case 'license':
       handleLicense();

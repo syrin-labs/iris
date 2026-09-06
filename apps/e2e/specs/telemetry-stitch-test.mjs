@@ -211,8 +211,24 @@ chk(
   saved?.assertions?.grade === 'asserted',
   JSON.stringify(saved?.assertions ?? saved).slice(0, 300),
 );
+// Replay honours the FlowFile contract now: a tab that is not on the flow's startPath is
+// hard-navigated there before step 1. The recording above ended on /deployments, and a full-page
+// load resets bench-app's deliberately in-memory auth back to the Login screen — where step 1's
+// anchor cannot exist. This spec is about telemetry, not wrong-page recovery (the
+// flow-startpath-navigate unit tests own that), so return to the start route in-SPA before each
+// replay: arrival is then a no-op and the signed-in session survives.
+const backToStart = async () =>
+  call('reticle_act_and_wait', {
+    ...S,
+    ref: await q('nav-overview'),
+    action: 'click',
+    until: { kind: 'route', pathname: '/overview' },
+    timeout_ms: 5000,
+  });
+await backToStart();
 const replay = await call('reticle_flow_replay', { ...S, flowName: FLOW });
 chk('and replays green', replay?.status === 'ok', `status=${replay?.status}`);
+await backToStart();
 const suite = await call('reticle_verify', { action: 'flows', ...S });
 chk(
   'and the suite now passes, with a flow in it',

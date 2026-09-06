@@ -57,21 +57,33 @@ process.env.RETICLE_TELEMETRY = '0';
 // The telemetry line above already silences the events; this is belt and braces for anything that
 // re-enables them (a debug run recording to a local sink) and for the CLI's own CI-shaped defaults.
 process.env.CI = process.env.CI ?? 'true';
+// Corepack, silenced before it can ask a question nobody is there to answer.
+//
+// If any scaffold's manifest carries a `packageManager` field — `create-next-app` has shipped one
+// in the past and may again — corepack intercepts every `npm`/`pnpm` call and, for a version it
+// does not have cached, prints a y/N download prompt and WAITS. Nothing is attached to that stdin,
+// so the gate does not fail: it hangs until the job's timeout, and a timeout says "the install
+// takes too long on Windows" rather than "a prompt is waiting". Two variables turn a hang into
+// either a normal install or a named error.
+process.env.COREPACK_ENABLE_DOWNLOAD_PROMPT = '0';
+process.env.COREPACK_ENABLE_STRICT = process.env.COREPACK_ENABLE_STRICT ?? '0';
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   writeFileSync,
   rmSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   freePortSafely,
+  killTree,
   startOwnedDaemon,
   watchTransport,
   attributeOutcome,
@@ -79,11 +91,58 @@ import {
   sweepBatteryOrphans,
 } from './gate-harness.mjs';
 
+const WIN = 'win32' === process.platform;
+
+/**
+ * `npm`, `npx` and `pnpm` are `.cmd` shims on Windows, and Node will not run one for you.
+ *
+ * Two separate obstacles, and clearing only the first is what made the first Windows run of this
+ * gate die on `spawn EINVAL` at the very first command:
+ *
+ *  1. CreateProcess does not consult PATHEXT, so `spawn('npm', …)` is ENOENT even though npm plainly
+ *     works in that shell. The file wanted is `npm.cmd`.
+ *  2. Node then REFUSES to spawn a `.cmd` or `.bat` without `shell: true` — the fix for
+ *     CVE-2024-27980, where batch files re-parse their own arguments. That refusal is `EINVAL`,
+ *     which names neither the file nor the reason.
+ *
+ * So the shell is not optional here, and the argument-reinterpretation worry that argued against it
+ * does not apply to the shell we actually get: `cmd.exe` does not glob, so the `*` in an import
+ * alias survives, and `@` and `--` are ordinary characters to it. What cmd.exe DOES need is quoting
+ * around whitespace, because Node joins the arguments into one string before handing them over —
+ * and a temp directory with a space in it is the normal case on a real user's machine, as opposed
+ * to the 8.3 short path a CI runner happens to hand out.
+ */
+const PACKAGE_MANAGERS = new Set(['npm', 'npx', 'pnpm', 'yarn']);
+const quoteForCmd = (arg) =>
+  /[\s"]/.test(arg) ? `"${String(arg).split('"').join('\\"')}"` : String(arg);
+
+/** A command and the options it must be spawned with, on either kind of machine. */
+function pm(cmd, args = []) {
+  if (!WIN || !PACKAGE_MANAGERS.has(cmd)) return { cmd, args, shellOpts: {} };
+  return { cmd: `${cmd}.cmd`, args: args.map(quoteForCmd), shellOpts: { shell: true } };
+}
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CLI = join(ROOT, 'packages/server/dist/cli.js');
 /** Private ports, so this never fights the battery or a developer's own daemon. */
-const BRIDGE_PORT_BASE = Number(process.env.INSTALL_GATE_PORT ?? '4788');
-const APP_PORT_BASE = Number(process.env.INSTALL_GATE_APP_PORT ?? '4820');
+/**
+ * Separate port ranges for the self-test, which runs FIRST in CI and in the same job.
+ *
+ * The self-test deliberately points each scaffold's init one port off its daemon, so its own init
+ * daemons land on exactly the ports the real run is about to use. On Windows, where a process's
+ * teardown outlives the kill, the real run's monorepo init then found its port taken, moved up one,
+ * and registered this run's projectId on a port the harness was not watching. Discovery did the
+ * right thing with the wrong daemon and the gate reported "no session ever appeared".
+ *
+ * Ranges that cannot overlap are cheaper than reasoning about how long a Windows handle lives.
+ */
+const SELF_TEST_PORT_OFFSET = 60;
+const BRIDGE_PORT_BASE =
+  Number(process.env.INSTALL_GATE_PORT ?? '4788') +
+  (process.argv.includes('--self-test') ? SELF_TEST_PORT_OFFSET : 0);
+const APP_PORT_BASE =
+  Number(process.env.INSTALL_GATE_APP_PORT ?? '4820') +
+  (process.argv.includes('--self-test') ? SELF_TEST_PORT_OFFSET : 0);
 /** Generous: a cold Next build is slow, and a timeout here reads as an install failure. */
 const BOOT_TIMEOUT_MS = 180_000;
 const CONNECT_TIMEOUT_MS = 45_000;
@@ -157,28 +216,94 @@ async function startLocalRegistry() {
   // The paths scripts/verdaccio.yaml actually uses. Resetting BOTH matters: leave the htpasswd file
   // behind and the second run's user-create returns no token (the user already exists), which
   // presents as "no token from verdaccio" and looks like a registry fault rather than stale state.
-  rmSync('/tmp/reticle-verdaccio-storage', { recursive: true, force: true });
-  rmSync('/tmp/reticle-verdaccio-htpasswd', { recursive: true, force: true });
-  const proc = spawn(
-    'npx',
-    ['--yes', 'verdaccio@latest', '--config', join(ROOT, 'scripts/verdaccio.yaml')],
-    { cwd: ROOT, detached: true, stdio: ['ignore', 'pipe', 'pipe'] },
+  const storage = join(tmpdir(), 'reticle-verdaccio-storage');
+  const htpasswd = join(tmpdir(), 'reticle-verdaccio-htpasswd');
+  // `force` swallows ENOENT and nothing else. Windows raises EPERM/EBUSY while any handle on the
+  // tree is still open — a verdaccio from a previous run being torn down is exactly that — and an
+  // unretried delete there fails the gate before it has started, with an errno instead of a reason.
+  const winSafe = { recursive: true, force: true, maxRetries: 8, retryDelay: 250 };
+  rmSync(storage, winSafe);
+  rmSync(htpasswd, winSafe);
+  // The checked-in config names POSIX paths, and `/tmp` on Windows resolves to whatever the current
+  // drive happens to be. Rather than keep a second Windows copy that drifts from the first, the one
+  // config is read and its two paths repointed at this machine's real temp directory.
+  const config = join(mkdtempSync(join(tmpdir(), 'reticle-gate-verdaccio-')), 'verdaccio.yaml');
+  writeFileSync(
+    config,
+    readFileSync(join(ROOT, 'scripts/verdaccio.yaml'), 'utf8')
+      .replace('/tmp/reticle-verdaccio-storage', storage.split('\\').join('/'))
+      .replace('/tmp/reticle-verdaccio-htpasswd', htpasswd.split('\\').join('/')),
   );
+  const verdaccio = pm('npx', ['--yes', 'verdaccio@latest', '--config', config]);
+  const proc = spawn(verdaccio.cmd, verdaccio.args, {
+    cwd: ROOT,
+    detached: !WIN,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...verdaccio.shellOpts,
+  });
   const log = [];
   proc.stdout.on('data', (d) => log.push(String(d)));
   proc.stderr.on('data', (d) => log.push(String(d)));
+  // A dead registry and a slow one produced the SAME message — "did not start", 90 seconds later,
+  // with an empty log — because nothing watched the process itself. That happened on Windows and cost
+  // a whole run's coverage to a cause nobody could name. `error` catches a spawn that never began
+  // (a .cmd resolved wrong, a missing binary); `exit` catches one that began and died.
+  let spawnError;
+  let exited;
+  proc.on('error', (err) => {
+    spawnError = err;
+  });
+  proc.on('exit', (code, signal) => {
+    exited = `exit ${String(code)}${signal === null ? '' : ` (${signal})`}`;
+  });
 
-  const deadline = Date.now() + 90_000;
+  // `npx --yes verdaccio@latest` resolves and can cold-download the package before it serves
+  // anything, and Windows runners are markedly slower at that file IO. 90s is generous for a healthy
+  // start and tight for a cold install, which is the shape of the failure seen here. Raised on
+  // Windows only, so a genuine hang on the other platforms still surfaces at the same speed.
+  const deadline = Date.now() + (WIN ? 240_000 : 90_000);
   let up = false;
-  while (Date.now() < deadline) {
+  // Stop the moment the process is gone: waiting out 90 seconds for something that already died
+  // buys nothing and hides why.
+  while (Date.now() < deadline && spawnError === undefined && exited === undefined) {
     if (await reachable(`${REGISTRY}/-/ping`)) {
       up = true;
       break;
     }
     await sleep(500);
   }
-  if (!up) throw new Error(`verdaccio did not start on ${REGISTRY}: ${log.join('').slice(-400)}`);
+  if (!up) {
+    killTree(proc.pid);
+    const cause =
+      spawnError !== undefined
+        ? `spawn failed: ${spawnError.message}`
+        : exited !== undefined
+          ? `the process ${exited} before the registry answered`
+          : `timed out after ${String(WIN ? 240 : 90)}s with the process still alive`;
+    const tail = log.join('').trim();
+    throw new Error(
+      `verdaccio did not start on ${REGISTRY} — ${cause}. ` +
+        `command: ${verdaccio.cmd} ${verdaccio.args.join(' ')}. ` +
+        `output: ${0 === tail.length ? '(nothing on stdout or stderr)' : tail.slice(-400)}`,
+    );
+  }
 
+  // From here on the registry is RUNNING, and every remaining step can throw. Left unguarded, one
+  // of them did: a prepack that failed on Windows aborted the publish, this function threw, and the
+  // verdaccio it had started outlived the process. The next run then found port 4873 already held
+  // by a registry carrying the previous run's htpasswd, so the user create returned nothing and the
+  // gate reported "no token from verdaccio" — a second, unrelated-looking failure that hid the
+  // first. A registry this function started is this function's to stop on the way out.
+  try {
+    return await publishInto(proc);
+  } catch (err) {
+    killTree(proc.pid);
+    throw err;
+  }
+}
+
+/** Everything that needs the registry to be up. Split out only so the caller above can guard it. */
+async function publishInto(proc) {
   const res = await fetch(`${REGISTRY}/-/user/org.couchdb.user:reticle`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -208,13 +333,7 @@ async function startLocalRegistry() {
   );
   const auth = { npm_config_userconfig: npmrc, NPM_CONFIG_USERCONFIG: npmrc };
   run('pnpm', ['-r', 'publish', '--registry', REGISTRY, '--no-git-checks'], ROOT, auth);
-  return { proc, auth, stop: () => {
-    try {
-      process.kill(-proc.pid, 'SIGTERM');
-    } catch {
-      /* already gone */
-    }
-  } };
+  return { proc, auth, stop: () => killTree(proc.pid) };
 }
 
 /** Where a scaffold's create command puts the app, relative to the workdir. */
@@ -361,19 +480,65 @@ const SCAFFOLDS = [
 function pathWithoutPnpm(workdir) {
   const binDir = join(workdir, '.gate-no-pnpm');
   mkdirSync(binDir, { recursive: true });
-  const stub = join(binDir, 'pnpm');
-  writeFileSync(stub, '#!/bin/sh\necho "pnpm: command not found" >&2\nexit 127\n', { mode: 0o755 });
+  // A shebang script is not executable on Windows; the shim a Windows shell would find is `pnpm.cmd`
+  // earlier on PATH. Both exit 127, which is what `init` reads as "pnpm is not on this machine".
+  if (WIN) writeFileSync(join(binDir, 'pnpm.cmd'), '@echo pnpm: command not found 1>&2\r\n@exit /b 127\r\n');
+  else
+    writeFileSync(join(binDir, 'pnpm'), '#!/bin/sh\necho "pnpm: command not found" >&2\nexit 127\n', {
+      mode: 0o755,
+    });
   return `${binDir}${delimiter}${process.env.PATH ?? ''}`;
 }
 
-const run = (cmd, args, cwd, extraEnv = {}) =>
-  execFileSync(cmd, args, {
+
+/**
+ * Everything that can say WHY a session never appeared, printed where the failure is.
+ *
+ * Two independent witnesses, because they fail differently: the page knows whether it tried, and
+ * the daemon knows whether it refused. `origin_rejected` in the daemon log is the difference
+ * between "the app never dialled" and "the app dialled and the gate said no" — opposite bugs with
+ * opposite fixes, indistinguishable from the browser side alone.
+ */
+function dumpEvidence(consoleLines, bridgePort, failedResponses = [], wsAttempts = []) {
+  const say = (label, body) => {
+    const text = String(body).trim();
+    if (0 === text.length) return;
+    console.log(`      ── ${label} ──`);
+    for (const line of text.split('\n').slice(-40)) console.log(`      ${line.slice(0, 300)}`);
+  };
+  say('page console', consoleLines.join('\n'));
+  say('non-2xx responses', failedResponses.join('\n'));
+  say('websocket attempts', wsAttempts.join('\n'));
+  // Which daemon claims which project. Discovery is registry-first, so when a page dials a port the
+  // harness is not watching, this is the file that says why it chose that one.
+  const stateHome = join(homedir(), '.reticle');
+  try {
+    const claims = readdirSync(stateHome)
+      .filter((f) => f.startsWith('connected-'))
+      .map((f) => `${f}: ${readFileSync(join(stateHome, f), 'utf8').slice(0, 200)}`);
+    say('daemon registry', claims.join('\n'));
+  } catch {
+    say('daemon registry', `not readable in ${stateHome}`);
+  }
+  const daemonLog = join(homedir(), '.reticle', `daemon-${String(bridgePort)}.log`);
+  try {
+    say(`daemon log (${daemonLog})`, readFileSync(daemonLog, 'utf8'));
+  } catch {
+    say('daemon log', `not readable at ${daemonLog}`);
+  }
+}
+
+const run = (cmd, args, cwd, extraEnv = {}) => {
+  const it = pm(cmd, args);
+  return execFileSync(it.cmd, it.args, {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, ...extraEnv },
     timeout: 600_000,
+    ...it.shellOpts,
   });
+};
 
 async function reachable(url) {
   try {
@@ -424,6 +589,32 @@ function stampInstallProbe(app) {
  * baseline: a threshold answers "is this bad", a baseline answers "is this DIFFERENT", and silent
  * regressions are almost always the second question.
  */
+/**
+ * Every localhost port init said it was using, so the harness can stop what init handed over.
+ *
+ * Read out of init's own output rather than assumed from the framework: a scaffold that relocates
+ * (5173 taken, vite moves to 5174) would otherwise leave the moved one behind.
+ *
+ * Two shapes, because init reports two kinds of thing. Dev servers arrive as URLs. The DAEMON
+ * arrives as a JSON event — `{"event":"reticle_setup_daemon_started","port":4797}` — and matching
+ * only URLs meant it was never swept. That daemon then outlived init holding a registry entry for
+ * this scaffold's projectId, and daemon discovery is registry-FIRST by design: the app correctly
+ * preferred the live daemon serving its project over the port written into its config at install
+ * time. So the page dialled 4797 while the harness watched 4796 and reported "no session ever
+ * appeared" about an app that had connected perfectly well to the wrong witness. Harness rule 2 is
+ * "own the daemon before the app can dial it", and a daemon left running by init breaks it.
+ */
+function portsMentionedIn(text) {
+  const found = new Set();
+  for (const m of String(text).matchAll(/https?:\/\/(?:localhost|127\.0\.0\.1):(\d{2,5})/g)) {
+    found.add(Number(m[1]));
+  }
+  for (const m of String(text).matchAll(/"event":"reticle_setup_daemon_started"[^}]*"port":(\d{2,5})/g)) {
+    found.add(Number(m[1]));
+  }
+  return [...found];
+}
+
 function stepsOf(report) {
   return report
     .split('\n')
@@ -464,12 +655,30 @@ async function driveScaffold(scaffold, index) {
   await freePortSafely(bridgePort);
   await freePortSafely(appPort);
 
-  const workdir = mkdtempSync(join(tmpdir(), `reticle-install-${scaffold.id}-`));
+  // `realpathSync.native`, because on Windows `tmpdir()` hands back the 8.3 SHORT form —
+  // `C:\Users\RUNNER~1\AppData\Local\Temp`, which is literally what the gate's own log prints.
+  // Two paths for one directory is a containment check waiting to fail, and Vite's file server does
+  // exactly that: `server.fs.allow` compares a request's resolved path against the workspace root,
+  // and a short-form root against a long-form request answers 403 Forbidden. Whether or not that is
+  // what bit here, no real user's project lives behind an 8.3 alias, so a gate that tests one is
+  // testing a path shape its users do not have. On POSIX this only resolves symlinks — macOS's
+  // /var -> /private/var among them, which is the same class of two-names-one-directory problem.
+  const workdir = realpathSync.native(
+    mkdtempSync(join(tmpdir(), `reticle-install-${scaffold.id}-`)),
+  );
   const app = join(workdir, scaffold.appDir ?? DEFAULT_APP_DIR);
   // Where `init` is invoked. Defaults to the app, which is the only shape that used to exist here.
   const initFrom = scaffold.initFrom === undefined ? app : join(workdir, scaffold.initFrom);
   let daemon;
   let dev;
+  /**
+   * Ports init said it was using, captured where `report` is in scope.
+   *
+   * The cleanup that needs them runs in the outer `finally`, which cannot see the try-scoped
+   * `report` — reading it there threw a ReferenceError and took the whole gate down after the
+   * first scaffold had already passed every assertion.
+   */
+  let handedOverPorts = [];
 
   try {
     // ── 1. a surface that has never seen Reticle ──────────────────────────────────────────────
@@ -541,6 +750,7 @@ async function driveScaffold(scaffold, index) {
         .join('\n'),
     );
 
+    handedOverPorts = portsMentionedIn(report);
     chk('init exits 0', initExit === 0, `exit ${String(initExit)}`);
 
     // The load-bearing assertion, and now an absolute one. A ⚠ is a step nothing performed, so the
@@ -574,10 +784,18 @@ async function driveScaffold(scaffold, index) {
     // LONGEST FIRST, and that is the whole subtlety. One spelling is a suffix of the other, so
     // folding the short one first eats the tail of the long one and leaves `/private<root>` behind
     // — a baseline diff that fails while reporting a path that never existed.
+    //
+    // The separator is folded too, and only here. `init` prints `<root>\.reticle.json` on Windows
+    // and `<root>/.reticle.json` everywhere else, and BOTH are right — that is what a path looks
+    // like on each platform. One recorded baseline has to be readable on both, and the thing it
+    // exists to catch is a step changing its mark or vanishing from the plan, never which slash the
+    // host uses. Without this the monorepo scaffold failed the diff on Windows over one character.
     const foldRoot = (text) =>
       [workdir, realpathSync(workdir)]
         .sort((a, b) => b.length - a.length)
-        .reduce((acc, dir) => acc.split(dir).join('<root>'), text);
+        .reduce((acc, dir) => acc.split(dir).join('<root>'), text)
+        .split('<root>\\')
+        .join('<root>/');
     const steps = fingerprint(stepsOf(foldRoot(report)));
     const expected = BASELINE[scaffold.id];
     if (UPDATE_BASELINE) {
@@ -622,17 +840,58 @@ async function driveScaffold(scaffold, index) {
       `${String((report.match(/\[✓\]/g) ?? []).length)} ✓ mark(s)`,
     );
 
-    // ── 4. own the daemon before the app can dial it (harness rule 2) ───────────────────────────
+    // ── 4. stop what init handed over, BEFORE booting our own ──────────────────────────────────
+    //
+    // init leaves the app running on purpose: the user gets an instrumented app they can watch.
+    // The gate then boots its own on a different port, and for Vite two servers are harmless. For
+    // Next they are not — both write the same `.next` directory, and the second one finds it being
+    // rewritten underneath itself and never binds. That reported as "the app boots ❌" with Next's
+    // telemetry banner as the detail, which is not about booting at all.
+    //
+    // Doing it here rather than in the finally also stops one scaffold's leftovers reaching the
+    // next one, which is what degraded a whole run down the list.
+    for (const port of handedOverPorts) {
+      if (port !== appPort) await freePortSafely(port);
+    }
+    handedOverPorts = [];
+
+    // Killing the process does not undo a half-written `.next`. That is the other half of the same
+    // problem and the reason the mitigation above was not enough: init's dev server is stopped
+    // mid-compile, leaving a build directory that describes a build nobody finished, and the gate's
+    // own server then reads it, finds it inconsistent and exits without ever binding. Reported as
+    // "the app boots ❌" with Next's telemetry banner as the detail, on all three Next scaffolds,
+    // on Linux only — where Next gets far enough to have written something before it is killed.
+    //
+    // Next rebuilds this from source, so deleting it costs a cold compile and nothing else.
+    //
+    // Best-effort, like every other cleanup here. On Windows the dev server still holds files under
+    // `.next\dev` when this runs, so the delete raises ENOTEMPTY — and Windows does not need this
+    // in the first place: it passed 5/5 before the removal existed, because Next there does not get
+    // far enough to leave an inconsistent build behind. Throwing turned a Linux fix into a Windows
+    // failure on the one scaffold whose dev server was slowest to let go.
+    const nextBuildDir = join(app, '.next');
+    if (existsSync(nextBuildDir)) {
+      try {
+        rmSync(nextBuildDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
+        note('removed a .next left behind by the dev server init handed over');
+      } catch (err) {
+        note(`left .next in place (${String(err).slice(0, 100)}) — the boot below may still be cold`);
+      }
+    }
+
+    // ── 5. own the daemon before the app can dial it (harness rule 2) ───────────────────────────
     daemon = await startOwnedDaemon(bridgePort, { cliPath: CLI, cwd: ROOT });
     const transport = watchTransport(bridgePort);
 
-    // ── 5. boot, and open it in a real browser ──────────────────────────────────────────────────
+    // ── 6. boot, and open it in a real browser ──────────────────────────────────────────────────
     const [devCmd, devArgs] = scaffold.dev(appPort);
-    dev = spawn(devCmd, devArgs, {
+    const devSpawn = pm(devCmd, devArgs);
+    dev = spawn(devSpawn.cmd, devSpawn.args, {
       cwd: app,
-      detached: true,
+      detached: !WIN,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, BROWSER: 'none' },
+      ...devSpawn.shellOpts,
     });
     const devLog = [];
     dev.stdout.on('data', (d) => devLog.push(String(d)));
@@ -647,13 +906,42 @@ async function driveScaffold(scaffold, index) {
       }
       await sleep(500);
     }
-    chk('the app boots', booted, booted ? `:${String(appPort)}` : devLog.join('').slice(-300));
+    // The LAST 300 characters of a dev server's log is its banner, not its error — Next prints a
+    // telemetry notice on the way out, so every boot failure here was reported as
+    // "…completely anonymous telemetry regarding usage." and the actual cause was never shown.
+    // Lines that look like a failure first, then the tail as context.
+    const devText = devLog.join('');
+    const devErrors = devText
+      .split('\n')
+      .filter((l) => /error|failed|EADDRINUSE|cannot|ENOENT|exit/i.test(l))
+      .slice(-6)
+      .join(' | ');
+    chk(
+      'the app boots',
+      booted,
+      booted ? `:${String(appPort)}` : `${devErrors || '(no error lines)'} ⟨tail⟩ ${devText.slice(-300)}`,
+    );
 
     const { chromium } = await import('playwright');
     const browser = await chromium.launch();
     const page = await browser.newPage();
     const consoleLines = [];
     page.on('console', (m) => consoleLines.push(`${m.type()}: ${m.text()}`));
+    // WHAT was refused, not just that something was. A console line reading "Failed to load
+    // resource: 403 (Forbidden)" cost a full CI round trip on Windows because it names a status and
+    // no url — and the two candidates need opposite fixes: a 403 on `ws://…/reticle` is the bridge
+    // refusing an origin, a 403 on an `http://…/@fs/…` is Vite refusing to serve a file outside its
+    // allow-list. Both are plausible from the console text alone, which is the problem.
+    const failedResponses = [];
+    const wsAttempts = [];
+    page.on('response', (r) => {
+      if (r.status() >= 400) failedResponses.push(`${String(r.status())} ${r.url()}`);
+    });
+    // A websocket that never opens produces no `response` event at all, so it is watched separately.
+    page.on('websocket', (ws) => {
+      wsAttempts.push(`opened ${ws.url()}`);
+      ws.on('socketerror', (e) => wsAttempts.push(`FAILED ${ws.url()} — ${String(e)}`));
+    });
     try {
       await page.goto(`http://localhost:${String(appPort)}/`, {
         waitUntil: 'domcontentloaded',
@@ -696,30 +984,56 @@ async function driveScaffold(scaffold, index) {
       console.log(`   ⚠️  INCONCLUSIVE — ${verdict.because}`);
       fail += 1;
     } else {
+      const passed = verdict.outcome === Attribution.PASS;
       chk(
         'a session appears and can answer a state question',
-        verdict.outcome === Attribution.PASS,
-        verdict.outcome === Attribution.PASS
+        passed,
+        passed
           ? (sessions[0]?.url ?? '')
           : `${verdict.because}; console: ${consoleLines.slice(-3).join(' | ').slice(0, 220)}`,
       );
+      // The one-line summary above is a headline, not evidence. A real failure here — the page
+      // never dialled, or dialled and was refused — is diagnosed from what the PAGE said and what
+      // the DAEMON said, and 220 characters of the last three console lines is enough to know
+      // something went wrong and not enough to know what. A `403 (Forbidden)` on Windows cost a
+      // whole CI round trip for exactly this reason: it named a status and not an origin.
+      if (!passed) dumpEvidence(consoleLines, bridgePort, failedResponses, wsAttempts);
     }
 
     await browser.close();
   } catch (err) {
     chk('the scaffold ran to completion', false, String(err).slice(0, 300));
   } finally {
-    if (dev !== undefined) {
-      try {
-        process.kill(-dev.pid, 'SIGTERM');
-      } catch {
-        /* already gone */
-      }
-    }
+    if (dev !== undefined) killTree(dev.pid);
     if (daemon !== undefined) await daemon.stop();
     await freePortSafely(appPort);
+    // The dev server INIT started and handed over, which is not the one above.
+    //
+    // Handing it over is the product behaviour: init leaves the user with a running instrumented
+    // app. A harness has to clean up after that, and this one did not — so every scaffold left a
+    // vite squatting the port the NEXT scaffold's init would ask for, and the run degraded down the
+    // list while the first scaffold looked fine. Three "the app boots" failures, none of them about
+    // booting.
+    for (const port of handedOverPorts) {
+      if (port !== appPort) await freePortSafely(port);
+    }
     if (KEEP) note(`kept: ${workdir}`);
-    else rmSync(workdir, { recursive: true, force: true });
+    // A dev server that has just been signalled is still flushing `.next` into this directory, so
+    // the first rmdir loses a race it does not have to lose.
+    //
+    // And it must never decide the run. On Windows a handle survives the process that held it, so
+    // this raised `EBUSY: resource busy or locked, rmdir …\app` AFTER a scaffold had passed all
+    // nine of its checks — and because the throw escaped a `finally`, it reached the top level and
+    // was reported as "the gate could not start", aborting every scaffold behind it. A whole run's
+    // worth of Windows coverage lost to a directory that would not delete. A leaked temp directory
+    // is a leak; it is not an install failure, and this gate answers exactly one question.
+    else {
+      try {
+        rmSync(workdir, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
+      } catch (err) {
+        note(`could not remove ${workdir} (${String(err).slice(0, 120)}) — leaving it behind`);
+      }
+    }
   }
 
   console.log(`   ${fail === 0 ? '✓' : '✗'} ${scaffold.id}: ${pass} passed, ${fail} failed`);
@@ -742,7 +1056,17 @@ try {
   console.log('   · publishing @reticlehq/* to a local registry…');
   registry = await startLocalRegistry();
   for (const [index, scaffold] of chosen.entries()) {
-    results.push(await driveScaffold(scaffold, index));
+    // Isolated, for the same reason the CI matrix sets `fail-fast: false`: which scaffolds install
+    // and which do not is the entire output of this gate, and one of them throwing used to take the
+    // answer for every scaffold behind it. Measured on Windows — vite-react passed all nine checks,
+    // then an EBUSY on a temp directory ended the run and four scaffolds were never attempted.
+    // A crash is that scaffold's failure to report, not a reason to stop asking the question.
+    try {
+      results.push(await driveScaffold(scaffold, index));
+    } catch (err) {
+      console.log(`   ✗ ${scaffold.id} crashed: ${String(err).slice(0, 300)}`);
+      results.push({ id: scaffold.id, pass: 0, fail: 1 });
+    }
   }
 } catch (err) {
   // The reason, not the banner. execFileSync's message begins with the command and then its STDOUT,

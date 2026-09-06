@@ -245,6 +245,7 @@ describe('desktop injection cannot fail silently', () => {
   it('fails the build when the entry was never found', () => {
     const plugin = reticle({ desktop: true });
     expect(() => plugin.buildEnd?.()).toThrow(/could not inject/i);
+    expect(() => plugin.buildEnd?.()).toThrow(/__RETICLE_TOKEN__/);
   });
 
   it('is satisfied once the entry has been injected', () => {
@@ -381,6 +382,15 @@ describe('SDK dep optimization', () => {
     expect(Object.keys(define)).toContain('__RETICLE_TOKEN__');
     // Always a defined string literal — an undefined global would make the guard in the hook throw.
     expect(typeof define['__RETICLE_TOKEN__']).toBe('string');
+  });
+
+  it('still inlines __RETICLE_TOKEN__ when inject is false, for the hand-written connect', () => {
+    const plugin = reticle({ inject: false }) as unknown as {
+      config?: (config: Record<string, unknown>) => Record<string, unknown> | undefined;
+    };
+    const patch = plugin.config?.({}) ?? {};
+    const define = (patch['define'] as Record<string, string> | undefined) ?? {};
+    expect(Object.keys(define)).toContain('__RETICLE_TOKEN__');
   });
 
   it("preserves the app's own define entries", () => {

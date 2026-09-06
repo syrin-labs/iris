@@ -58,6 +58,29 @@ export function mergedNameRedirect(name: string): MergedNameRedirect | undefined
   return BY_OLD_NAME.get(name);
 }
 
+/**
+ * Every retired name against the call that replaces it — the tombstones, as one block.
+ *
+ * The redirect above answers an agent that already guessed the old name. This answers the one that
+ * is reading the surface to find out what exists, and is the case a redirect cannot reach: nothing
+ * in the catalogue says `reticle_crawl` became `reticle_verify { action: "crawl" }`, so instructions
+ * written against an earlier release lead either to an error string or to nothing at all.
+ *
+ * Derived from the same two declarations as `BY_OLD_NAME`, for the same reason: a hand-written
+ * migration list is one merge away from being wrong, and wrong is worse than absent here — the agent
+ * retries into it.
+ */
+export function retiredToolNames(): Readonly<Record<string, string>> {
+  const tombstones: Record<string, string> = {};
+  for (const [old, redirect] of BY_OLD_NAME) {
+    tombstones[old] =
+      redirect.action === undefined
+        ? `retired; ${redirect.note ?? `use ${redirect.tool}`}`
+        : `retired; use ${redirect.tool} { action: "${redirect.action}" }`;
+  }
+  return tombstones;
+}
+
 /** The sentence handed to an agent that called `name`. */
 export function mergedNameMessage(name: string, redirect: MergedNameRedirect): string {
   return redirect.action === undefined

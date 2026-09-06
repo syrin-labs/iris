@@ -1,13 +1,13 @@
-import { normalizeQueryArgs } from './query-shape.js';
-import type { Session } from '../session/session.js';
-import { resolveTargetRef, type TargetResolution } from './resolve-target.js';
 /**
  * Action tools — reticle_act, reticle_act_sequence, reticle_act_and_wait. Split out of tools.ts to keep
  * that file under the line cap and assembled back into the tool list there via ...ACT_TOOLS; the
  * native-input attempt itself lives in real-input-attempt.ts for the same reason.
  */
+import type { Session } from '../session/session.js';
 import { z } from 'zod';
 import { aliasParam } from './alias-args.js';
+import { resolveSessionWithin } from '../session/resolve-within.js';
+import { WALL_CLOCK } from '../session/wall-clock.js';
 import { ACT_SEQUENCE_TOOL } from './act-sequence-tool.js';
 import { timeoutMsSchema } from './numeric-bounds.js';
 import { captureAct } from '../flows/replay.js';
@@ -47,9 +47,10 @@ import {
 } from './settle-in-flight.js';
 import { waitForReaction } from './react-grace.js';
 import { decideVerified } from '../honesty/verified.js';
+import { honestyForVerdict } from '../honesty/honesty.js';
 import { declaredExpectations, declaresBodyIndependentChannel } from '../events/declared.js';
 import { readsDomState } from '../honesty/already-true.js';
-import { describeWaitTarget } from '../honesty/unsettled.js';
+import { describeWaitTarget, namedNetIsInFlight } from '../honesty/unsettled.js';
 import { saveFailedAssertCapsule } from './act-capsule.js';
 import { buildDivergenceCapsule } from '../capsule/capsule.js';
 import { predicateToExpectedLinks } from '../capsule/predicate-to-links.js';
@@ -80,9 +81,10 @@ import {
 import { asString, asNumber, asRecord, sourceOf } from './tools-helpers.js';
 import { dispatchAct, preflightAct } from './act-preflight.js';
 import { followLostObservation } from './act-observation.js';
-import { type ToolDef, intentArg, sessionIdShape } from './tool-kit.js';
+import { type ToolDef, type ToolDeps, intentArg, sessionIdShape } from './tool-kit.js';
 import { asActionType, gradeOf } from './act-helpers.js';
-import { tryRealInput, rewriteUploadArgs } from './real-input-attempt.js';
+import { resolveActTarget } from './act-target.js';
+import { tryRealInput, rewriteUploadArgs, HOVER_NEEDS_POINTER_MSG } from './real-input-attempt.js';
 
 /**
  * Single dispatch point for every ACT and ACT_SEQUENCE command.
@@ -96,14 +98,8 @@ import { tryRealInput, rewriteUploadArgs } from './real-input-attempt.js';
  * base64 to the browser as if it were an inline content call.
  */
 export async function actCommand(
-  deps: Parameters<typeof rewriteUploadArgs>[0],
-  session: {
-    command: (
-      name: string,
-      args: Record<string, unknown>,
-      timeout?: number,
-    ) => Promise<import('@reticlehq/core').CommandResult>;
-  },
+  deps: ToolDeps,
+  session: Session,
   actArgs: Record<string, unknown>,
   timeoutMs?: number,
 ): Promise<import('@reticlehq/core').CommandResult> {
@@ -112,6 +108,21 @@ export async function actCommand(
     'string' === typeof actArgs['action'] ? actArgs['action'] : '',
     asRecord(actArgs['args']),
   );
+  // Sequence and act_and_wait dispatch through here without the ACT handler's tryRealInput.
+  // A synthetic hover reports dispatched/settled while CSS :hover never applies — drive a real
+  // pointer when one is available, otherwise refuse rather than lie.
+  if (ActionType.HOVER === actArgs['action']) {
+    const ref = asString(actArgs['ref']);
+    if (ref === undefined) throw new Error(HOVER_NEEDS_POINTER_MSG);
+    const real = await tryRealInput(deps, session, ref, ActionType.HOVER, actArgs);
+    if (real.result === undefined) throw new Error(HOVER_NEEDS_POINTER_MSG);
+    return {
+      kind: 'command_result',
+      id: 'hover',
+      ok: true,
+      result: { dispatched: true, settled: real.settled, ...asRecord(real.result) },
+    };
+  }
   const bridgeArgs: Record<string, unknown> = { ...actArgs, args: rewritten };
   return timeoutMs !== undefined
     ? session.command(ReticleCommand.ACT, bridgeArgs, timeoutMs)
@@ -139,44 +150,7 @@ export async function actCommand(
  */
 const ACTION_TYPE_VALUES = Object.values(ActionType);
 const ACTION_TYPE_LIST = ACTION_TYPE_VALUES.join(' | ');
-export const actionTypeEnum = z.enum(ACTION_TYPE_VALUES as [string, ...string[]]);
-
-/**
- * Resolve an action's element: an explicit `ref`, or a `target` query resolved in the SAME call.
- *
- * Requiring a ref meant every verification paid a `reticle_query` turn first just to learn one
- * string, and the advertised tool surface is re-sent on every turn — measured on the wire, a
- * two-turn verification spent 10,756 of 11,235 tokens on schema and 479 on the actual answers. The
- * lookup still happens; it just stops costing a round trip through the model.
- *
- * `ref` wins when both are given, because it is the more specific instruction and silently
- * preferring the query would act on something the caller did not name.
- */
-export async function resolveActTarget(
-  session: Session,
-  args: Record<string, unknown>,
-): Promise<TargetResolution> {
-  const ref = asString(args['ref']);
-  if (ref !== undefined && ref.length > 0) return { kind: 'ref', ref };
-  const target = args['target'];
-  if (target === undefined) {
-    return {
-      kind: 'error',
-      message:
-        'pass `ref` (from reticle_query/reticle_snapshot) or `target` (e.g. { testid } or { role, name }).',
-    };
-  }
-  const q = normalizeQueryArgs(asRecord(target));
-  const out = await session.command(ReticleCommand.QUERY, {
-    by: q['by'],
-    value: q['value'],
-    name: q['name'],
-    scope: q['scope'],
-  });
-  if (!out.ok) return { kind: 'error', message: out.error ?? 'target query failed' };
-  const elements = asRecord(out.result)['elements'];
-  return resolveTargetRef(Array.isArray(elements) ? elements : []);
-}
+const actionTypeEnum = z.enum(ACTION_TYPE_VALUES as [string, ...string[]]);
 
 export const ACT_TOOLS: ToolDef[] = [
   {
@@ -477,7 +451,15 @@ export const ACT_TOOLS: ToolDef[] = [
       ...pausedOutputShape,
     },
     handler: async (deps, args) => {
-      let session = deps.sessions.resolve(asString(args['sessionId']));
+      // Spend the caller's budget waiting for the APP too, not only for the consequence. This tool
+      // is the one an agent reaches for straight after `init` and a dev-server restart, which is
+      // exactly when there is no session yet and one is seconds away. See resolve-within.
+      let session = await resolveSessionWithin(
+        deps.sessions,
+        asString(args['sessionId']),
+        asNumber(args['timeout_ms']) ?? DEFAULT_ASSERT_TIMEOUT_MS,
+        WALL_CLOCK,
+      );
       const acted = session;
       const actedSessionId = session.id;
       // Live-control: refuse to drive the page (no act, no predicate eval) while paused.
@@ -647,7 +629,7 @@ export const ACT_TOOLS: ToolDef[] = [
         // stronger than this block. Grade from the strongest asserted consequence; integrity from evictions.
         // Coverage: cross-origin frames / other blind spots the SDK reported during this window mean the
         // verdict didn't see everything — say so, never imply full coverage.
-        const spots = blindSpotsFromState(session.blindSpots());
+        const spots = blindSpotsFromState(session.blindSpots(), session.runtime);
         const coverage = buildCoverageStatement(spots);
         const absenceBlindSpot = absenceBlindSpotNote(until, spots);
         // Nothing subscribed ⇒ the state channel is dark, and the summary must say so rather than
@@ -689,6 +671,7 @@ export const ACT_TOOLS: ToolDef[] = [
           // evictions that happened outside the window they impeached.
           truncated: bufferLost,
           coveragePartial: Coverage.PARTIAL === coverage.coverage,
+          ...(coverage.note === undefined ? {} : { coverageNote: coverage.note }),
           // Settlement no longer vetoes a declared consequence that held, so the fact is carried
           // here instead of only in the verdict it used to decide. Omitted when never measured.
           ...(settledOutcome === undefined ? {} : { settled: settledOutcome }),
@@ -701,6 +684,9 @@ export const ACT_TOOLS: ToolDef[] = [
           capsule,
           links,
           args,
+          // The session actually driven — after any navigation follow — so the capsule is filed
+          // against the codebase that produced the failure, not wherever the daemon stands.
+          root: session.artifactRoot,
           // No dispatch result to capture when the transport was displaced mid-write.
           actResult: actResult ?? {},
           ...(actedSource === undefined ? {} : { actedSource }),
@@ -736,11 +722,13 @@ export const ACT_TOOLS: ToolDef[] = [
           ...session.lastAct.effect(),
           currentDocumentId: session.currentDocumentId,
           currentEditEpoch: session.currentEditEpoch,
+          appOrigin: session.url,
         });
         // The single field an agent reads. Everything below it is the evidence it was derived from;
         // this is the only one that has to be interpreted, and now it interprets itself.
         const outcomePending = hasAcceptedWrite(windowEvents);
         const outcomeUnread = unreadWriteLabels(windowEvents);
+        const stillInFlight = inFlightRequestLabels(windowEvents);
         const decision = decideVerified({
           pass: verdict.pass,
           // The caller NAMED the consequence rather than defaulting to "wait for idle". A
@@ -771,10 +759,11 @@ export const ACT_TOOLS: ToolDef[] = [
           // window is already in hand.
           unsettled: {
             waitedFor: describeWaitTarget(until),
-            stillInFlight: inFlightRequestLabels(windowEvents),
+            stillInFlight,
             // The retry loop that leaves nothing outstanding — see repeatedRequestLabels.
             repeated: repeatedRequestLabels(windowEvents),
           },
+          ...(namedNetIsInFlight(until, stillInFlight) ? { namedRequestInFlight: true } : {}),
         });
         // Computed once: the verdict block reports it, and the instrumentation gaps are a second
         // reading of the same evidence rather than a new observation.
@@ -823,11 +812,19 @@ export const ACT_TOOLS: ToolDef[] = [
         // checked here rather than only inside the helper so a caller that declared no intent touches
         // nothing at all, not even the clock.
         if (intentId !== undefined && Verified.YES === decision.verified) {
-          await dischargeInlineIntent(deps, asString(args['sessionId']), intentId, {
-            verdictId: inlineVerdictId(ReticleTool.ACT_AND_WAIT, deps.now()),
-            grade,
-            at: deps.now(),
-          });
+          await dischargeInlineIntent(
+            deps,
+            asString(args['sessionId']),
+            intentId,
+            {
+              verdictId: inlineVerdictId(ReticleTool.ACT_AND_WAIT, deps.now()),
+              grade,
+              at: deps.now(),
+            },
+            // Where the acted element is written, so the record can name a file somebody would open
+            // to change the thing it describes.
+            actedSourceLabel,
+          );
         }
         verdictEffect = {
           claim: describeWaitTarget(until),
@@ -866,7 +863,7 @@ export const ACT_TOOLS: ToolDef[] = [
           // agent cannot miss it by not asking. Omitted entirely when clean, so a healthy action
           // pays nothing.
           ...(contradictions.length > 0 ? { contradictions } : {}),
-          honesty,
+          honesty: honestyForVerdict(String(decision.verified), honesty),
           ...(capsule === undefined ? {} : { capsule }),
           since,
           ...(session.id === actedSessionId ? {} : { sessionId: session.id }),

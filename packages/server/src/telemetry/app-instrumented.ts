@@ -28,7 +28,7 @@ export function markInstrumentationClock(now: number): void {
   reported = false;
 }
 
-export interface InstrumentationFacts {
+interface InstrumentationFacts {
   /** Whether this project has a projectId stamped — i.e. `init` has run here. */
   initialized: boolean;
   /**

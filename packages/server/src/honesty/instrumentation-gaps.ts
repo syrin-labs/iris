@@ -123,7 +123,19 @@ export function gapsForAction(facts: ActionInstrumentationFacts): Instrumentatio
   //
   // Reported as the same kind, because it is the same missing thing seen from the other side, and
   // guarded so the two conditions cannot report it twice.
-  if (false === facts.hasCapabilities || (facts.stateAsked && facts.stateUnwatched)) {
+  //
+  // BOTH arms require `stateUnwatched`, which is the store registry. Keying the first on
+  // `hasCapabilities` alone made this fire on apps whose store IS registered and readable: an app
+  // that calls `registerStore()` without `registerCapabilities()` has no declaration and a perfectly
+  // good store, and got a gap saying "no state can be read from it" in the same response that
+  // carried `reticle_state { found: true }`, a populated `stateDiffs`, and `statePathsChanged`
+  // naming the store (#700). A gap contradicted by its own response tells the agent to redo work it
+  // has already done, and teaches it to distrust the whole block.
+  //
+  // The kind is NO_STORE_REGISTERED and every sentence it carries is about stores, so the store
+  // registry is what it must be keyed on. An undeclared-capabilities app with a working store is a
+  // different observation, and if it is worth reporting it needs its own kind and its own words.
+  if (facts.stateUnwatched && (false === facts.hasCapabilities || facts.stateAsked)) {
     // Same missing thing, two ways of meeting it — and the sentence has to say which. Describing an
     // assertion about state to an agent that made no such assertion is a false explanation, and a
     // gap nobody can act on is worse than no gap: it costs the trip and teaches the wrong lesson.

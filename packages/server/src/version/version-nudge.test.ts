@@ -17,7 +17,12 @@
  */
 
 import { describe, expect, it, beforeEach } from 'vitest';
-import { noteVersionSkew, takeVersionSkew, resetVersionSkew } from './version-nudge.js';
+import {
+  noteVersionSkew,
+  takeVersionSkew,
+  takeVersionSkewOnto,
+  resetVersionSkew,
+} from './version-nudge.js';
 
 beforeEach(() => resetVersionSkew());
 
@@ -34,6 +39,39 @@ describe('version-skew nudge', () => {
     expect(first?.pair).toBe('sdk');
     expect(first?.action).toContain('2.2.1');
     expect(takeVersionSkew()).toBeUndefined();
+  });
+
+  it('splices pending skew onto a thrown-tool error, and drops the feedback ask', () => {
+    // The Playwright-timeout case: an unrecognized error used to invite a bug report, so the
+    // caller debugs a CDP string instead of the mismatched pair that caused it.
+    noteVersionSkew('sdk', 'the page runs 2.2.1 but the daemon is 2.4.1. Run `reticle update`.');
+    const out = takeVersionSkewOnto({
+      error: 'Timeout 30000ms exceeded.',
+      feedback: 'This error is not one Reticle recognizes',
+    });
+    expect(out['version_skew']).toEqual({
+      pair: 'sdk',
+      action: 'the page runs 2.2.1 but the daemon is 2.4.1. Run `reticle update`.',
+    });
+    expect(out['feedback']).toBeUndefined();
+    expect(out['recovery']).toContain('reticle update');
+    expect(out['error']).toBe('Timeout 30000ms exceeded.');
+    expect(takeVersionSkew()).toBeUndefined();
+  });
+
+  it('keeps a recognized recovery and still attaches the envelope', () => {
+    noteVersionSkew('sdk', 'page 2.2.1 vs daemon 2.4.1');
+    const out = takeVersionSkewOnto({
+      error: "command 'snapshot' timed out after 8000ms",
+      recovery: 'ask the human to bring the tab to the front',
+    });
+    expect(out['recovery']).toBe('ask the human to bring the tab to the front');
+    expect(out['version_skew']).toBeDefined();
+  });
+
+  it('leaves an error payload alone when nothing is skewed', () => {
+    const payload = { error: 'Timeout 30000ms exceeded.', feedback: 'ask' };
+    expect(takeVersionSkewOnto(payload)).toEqual(payload);
   });
 
   it('re-arms for a DIFFERENT skew — a second tab on a third version is news', () => {

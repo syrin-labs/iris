@@ -23,3 +23,13 @@ export function unreachableMessage(url: string, attempts: number): string {
     `reticle.connect({ url })). An https page cannot open a ws:// socket at all. Still retrying…`
   );
 }
+
+/**
+ * The same fact, sized for the HUD's one-line status row.
+ *
+ * The console warning explains; this one only has room to name the URL, which is the answer in
+ * most cases anyway — a bridge on a port the page is not dialling.
+ */
+export function unreachableStripText(url: string, attempts: number): string {
+  return `no bridge at ${url} — ${String(attempts)} attempt${1 === attempts ? '' : 's'}`;
+}

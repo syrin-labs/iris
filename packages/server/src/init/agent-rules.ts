@@ -83,21 +83,32 @@ export const CLI = `${NPX} ${RETICLE_NPM_PACKAGE}`;
  * inside a host that asks the human for permission — so a dev server it starts is visible in the
  * transcript, attributable, and stoppable.
  *
- * The guards are the whole reason this is safe, so no renderer may drop them: adopt what is already
- * listening, read the command rather than invent one, never kill, background it and SAY so, and leave
- * the permission prompt to the host.
+ * The guards are the whole reason this is safe, so no renderer may drop them: one server at a time,
+ * read the command rather than invent one, never kill anything you did not start, and leave the
+ * permission prompt to the host. "Background it and say so" is no longer among them because the
+ * branch above now states it at the point of action, and this text is read every turn — a rule
+ * stated twice costs every agent tokens forever and is the first thing to drift.
+ *
+ * The RESTART branch outranks the rest and is stated first. It used to be an aside, while "if a dev
+ * server is already listening, use it" was a numbered guard — so an agent resolving the two
+ * reasonably reused a server started before `init` edited the build config, served a bundle with no
+ * SDK in it, and landed on an empty session list with every other step done correctly.
  *
  * Exported because slash-command.ts renders the same rule; there must not be two versions of it.
  */
-export const DEV_SERVER_POLICY = `**If no dev server is listening, start one yourself.** Read the project's own dev script out of \`package.json\` (\`dev\`, \`start\`, whatever this project calls it), run it in the BACKGROUND, tell the user in one line that it is running and how to stop it, then carry on. Stopping to ask is how a verification turn ends with nothing verified.
+export const DEV_SERVER_POLICY = `**A dev server already running when \`reticle init\` ran does not have Reticle in its bundle.** It read the build config at boot; \`init\` edited it afterwards. It serves the old bundle and no session appears. In order:
 
-Five guards, none optional:
+1. **A dev server was already running?** Restart it, then hard-reload the tab. "Something is listening" does not mean the right bundle is served.
+2. **Nothing was running?** Start it in the BACKGROUND and say so in one line. \`reticle_sessions\` gives you this project's own dev command in \`next_action\`; use that, never compose one. Started after \`init\`, it needs no restart.
 
-1. **Never start a second one.** If something is already listening on the app's port, use it.
-2. **Never guess the command.** It comes from \`package.json\` scripts. If there is no recognisable dev script, say so and stop rather than inventing one.
-3. **Never kill anything.** Not a dev server, not a daemon, not a port holder — including one you started.
-4. **Background it, and say so.** The user must know a server is running and how to stop it. A dev server the human does not know about is the same failure one step later.
-5. **The permission prompt belongs to your host.** Never try to bypass, suppress or auto-approve it, and take a refusal as the answer.`;
+Stopping to ask is how a verification turn ends with nothing verified.
+
+Four guards, none optional:
+
+1. **Never run two at once.** One dev server on the app's port. Restarting a stale one means stopping it first, not starting a second alongside it.
+2. **Never guess the command.** It comes from \`package.json\` scripts. No recognisable dev script means say so and stop, not invent one.
+3. **Never kill anything you did not start**, and never a daemon or a port holder. The one exception is the restart above, and say in one line that you did it.
+4. **The permission prompt belongs to your host.** Never bypass, suppress or auto-approve it, and take a refusal as the answer.`;
 
 /**
  * The operative rules, carried by every file that loads on every turn.

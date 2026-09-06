@@ -105,7 +105,14 @@ async function writeResponse(
   res.end(JSON.stringify(result.body));
 }
 
-/** Start the verify server on localhost. Resolves once listening; returns the bound server + port. */
+/**
+ * Start the verify server on localhost. Resolves once listening; returns the bound server + port.
+ *
+ * A failed bind REJECTS, naming the verify port. It used to emit `'error'` with no listener, so an
+ * EADDRINUSE on `--http-port` crashed the daemon with a raw stack, and the parent `serve` reported
+ * only that the daemon "did not come up" on the BRIDGE port — the one port that was fine (#687).
+ * Rejecting lets the daemon's start-failure path say what actually could not be honoured.
+ */
 export function startVerifyServer(
   opts: VerifyServerOptions,
   port: number,
@@ -113,8 +120,17 @@ export function startVerifyServer(
   const server = http.createServer(createVerifyRequestListener(opts));
   server.requestTimeout = REQUEST_TIMEOUT_MS;
   server.headersTimeout = HEADERS_TIMEOUT_MS;
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    const onError = (err: Error): void => {
+      reject(
+        new Error(
+          `the verify HTTP endpoint could not bind ${LOCALHOST}:${String(port)} — ${err.message}`,
+        ),
+      );
+    };
+    server.once('error', onError);
     server.listen(port, LOCALHOST, () => {
+      server.removeListener('error', onError);
       const address = server.address();
       const boundPort = 'object' === typeof address && address !== null ? address.port : port;
       resolve({ server, port: boundPort });

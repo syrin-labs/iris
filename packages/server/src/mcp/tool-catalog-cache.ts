@@ -44,6 +44,20 @@ export function isToolsListRequest(line: string): boolean {
   return parse(line)?.method === LIST_METHOD;
 }
 
+/** The JSON-RPC method a client sends to actually USE a tool, as opposed to listing them. */
+const CALL_METHOD = 'tools/call';
+
+/**
+ * Is this line a client CALLING a tool?
+ *
+ * The one fact that separates a working agent link from a merely-registered one. Listing the tools
+ * proves a client read the catalogue; it proves nothing about whether a request can cross to the
+ * daemon, and the field reports those two states looking identical from every other angle.
+ */
+export function isToolCallRequest(line: string): boolean {
+  return parse(line)?.method === CALL_METHOD;
+}
+
 export class ToolCatalogCache {
   #tools: unknown[] | undefined;
 

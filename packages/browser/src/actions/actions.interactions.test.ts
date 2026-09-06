@@ -577,6 +577,19 @@ describe('destructive-action guard reads the element, not the form around it', (
     await expect(executeAction(refs.refFor(save), 'click')).resolves.toBeDefined();
   });
 
+  it('does not block a Payment option — selecting a document type is not a payment', async () => {
+    // Radix Select (and most custom selects) render choices as role=option, not a native <option>.
+    document.body.innerHTML = '<div role="option" id="pay">Payment</div>';
+    const pay = document.getElementById('pay') as HTMLElement;
+    await expect(executeAction(refs.refFor(pay), 'click')).resolves.toBeDefined();
+  });
+
+  it('does not block Log out, which is a reversible auth flow', async () => {
+    document.body.innerHTML = '<button role="menuitem" id="out">Log out</button>';
+    const out = document.getElementById('out') as HTMLButtonElement;
+    await expect(executeAction(refs.refFor(out), 'click')).resolves.toBeDefined();
+  });
+
   it('still blocks the row button that IS destructive', async () => {
     document.body.innerHTML = `
       <form action="/settings">

@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { workspaceParents } from './workspace-apps.js';
+import { findWorkspaceApps, workspaceParents } from './workspace-apps.js';
 
 describe('where a workspace keeps its packages', () => {
   it('reads pnpm-workspace.yaml, which is the authoritative answer', () => {
@@ -62,5 +62,79 @@ describe('where a workspace keeps its packages', () => {
       topLevelDirs: ['apps', 'web'],
     });
     expect(parents.filter((p) => 'apps' === p)).toHaveLength(1);
+  });
+});
+
+/**
+ * A workspace app is one somebody can SERVE.
+ *
+ * `looksLikeApp` asked only for a bundler: a vite/next config file, or one of those two in the
+ * dependencies. That misses every app built on anything else — Remix, Astro, a plain node server,
+ * a Rails-style app with a JS front end — and in a monorepo missing it means init never redirects,
+ * wires the ROOT, and reports ✓ for files nothing compiles.
+ *
+ * The honest signal is the one setup/reticle.mjs used: the app somebody is working in is the app
+ * with a dev script. A monorepo root has none by design, which is what keeps this from matching
+ * everything.
+ */
+describe('an app is a directory that can be served', () => {
+  const repo = (files: Record<string, string>) => ({
+    exists: (p: string) => p in files,
+    readFile: (p: string) => files[p] ?? null,
+    listDirs: (p: string) => ('apps' === p ? ['docs', 'web'] : []),
+  });
+
+  it('finds an app whose only signal is a dev script', () => {
+    const apps = findWorkspaceApps(
+      repo({
+        'package.json': JSON.stringify({ name: 'root', workspaces: ['apps/*'] }),
+        // NOT `dev: 'vite'` — the dependency check is a substring match on the raw manifest, so that
+        // string would make this pass without the dev-script signal existing at all.
+        'apps/web/package.json': JSON.stringify({
+          name: 'web',
+          scripts: { dev: 'node server.js' },
+        }),
+      }),
+    );
+    expect(apps).toEqual(['apps/web']);
+  });
+
+  // The whole point of the filter: a package that cannot be served is not the app.
+  it('skips a workspace package with only a build script', () => {
+    const apps = findWorkspaceApps(
+      repo({
+        'package.json': JSON.stringify({ name: 'root', workspaces: ['apps/*'] }),
+        'apps/docs/package.json': JSON.stringify({ name: 'docs', scripts: { build: 'true' } }),
+        'apps/web/package.json': JSON.stringify({
+          name: 'web',
+          scripts: { dev: 'node server.js' },
+        }),
+      }),
+    );
+    expect(apps).toEqual(['apps/web']);
+  });
+
+  it('accepts start and serve as well as dev', () => {
+    for (const script of ['start', 'serve'] as const) {
+      const apps = findWorkspaceApps(
+        repo({
+          'package.json': JSON.stringify({ name: 'root', workspaces: ['apps/*'] }),
+          'apps/web/package.json': JSON.stringify({ name: 'web', scripts: { [script]: 'node .' } }),
+        }),
+      );
+      expect(apps).toEqual(['apps/web']);
+    }
+  });
+
+  // Unchanged: a bundler config is still enough on its own, for an app whose scripts are elsewhere.
+  it('still finds one by its bundler config alone', () => {
+    const apps = findWorkspaceApps(
+      repo({
+        'package.json': JSON.stringify({ name: 'root', workspaces: ['apps/*'] }),
+        'apps/web/package.json': JSON.stringify({ name: 'web' }),
+        'apps/web/vite.config.ts': 'x',
+      }),
+    );
+    expect(apps).toEqual(['apps/web']);
   });
 });

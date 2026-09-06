@@ -8,6 +8,7 @@ import {
   type PresenterTone,
 } from '@reticlehq/core';
 import { refs } from '../dom/refs.js';
+import { unreachableStripText } from '../transport/unreachable-message.js';
 import { actionVerb } from './presenter-verbs.js';
 import { nativeSetTimeout, nativeClearTimeout, nativeNow } from '../timers/native-timers.js';
 import {
@@ -37,6 +38,8 @@ import {
   IDLE_END_MS,
   IDLE_END_MIN_MS,
   ACT_STRIP,
+  STATE_ATTR,
+  UNREACHABLE_STATE,
   GLOW_FADE_MS,
   GLOW_ON,
   GLOW_OFF,
@@ -220,7 +223,11 @@ export class Presenter {
     document.head.appendChild(style);
     const root = document.createElement('div');
     root.setAttribute('data-reticle-overlay', '');
-    const actStrip = `<div class="reticle-act-strip" data-liveness="idle"><span class="reticle-act-dot" aria-hidden="true"></span><span class="reticle-act">${ACT_STRIP.READY}</span></div>`;
+    // The mode rides ON the status row, next to the dot and the elapsed time it already reports.
+    // It used to be a sibling BELOW the strip, hidden except while reading or acting — so every
+    // single tool call popped a block into the panel and took it away again, which reads as a
+    // second UI flashing in rather than as the one status line changing what it says.
+    const actStrip = `<div class="reticle-act-strip" data-liveness="idle"><span class="reticle-act-dot" aria-hidden="true"></span><span class="reticle-act">${ACT_STRIP.READY}</span><span class="reticle-chip" data-reticle-chip></span></div>`;
     root.innerHTML = `
       ${blockerHtml()}
       <div data-reticle-glow></div>
@@ -302,6 +309,9 @@ export class Presenter {
       return;
     }
     if (this.#sessionActive) return;
+    // A bridge that answered supersedes whatever the failed connect left on screen.
+    if (UNREACHABLE_STATE === this.#root?.getAttribute(STATE_ATTR))
+      this.#root.removeAttribute(STATE_ATTR);
     this.#sessionActive = true;
     this.#startMs ??= this.#now();
     this.#endMs = undefined;
@@ -312,6 +322,32 @@ export class Presenter {
       this.#shell.openChat();
     }
   }
+  /**
+   * The bridge never answered: show that, rather than showing nothing.
+   *
+   * An instrumented page with a dead bridge used to be indistinguishable from a page with no
+   * Reticle in it — overlay mounted, dock off, nothing on screen. The user cannot tell "I forgot to
+   * start the daemon" from "the install did not work", and the commonest cause is the cheapest to
+   * say: the port. So the HUD appears, states the URL it tried, and marks itself unreachable so it
+   * is never mistaken for a live session.
+   *
+   * Not an error dialog and not modal: the page is the user's, and a dev overlay that shouts is one
+   * they turn off. It is the same capsule they would have had, saying the one thing it knows.
+   */
+  showUnreachable(url: string, attempts: number): void {
+    if (this.#sessionActive) return;
+    this.#root?.setAttribute(STATE_ATTR, UNREACHABLE_STATE);
+    // Dock and HUD, but NOT the border glow: the glow means the agent is working, and nothing is.
+    const dock = this.#root?.querySelector('[data-reticle-dock]');
+    dock?.setAttribute(DATA_ON, GLOW_ON);
+    this.#hud?.setAttribute(DATA_ON, GLOW_ON);
+    this.#lastActionText = unreachableStripText(url, attempts);
+    this.#paintActStrip(this.#lastActionText, true);
+    // The message IS the reason this state exists, and a collapsed capsule hides it. Same setting
+    // a live session honours, so a user who wants the bare toolbar still gets one.
+    if (getPresenterSettings().autoOpenChat) this.#shell.openChat();
+  }
+
   /** Turn the base border (session mode) + the HUD/log on - the visible "session is live" state. */
   #showSession() {
     const dock = this.#root?.querySelector('[data-reticle-dock]');

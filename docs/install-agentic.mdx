@@ -1,7 +1,7 @@
 ---
 title: 'Agentic install: let the agent do it'
 sidebarTitle: Agentic install
-description: Run npx @reticlehq/server init and let your coding agent wire Reticle into the project. What it changes, what it asks, and how to read its report.
+description: One command wires Reticle into your project, boots the app, proves a session connected and drives one flow to a verdict. What it changes, what you pass it, and how to read what it returns.
 icon: wand-magic-sparkles
 ---
 
@@ -195,21 +195,47 @@ reticle init  [--dry-run] [--port N] [--no-mcp] [--no-install] [--app <dir>]
               only make sense once the tools are reachable.
 ```
 
-| Flag           | When you want it                                                           |
-| -------------- | -------------------------------------------------------------------------- |
-| `--dry-run`    | Always, the first time.                                                    |
-| `--app <dir>`  | Monorepos. Without it, `init` finds several apps and asks which you meant. |
-| `--no-mcp`     | Your MCP config is managed elsewhere (dotfiles, a team template).          |
-| `--no-install` | You want to add the dependencies yourself, at your own versions.           |
-| `--port N`     | Something else already owns the default port.                              |
+Three of these are answers only the caller has. `init` reads your repository; it cannot read your request, and these live only there.
 
-## Then restart two things
+| Flag | When you want it |
+| --- | --- |
+| `--flow "<what>"` | **Name the journey worth proving.** `init` can list the buttons on a page; it cannot know that checkout matters and the theme toggle does not. Naming it is the difference between a drive that finishes and one that spends its budget looking for something to do. |
+| `--env KEY=VALUE` | What the app needs to reach a usable state: the key from `.env.example`, the mock backend, the variable that skips an auth wall. Repeatable, and a value may contain spaces and equals signs. Without it a real app sits on a login screen and there is no flow to drive. |
+| `--app <dir>` | Monorepos. `init` can find the apps that are servable; only your request says which one you are working in. |
+| `--license <key>` | Writes `RETICLE_LICENSE_KEY` to `.env` and keeps `.env` out of git. Do not do those two by hand. |
+| `--json` | One object on stdout: what was wired, what connected, the verdict, and an `agentTodo` array. For agents. |
+| `--files-only` | Write the files, register the MCP server with every agent on the machine, pre-approve Reticle's tools, and stop: no dev server, no drive. What `init` did before it learned to boot the app, and the upgrade path for a machine that installed Reticle on an earlier version. |
+| `--no-open` | Do not open a browser: CI, a container, an SSH session, or a tab you already have. |
+| `--no-drive` | Stop once a session connects and leave the verdict to you. The only honest way to skip it. |
+| `--dry-run` | See the plan before anything is written. |
+| `--no-mcp` | Your MCP config is managed elsewhere (dotfiles, a team template). |
+| `--no-install` | You want to add the dependencies yourself, at your own versions. |
+| `--port N` | Something else already owns the bridge port. Not the dev server's port. |
 
-This trips up almost everyone, so `init` says it twice and so will we.
+## Already installed? Mostly automatic
 
-**Restart your dev server.** The Vite plugin is new; the running process doesn't have it.
+The first time `reticle mcp` starts on a new version it applies the pre-approval rules for the agents it finds, once, and records that it did. You get that by upgrading. There is nothing to type.
 
-**Restart your agent.** Claude Code, or reload the window in Cursor, or hit Start in `.vscode/mcp.json` in VS Code. Your agent read its server list at startup, before Reticle existed, and no slash command re-reads it. `/mcp` manages servers already loaded, so it cannot pick up a new one. This is a once-per-machine annoyance: Reticle registers globally, so every later project starts with the tools already there.
+One case is deliberately left out. Creating Cursor's `permissions.json` when you do not already have one supersedes whatever you approved inside Cursor itself, so a version bump doing it silently would make your OTHER MCP servers start prompting again, with nothing to connect that to us. Reticle defers it and waits to be asked:
+
+```bash
+npx @reticlehq/server@latest init --files-only
+```
+
+That writes the files, registers the MCP server with every agent it finds, pre-approves Reticle's tools so the per-call Accept dialog stops, and stops there: no dev server, no browser, no drive. Every step is idempotent, so a repo that is already wired reports "already" and changes nothing.
+
+Two things to know afterwards:
+
+- **A GUI client reads its config at startup.** Cursor, Antigravity, Claude Desktop and VS Code need a window reload before the new rules take effect. The CLIs pick them up on their next run.
+- **The pre-approval is scoped to `reticle` alone**, never a blanket rule for every MCP server, and never a global auto-run switch. If a client's approval file did not exist before, `init` says so in a line, because in Cursor's case that file supersedes what you had approved inside the app.
+
+Drop `--files-only` to get the full run: boot the app, drive a flow, return a verdict.
+
+## The two restarts you no longer have to think about
+
+**Your dev server: `init` handles it.** A dev server that was already running read your build config before `init` edited it, so it keeps serving the old bundle and nothing connects. `init` restarts it and waits for the port to answer, rather than telling you to.
+
+**Your agent: not on the critical path any more.** Your agent read its MCP server list at startup, before Reticle existed, and no slash command re-reads it. `/mcp` manages servers already loaded, so it cannot pick up a new one. That used to mean stopping the install to restart. It does not now: the flow is driven by a child agent process started after registration, which reads the list `init` just wrote. Your own session picks the tools up whenever you next start it, and nothing is waiting on that. This is a once-per-machine annoyance in any case, because Reticle registers globally.
 
 ## Confirm it worked
 

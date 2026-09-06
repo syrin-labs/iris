@@ -34,6 +34,9 @@ export interface CrawlSession {
   /** Which round of source edits is in force, so a finding drawn entirely from pre-edit evidence
    *  says so. Optional for the same reason `currentDocumentId` is. */
   readonly currentEditEpoch?: number | undefined;
+  /** The page under test, so a third-party beacon cannot be reported against a control. Optional
+   *  for the same reason `currentDocumentId` is. */
+  readonly url?: string | undefined;
   /**
    * Attribution window around each click. Optional so a caller can supply a minimal session, but a real
    * session MUST provide it: without a window the click's own effects carry no actionId, and an
@@ -337,6 +340,11 @@ export async function crawl(
     for (const c of findContradictions(events, {
       currentDocumentId: session.currentDocumentId,
       currentEditEpoch: session.currentEditEpoch,
+      appOrigin: session.url,
+      // The crawl's window IS one control's click, so it can name the floor the consequence rules
+      // need — without it a crawl would report nothing about the UI moving, which is most of what a
+      // crawl is for.
+      actionSince: since,
     })) {
       counts.contradictions += 1;
       anomalies.push({

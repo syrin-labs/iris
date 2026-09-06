@@ -25,18 +25,17 @@ import {
 } from '../mcp/mcp-proxy.js';
 import { installProxyResilience } from '../daemon/daemon-resilience.js';
 import { readProjectId } from './cli-port.js';
-import {
-  DAEMON_INNER_COMMAND,
-  PORT_FLAG,
-  DRIVE_FLAG,
-  HEADED_FLAG,
-  HTTP_FLAG,
-  HTTP_PORT_FLAG,
-  HTTP_TOKEN_FLAG,
-} from './cli-parse.js';
-import { resolveMcpPort } from '../daemon/daemon-resolve.js';
+import { resolveMcpPort, daemonProjectAt } from '../daemon/daemon-resolve.js';
+import { daemonSpawnArgs } from './daemon-start-options.js';
+import { WakeAction, decideWake } from '../daemon/wake-decision.js';
 import { pickDaemonPortToBind } from '../daemon/free-port.js';
 import { fetchStatus } from './cli-launch.js';
+import { migrateApprovals } from '../setup/approval-migration.js';
+import { ReticleEnv } from '@reticlehq/core';
+import { agentIo } from '../setup/agent-io.js';
+import { SERVER_VERSION } from '../version/server-version.js';
+import { homedir } from 'node:os';
+import type { PlatformPaths } from '../setup/agent-configs.js';
 
 /**
  * MCP proxy mode: ensures the daemon is running, then bridges Claude Code's
@@ -64,7 +63,26 @@ export async function handleMcp(opts: {
   // proxy's transport built around a single fixed number. Making the proxy chase a moving port would
   // mean reworking the reconnect path, which is the one piece whose failure reads to a user as
   // "the MCP server disappeared mid-session".
-  const port = await resolveMcpPort(opts.port, readProjectId(process.cwd()), reticleStateHome(), {
+  // Read once and reused by the wake path below: the boot resolution and every later wake must be
+  // defending the SAME identity, and computing it twice is how they drift apart.
+  // Before the port work, because it is the only moment we are guaranteed to get on a machine that
+  // installed Reticle before the pre-approval rules existed. Once per version, never a create that
+  // supersedes an allowlist we cannot read, and it cannot throw: see approval-migration.
+  // A sandboxed state dir means a test, a gate or a fixture, none of which are asking us to rewrite
+  // the real user's editor configuration.
+  if (undefined === process.env[ReticleEnv.STATE_DIR]) {
+    migrateApprovals({
+      io: agentIo,
+      home: homedir(),
+      platform: process.platform as keyof PlatformPaths,
+      stateHome: reticleStateHome(),
+      version: SERVER_VERSION,
+      log,
+    });
+  }
+
+  const projectId = readProjectId(process.cwd());
+  const port = await resolveMcpPort(opts.port, projectId, reticleStateHome(), {
     alive: isAlive,
     daemonPresent: async (p: number): Promise<boolean> =>
       presenceIsUsable(await probePresence(p, { tcpOpen: probeDaemon, status: fetchStatus })),
@@ -100,24 +118,37 @@ export async function handleMcp(opts: {
     // client request woke into the identical non-answer. Rejecting here is what puts the proxy
     // dormant with a reason, instead of pretending the wake succeeded.
     const presence = await probePresence(port, { tcpOpen: probeDaemon, status: fetchStatus });
-    if (presenceIsUsable(presence)) return;
-    if (PortPresence.FREE !== presence) throw new Error(describePresence(presence, port));
+    // Identity, not just presence. `resolveMcpPort` above already refuses to adopt a stranger's
+    // daemon at boot; this is the same question asked on every WAKE, which is where it was missing.
+    //
+    // Reachable by ordinary use, with no error anywhere: a daemon retires on its idle timer and
+    // frees the port, another project's daemon binds it, and this project's dormant proxy wakes
+    // straight onto it. The agent then drives, asserts and reports a verdict about a DIFFERENT
+    // APPLICATION. That is worse than the disconnect it was reintroduced under the cover of, because
+    // a disconnect is visible and this is a false green wearing a valid session.
+    const wake = decideWake(presence, daemonProjectAt(port, reticleStateHome()), projectId);
+    if (WakeAction.USE === wake) return;
+    if (WakeAction.REFUSE === wake) {
+      throw new Error(
+        PortPresence.DAEMON === presence
+          ? `the daemon on port ${String(port)} belongs to a different project, so this one will ` +
+              'not adopt it. Stop it, or start this project on its own port.'
+          : describePresence(presence, port),
+      );
+    }
     const scriptPath = process.argv[1];
     if (scriptPath === undefined) {
       log('reticle_mcp_no_script', {});
       process.exit(1);
     }
-    const daemonArgs = [DAEMON_INNER_COMMAND, PORT_FLAG, String(port)];
-    if (driveUrl !== undefined) {
-      daemonArgs.push(DRIVE_FLAG, driveUrl);
-      if (!headless) daemonArgs.push(HEADED_FLAG);
-    }
-    // Forward the HTTP-verify flags too (previously silently dropped for `reticle mcp`).
-    if (http) {
-      daemonArgs.push(HTTP_FLAG);
-      if (httpPort !== undefined) daemonArgs.push(HTTP_PORT_FLAG, String(httpPort));
-      if (httpToken !== undefined) daemonArgs.push(HTTP_TOKEN_FLAG, httpToken);
-    }
+    const daemonArgs = daemonSpawnArgs({
+      port,
+      headless,
+      http,
+      ...(driveUrl !== undefined ? { driveUrl } : {}),
+      ...(httpPort !== undefined ? { httpPort } : {}),
+      ...(httpToken !== undefined ? { httpToken } : {}),
+    });
     spawnDaemon(process.execPath, scriptPath, daemonArgs, port);
     // Announce the daemon only once the PORT ACCEPTS. This line used to be written the instant the
     // child was spawned, which on a Windows first bootstrap meant `reticle_mcp_daemon_started`

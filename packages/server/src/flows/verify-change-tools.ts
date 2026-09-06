@@ -259,6 +259,9 @@ async function inspectAfterReplay(
     const contradictions = findContradictions(session.eventsSince(cursor), {
       currentDocumentId: session.currentDocumentId,
       currentEditEpoch: session.currentEditEpoch,
+      appOrigin: session.url,
+      // The replay is the action, and the cursor is where it started.
+      actionSince: cursor,
     }) as { kind: string }[];
     const snapshot = await session.command(ReticleCommand.SNAPSHOT, {
       mode: SnapshotMode.INTERACTIVE,

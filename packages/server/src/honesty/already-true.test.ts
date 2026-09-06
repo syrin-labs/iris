@@ -30,10 +30,35 @@ import { readsDomState } from './already-true.js';
 const clean = buildHonestyBlock({ grade: HonestyGrade.PRESENCE, attribution: 'window' });
 
 describe('a condition that already held proves nothing about the action', () => {
-  it('is UNKNOWN, not a pass', () => {
-    const d = decideVerified({ pass: true, alreadyTrue: true, honesty: clean });
-    expect(d.verified).toBe(Verified.UNKNOWN);
+  /**
+   * `no-fault` over `unknown`, once the window settled.
+   *
+   * The two words ask for opposite things. `unknown` means LOOK AGAIN WITH BETTER COVERAGE, and an
+   * agent that reads it reasonably concludes Reticle could not see — so it spends turns enabling
+   * capture, widening timeouts and re-driving, none of which can help, because the engine saw
+   * everything and there was nothing wrong with the evidence. `no-fault` means ASSERT SOMETHING,
+   * which is the actual remedy: the caller declared a consequence that was true before the action,
+   * so their check cannot tell success from a no-op.
+   *
+   * Same distinction `nothing_declared` already carries, and the same gate: it requires a SETTLED
+   * window, so it cannot be earned by returning early.
+   */
+  it('is NO_FAULT once the window settled — the caller must assert, not look harder', () => {
+    const d = decideVerified({ pass: true, alreadyTrue: true, settled: true, honesty: clean });
+    expect(d.verified).toBe(Verified.NO_FAULT);
     expect(d.because).toContain('before');
+  });
+
+  it('stays UNKNOWN when the window never settled — no-fault must not be earned early', () => {
+    const d = decideVerified({ pass: true, alreadyTrue: true, settled: false, honesty: clean });
+    expect(d.verified).toBe(Verified.UNKNOWN);
+  });
+
+  it('is never a pass, either way', () => {
+    for (const settled of [true, false]) {
+      const d = decideVerified({ pass: true, alreadyTrue: true, settled, honesty: clean });
+      expect(d.verified).not.toBe(Verified.YES);
+    }
   });
 
   it('a genuine pass is untouched', () => {

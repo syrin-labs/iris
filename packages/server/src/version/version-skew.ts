@@ -24,6 +24,8 @@
  * a human acts on.
  */
 
+import { resolveSdkFix } from './sdk-fix.js';
+
 /** Which pair disagreed. Named so the nudge can report each independently. */
 export const SkewPair = {
   /** The SDK in the page vs this daemon. */
@@ -89,17 +91,12 @@ export function describeSkew(peer: PeerIdentity, self: SelfIdentity): string | u
  * The fix line for a page whose SDK disagrees with this daemon, with no project to read.
  *
  * Names the framework-neutral sensor and plain npm, because those are the answers that are never
- * actively wrong. When a project directory IS available, use `resolveSdkFix` in sdk-fix.ts, which
- * reads the real UI library and package manager — this used to hardcode `@reticlehq/react` and
- * told Vue projects to install a React package (#618).
+ * actively wrong. When a project directory IS available, `resolveSdkFix` / `sdkFixForDirectory`
+ * in sdk-fix.ts read the real packages and package manager — this used to hardcode
+ * `@reticlehq/react` and told Vue projects to install a React package (#618).
  */
 export function sdkFix(daemonVersion: string): string {
-  return (
-    `Tell the human to install the matching SDK (\`npm i -D @reticlehq/browser@${daemonVersion}\`) ` +
-    'or run `reticle update`, then restart their dev server so the page reloads with it. The ' +
-    'restart is not optional: a bundler keeps serving the pre-bundled copy it already has, so an ' +
-    'upgrade can look applied — matching versions in `npm ls` — while the page runs the old module.'
-  );
+  return resolveSdkFix(daemonVersion);
 }
 
 /**
@@ -157,4 +154,29 @@ export function daemonFix(
     '— anything fixed in the newer package is simply absent. Run `reticle stop` and retry to replace ' +
     'it (other agents on that daemon will need to reconnect).'
   );
+}
+
+/**
+ * Playwright wording when a CDP call cannot bind to the page.
+ *
+ * Under SDK/daemon version skew this text is a LIE: the page is still connected (DOM tools work),
+ * and the agent spends turns re-acquiring leases and asking a human to sign into a fresh profile
+ * (#688). Matched only so we can replace it with the skew sentence already on the session.
+ */
+const PLAYWRIGHT_CLOSED_ERROR =
+  /target (?:page|context|browser) has been closed|browser has been closed|browser has disconnected/i;
+
+/** True when `error` is Playwright's closed-target class — not proof the tab is gone. */
+export function isPlaywrightClosedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return PLAYWRIGHT_CLOSED_ERROR.test(message);
+}
+
+/**
+ * Replace a closed-target throw with the session's skew sentence when we already know the pair is
+ * mismatched. Undefined when there is no skew to name, or the throw is something else.
+ */
+export function rewriteClosedAsSkew(error: unknown, skew: string | undefined): Error | undefined {
+  if (skew === undefined || !isPlaywrightClosedError(error)) return undefined;
+  return new Error(skew);
 }

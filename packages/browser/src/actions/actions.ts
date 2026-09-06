@@ -269,8 +269,8 @@ function dangerousActionContext(el: HTMLElement): string {
   ].join(' ');
 }
 
-function requiresDangerousConfirmation(text: string): boolean {
-  return isDangerousActionText(text);
+function requiresDangerousConfirmation(text: string, role?: string): boolean {
+  return isDangerousActionText(text, role);
 }
 
 /**
@@ -463,12 +463,13 @@ function assertActionAllowed(el: HTMLElement, action: string, args: Record<strin
   // Same resolver as the dispatch below, so the destructive-action guard cannot classify a drag
   // by a target the dispatch will not use.
   const dragTarget = action === ActionType.DRAG ? refs.resolve(dragTargetRef(args)) : null;
-  const context = isHtmlElement(dragTarget)
-    ? `${dangerousActionContext(el)} ${dangerousActionContext(dragTarget)}`
-    : dangerousActionContext(el);
+  const sourceDangerous = requiresDangerousConfirmation(dangerousActionContext(el), getRole(el));
+  const targetDangerous =
+    isHtmlElement(dragTarget) &&
+    requiresDangerousConfirmation(dangerousActionContext(dragTarget), getRole(dragTarget));
   if (
     canTrigger &&
-    requiresDangerousConfirmation(context) &&
+    (sourceDangerous || targetDangerous) &&
     args[DANGEROUS_ACTION_CONFIRM_ARG] !== true
   ) {
     throw new Error(

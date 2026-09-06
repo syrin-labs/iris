@@ -46,7 +46,7 @@ describe('patchViteConfig', () => {
     if (r.kind !== VitePatchKind.APPLY) throw new Error('expected apply');
     // Spaced to match the line it lands on: single-line arrays keep the space, multi-line ones
     // would otherwise be left with trailing whitespace for a formatter to rewrite.
-    expect(r.code).toContain('reticle({');
+    expect(r.code).toContain('reticle()');
     expect(r.code).not.toContain('port:');
   });
 
@@ -62,7 +62,7 @@ export default defineConfig({ server: { port: 3000 } });
     expect(r.kind).toBe(VitePatchKind.APPLY);
     if (r.kind !== VitePatchKind.APPLY) return;
     expect(r.code).toContain(VITE_IMPORT);
-    expect(r.code).toContain('plugins: [reticle({');
+    expect(r.code).toContain('plugins: [reticle(');
     // The existing config must survive intact.
     expect(r.code).toContain('server: { port: 3000 }');
   });
@@ -78,7 +78,7 @@ export default defineConfig({
 `);
     expect(r.kind).toBe(VitePatchKind.APPLY);
     if (r.kind !== VitePatchKind.APPLY) return;
-    expect(r.code).toContain('plugins: [reticle({');
+    expect(r.code).toContain('plugins: [reticle(');
     expect(r.code).toContain('port: 3000');
   });
 
@@ -86,7 +86,7 @@ export default defineConfig({
     const r = patchViteConfig('export default {};\n');
     expect(r.kind).toBe(VitePatchKind.APPLY);
     if (r.kind !== VitePatchKind.APPLY) return;
-    expect(r.code).toContain('plugins: [reticle({');
+    expect(r.code).toContain('plugins: [reticle(');
   });
 
   it('still bails to manual when there is no config object to extend', () => {
@@ -137,9 +137,20 @@ describe('patchViteConfig — the edit reads like the file it lands in', () => {
  * changes what an already-installed SDK records the next time it updates.
  */
 describe('the plugin call init writes', () => {
-  it('enables body capture, so a write outcome is readable out of the box', () => {
+  // Body capture is OPT-IN as of #705. A healthcare workspace proxying authenticated API traffic
+  // through Vite ran `init` and found login tokens and patient payloads in the daemon's buffer on
+  // the first drive. The capability is worth having — without a body a 2xx write grades
+  // `outcome_unread` — but writing it into somebody's config is a decision about THEIR data, made
+  // by an agent running unattended, and the person who knows the data is sensitive is not there.
+  it('does not enable body capture unless it was asked for', () => {
     const r = patchViteConfig('export default defineConfig({ plugins: [react()] });', 5000);
     expect(r.kind).toBe(VitePatchKind.APPLY);
+    if (r.kind !== VitePatchKind.APPLY) return;
+    expect(r.code).not.toContain('captureNetworkBodies');
+  });
+
+  it('writes it when the caller asked for it', () => {
+    const r = patchViteConfig('export default defineConfig({ plugins: [react()] });', 5000, true);
     if (r.kind !== VitePatchKind.APPLY) return;
     expect(r.code).toContain('captureNetworkBodies: true');
   });
@@ -150,10 +161,22 @@ describe('the plugin call init writes', () => {
     expect(r.code).toContain('port: 5000');
   });
 
-  it('enables it even when there is no port to pass', () => {
-    // The default port needs no argument, which used to make the call `reticle()` — so the option
-    // had nowhere to live and the default-port case would have silently kept the old behaviour.
+  // The default port needs no argument, so with capture off there is nothing to put in the braces.
+  // A bare `reticle()` is the right call there — `reticle({  })` is a formatter's problem and reads
+  // as though something was meant to be in it.
+  it('emits a bare reticle() when there is nothing to configure', () => {
     const r = patchViteConfig('export default defineConfig({ plugins: [react()] });');
+    if (r.kind !== VitePatchKind.APPLY) return;
+    expect(r.code).toContain('reticle()');
+    expect(r.code).not.toContain('captureNetworkBodies');
+  });
+
+  it('can still be asked for when there is no port to pass', () => {
+    const r = patchViteConfig(
+      'export default defineConfig({ plugins: [react()] });',
+      undefined,
+      true,
+    );
     if (r.kind !== VitePatchKind.APPLY) return;
     expect(r.code).toContain('captureNetworkBodies: true');
   });

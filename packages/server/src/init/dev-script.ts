@@ -16,7 +16,8 @@
  */
 
 /** Script names a JS project uses to run itself, in the order we would pick them. */
-const CANDIDATES = ['dev', 'start', 'serve'] as const;
+export const DEV_SCRIPT_NAMES = ['dev', 'start', 'serve'] as const;
+const CANDIDATES = DEV_SCRIPT_NAMES;
 
 export const DevScriptChoice = {
   /** Something already answers on the port. Use it; never replace a server the user is running. */
@@ -28,7 +29,7 @@ export const DevScriptChoice = {
 } as const;
 export type DevScriptChoice = (typeof DevScriptChoice)[keyof typeof DevScriptChoice];
 
-export interface DevScriptPlan {
+interface DevScriptPlan {
   choice: DevScriptChoice;
   /** The npm script name, when there is one. */
   script?: string;
@@ -64,12 +65,14 @@ export function planDevScript(
  * parsing attached, and `run.ts` is at its cohesion limit. Returns undefined for anything it cannot
  * read: this phrasing decides nothing, so it must never be able to break an install.
  */
-export function devCommandFrom(pkgRaw: string, packageManager: string): string | undefined {
+export function devCommandFrom(pkg: unknown, packageManager: string): string | undefined {
   try {
-    const parsed: unknown = JSON.parse(pkgRaw);
+    // Takes the PARSED manifest. It used to take the raw string and parse it a fourth time — the
+    // caller now reads the file once, through a guard, so there is one place a malformed manifest
+    // can be noticed and it is not this one.
     const scripts =
-      'object' === typeof parsed && null !== parsed
-        ? ((parsed as { scripts?: Record<string, string> }).scripts ?? {})
+      'object' === typeof pkg && null !== pkg
+        ? ((pkg as { scripts?: Record<string, string> }).scripts ?? {})
         : {};
     return planDevScript(scripts, packageManager, false).command;
   } catch {

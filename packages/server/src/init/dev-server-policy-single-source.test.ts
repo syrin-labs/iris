@@ -37,8 +37,22 @@ const sentences = DEV_SERVER_POLICY.split(/\.\s+/)
 /** The prefix length that identifies a sentence without demanding the whole of it. */
 const KEY = 60;
 
-/** How many policy rules SKILL.md quotes. Pinned so drift cannot shrink the checked set. */
-const QUOTED_TODAY = 4;
+/**
+ * How many policy rules SKILL.md quotes. Pinned so drift cannot shrink the checked set.
+ *
+ * Was 4. Rose to 11 when the restart branch was promoted from an aside to the head of the policy:
+ * the two documents had been stating the same rule in two different ways, this guard caught it, and
+ * the fix was to make the constant carry SKILL.md's corrected wording rather than to loosen the
+ * check. A higher number is a tighter guard — every additional sentence is one more rule that can no
+ * longer drift silently.
+ *
+ * Briefly 12, when `init` gained the ability to start the dev server itself. It went back to 11
+ * because the every-turn budget refused the extra sentence, and the refusal was right: that `init`
+ * may start a dev server is SETUP-time information, and this constant is the text an agent re-reads
+ * on every turn to decide what to do while working. It lives in SKILL.md instead, which is read
+ * once, at the moment it applies.
+ */
+const QUOTED_TODAY = 11;
 
 describe('the dev-server policy has one source', () => {
   it('the constant still carries the rules, so this guard cannot go vacuous', () => {

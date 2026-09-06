@@ -40,6 +40,19 @@ describe('diagnoseNoSession', () => {
     expect(msg).not.toMatch(/reticle init/);
   });
 
+  it('a session was here and a port is bound — name the port, so nobody starts a second stack', () => {
+    const msg = diagnoseNoSession({
+      everConnected: true,
+      initialized: true,
+      listening: [5173],
+      port: 4400,
+    });
+    expect(msg).toContain('5173');
+    expect(msg).toMatch(/already listening/i);
+    expect(msg).toContain('http://localhost:5173');
+    expect(msg).toMatch(/do not start a second/i);
+  });
+
   it('a dev server is up but never dialled — name the port, and point at the wiring', () => {
     const msg = diagnoseNoSession({
       everConnected: false,

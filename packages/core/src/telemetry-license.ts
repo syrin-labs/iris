@@ -16,6 +16,19 @@
  * This is a STATUS, never an identity. It says whether a key verified, not whose key it is; the
  * separate `licenseId` carries the opaque id, and the organisation NAME never goes on the wire at all.
  */
+/**
+ * A licence key is present in the environment — whatever this build was able to conclude about it.
+ *
+ * Separate from `licenseStatus` because status can be ABSENT: `eval` reports nothing at all, by
+ * design, since it means no issuer key is baked and that is every OSS install. The consequence was
+ * that a customer who pastes a real enterprise key into a build which cannot verify it produced no
+ * licence signal whatsoever — indistinguishable from someone who has never held a key. The one
+ * population most worth seeing was the one that could not be seen.
+ *
+ * Never the key. This is a boolean; the key itself is a credential and never leaves the machine.
+ */
+export const LICENSE_KEY_PRESENT = 'licenseKeyPresent';
+
 export const LicenseActivation = {
   /** A valid, unexpired, correctly-signed key covering this build. */
   ACTIVE: 'active',

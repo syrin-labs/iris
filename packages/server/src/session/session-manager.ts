@@ -1,4 +1,6 @@
 import { NO_SESSION_CONNECTED_ERROR } from '@reticlehq/core';
+import { notePendingNoSessionReason } from '../telemetry/tool-refused.js';
+import type { NoSessionReason } from '@reticlehq/core';
 import {
   declareDrivenRedactionKeys,
   forgetDrivenRedactionKeys,
@@ -267,6 +269,13 @@ export class SessionManager {
    * bridge constructed without a daemon (every unit test) keeps the plain message.
    */
   #noSessionHint: (() => string | undefined) | undefined;
+  /**
+   * The CODE for the same diagnosis `#noSessionHint` renders as prose.
+   *
+   * Registered from the same `explainNoSession` call as the hint, so the two cannot describe
+   * different branches. See no-session-watch.ts.
+   */
+  #noSessionReason: (() => NoSessionReason | undefined) | undefined;
 
   /** Wire the diagnosis provider (daemon boot). Absent ⇒ the plain, static message. */
   setNoSessionHint(hint: (() => string | undefined) | undefined): void {
@@ -283,6 +292,14 @@ export class SessionManager {
    */
   noSessionHint(): string | undefined {
     return this.#noSessionHint?.();
+  }
+
+  setNoSessionReason(reason: (() => NoSessionReason | undefined) | undefined): void {
+    this.#noSessionReason = reason;
+  }
+
+  noSessionReason(): NoSessionReason | undefined {
+    return this.#noSessionReason?.();
   }
 
   /**
@@ -387,6 +404,10 @@ export class SessionManager {
         closure === undefined
           ? ''
           : ` NOTE: the bridge REFUSED or closed a connection recently — "${closure.reason}". The app is probably still running and trying to connect: it was turned away, and the SDK does not retry after a policy close. The reason above names the fix — do not go looking for a stopped dev server.`;
+      // Hand the branch code to the refusal that is about to be reported for this throw. The
+      // diagnosis is computed HERE and the refusal is classified from the message downstream, so
+      // without this the largest refusal cohort stays one undifferentiated bucket (#615).
+      notePendingNoSessionReason(this.#noSessionReason?.());
       throw new Error(`${hint ?? NO_SESSION_CONNECTED_ERROR}${refusal}`);
     }
     // Scope to the agent's active project FIRST, so a stray tab from another app/origin (e.g. a
@@ -440,8 +461,15 @@ export class SessionManager {
     }
 
     // Multiple sessions: score each (lower = better candidate for auto-selection).
-    // 0 = non-throttled (visible + recently-heard), 1 = throttled (hidden or stale heartbeat).
-    const scored = all.map((s) => ({ s, score: s.throttled() ? 1 : 0, ms: s.lastSeenMs() }));
+    // 0 = non-throttled (visible + recently-heard), 1 = throttled (hidden or stale heartbeat),
+    // 2 = attached but not answering commands. A wedged tab keeps streaming events, so recency
+    // RATES IT HIGHEST — it was beating a healthy sibling on the one signal scoring looked at, and
+    // every call auto-targeted the one tab guaranteed to time out.
+    const scored = all.map((s) => ({
+      s,
+      score: s.unresponsive() ? 2 : s.throttled() ? 1 : 0,
+      ms: s.lastSeenMs(),
+    }));
     const bestScore = Math.min(...scored.map((x) => x.score));
     const candidates = scored.filter((x) => x.score === bestScore);
 
@@ -460,7 +488,8 @@ export class SessionManager {
     // desktop), the gap requirement is dropped: every session is already in "background" mode
     // so we just pick the one with the freshest heartbeat and let the agent proceed. Requiring
     // a gap here only produces spurious "ambiguous" errors while the user works elsewhere.
-    const allThrottled = 1 === bestScore;
+    // Nothing healthy left to choose between (all throttled, or all wedged): drop the gap check.
+    const allThrottled = bestScore >= 1;
     const RECENCY_GAP_MS = allThrottled ? 0 : 1_000;
     const clearWinner = runnerUp === undefined || best.ms + RECENCY_GAP_MS < runnerUp.ms;
 

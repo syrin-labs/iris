@@ -1,6 +1,6 @@
 [package]
 name = "reticle-tauri"
-version = "2.12.0"
+version = "2.13.1"
 edition = "2021"
 description = "Reticle screenshots and headless mode for a Tauri app"
 license = "MIT"

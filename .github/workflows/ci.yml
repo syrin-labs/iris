@@ -353,7 +353,11 @@ jobs:
           # Anything a user runs BEFORE their first session, plus the gate itself and the dependency
           # graph it installs through. Deliberately broad — the cost of a false positive is CI time,
           # the cost of a false negative is the 0%-connect class shipping again.
-          if echo "$CHANGED" | grep -qE '^(packages/(server/src/init|vite-plugin|next|babel-plugin|browser|react|core)/|apps/e2e/(install-gate|gate-harness|install-baseline)|package\.json|pnpm-lock\.yaml|\.github/workflows/ci\.yml)'; then
+          # `server/src/setup/` and the top-level `setup/` script are named here as of 2.13.0. They
+          # are the whole of one-command onboarding — agent registration, pre-approval, the skill
+          # file, the drive — and neither was on this list, so the release that made `init` an
+          # install could edit every one of them without the install gate running once.
+          if echo "$CHANGED" | grep -qE '^(packages/(server/src/(init|setup)|vite-plugin|next|babel-plugin|browser|react|core)/|setup/|apps/e2e/(install-gate|gate-harness|install-baseline)|package\.json|pnpm-lock\.yaml|\.github/workflows/ci\.yml)'; then
             echo "install=true" >> "$GITHUB_OUTPUT"
           else
             echo "install=false" >> "$GITHUB_OUTPUT"
@@ -416,11 +420,28 @@ jobs:
   # slow and network-bound, and folding it in would make the battery too slow to block a PR.
   # Path-routing this job (only on PRs touching install/wire) is the tracked follow-up in
   # docs/gate-plan.md; until then it runs everywhere, which is the safe direction to be wrong in.
+  #
+  # ON BOTH KINDS OF MACHINE, since 2.13.0. The release whose headline is one-command install had
+  # never executed an install on Windows: this job was ubuntu-only, the `windows` job above runs no
+  # install at all, and every app under apps/ is instrumented already, so re-running `init` over one
+  # reports "already wired" and proves nothing. That left the platform with the most users covered
+  # by reading. `npm`/`npx`/`pnpm` are `.cmd` shims there and a direct spawn does not resolve them,
+  # which is what had to be fixed before this could run at all — a defect no amount of unit testing
+  # on a mac could have surfaced, because on a mac the spawn simply works.
+  #
+  # fail-fast is off: which platform an install breaks on is the most useful single fact here, and
+  # cancelling the sibling throws it away.
   install-gate:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     needs: [verify, changes]
     if: needs.changes.outputs.install == 'true'
-    timeout-minutes: 40
+    # Windows npm installs five real scaffolds appreciably slower than Linux does; the ubuntu run
+    # measured 33 minutes against the old 40-minute cap, which leaves no room on the slower machine.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
@@ -443,7 +464,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: install-gate-logs
+          name: install-gate-logs-${{ matrix.os }}
           path: /tmp/reticle-verdaccio.log
           if-no-files-found: ignore
 
@@ -656,8 +677,16 @@ jobs:
     # compiles packages/tauri at all: it sits outside every JS gate, so an absent entry here meant a
     # red Rust build merged clean. Adding a job to the workflow is half the work; this line is the
     # other half.
+    #
+    # `changes` is in this list, and it is the subtle one. It emits the booleans `install-gate` and
+    # `bench` are conditioned on. If it FAILS, those conditions evaluate against an empty string, so
+    # both jobs are SKIPPED — and `skipped` is accepted below. The two most expensive gates in this
+    # repo could therefore be silently switched off by a failure in the five-line job that decides
+    # whether to run them, and this aggregate would still go green. Exactly the hole the paragraph
+    # above describes, one level down: the job that gates the gates was not itself gated.
     needs:
       [
+        changes,
         verify,
         e2e,
         install-gate,

@@ -256,6 +256,45 @@ describe('query empty hint', () => {
     expect(r.hint?.presentTestids).toHaveLength(12);
   });
 
+  /**
+   * The field report this came from: a label rendered with `v-html` spans several child nodes, so
+   * `by: text` — which reads an element's OWN text nodes — matched nothing while the string was
+   * plainly on screen. The verdict was identical to "never rendered", and the drive ended in a bug
+   * report against an app that had worked.
+   */
+  it('names the container when the wanted text is split across children', () => {
+    render(
+      '<div id="row"><span>Move to </span><span>Reticle </span><span>Repro Folder</span></div>',
+    );
+    const r = runQuery({ text: 'Move to Reticle Repro Folder' });
+    expect(r.elements).toHaveLength(0);
+    expect(r.hint?.splitText).toBeDefined();
+    expect(r.hint?.splitText?.ref).toBeDefined();
+  });
+
+  it('picks the DEEPEST container, not the first one that contains the string', () => {
+    // Every ancestor up to <body> contains the string; naming <body> is not a locator.
+    render('<main><section><p id="tight"><b>Half</b><i> and half</i></p></section></main>');
+    const r = runQuery({ text: 'Half and half' });
+    const ref = r.hint?.splitText?.ref;
+    expect(ref).toBeDefined();
+    const resolved = runQuery({ scope: ref, self: true });
+    expect(resolved.elements[0]?.text).toContain('Half and half');
+  });
+
+  it('omits splitText on an ordinary text miss', () => {
+    // The string is genuinely absent — the clause must not fire, or it stops meaning anything.
+    render('<div><span>something else entirely</span></div>');
+    const r = runQuery({ text: 'not on this page at all' });
+    expect(r.hint?.splitText).toBeUndefined();
+  });
+
+  it('omits splitText when the miss was not a text search', () => {
+    render('<div><span>Save</span><span> changes</span></div>');
+    const r = runQuery({ role: 'button', name: 'Save changes' });
+    expect(r.hint?.splitText).toBeUndefined();
+  });
+
   it('reflects location in route', () => {
     history.pushState({}, '', '/cart?x=1');
     const r = runQuery({ role: 'button', name: 'nope' });
@@ -373,5 +412,79 @@ describe('query: open shadow roots and attribute projection', () => {
       'href'
     ];
     expect((href ?? '').length).toBeLessThanOrEqual(ATTR_VALUE_MAX + 1);
+  });
+});
+
+// `mode:"interactive"` is a ROLE filter, and most production UI carries no roles. Measured on
+// MarkText, a production Electron editor: interactive returned an empty tree where full found 47
+// nodes, because its block picker is `<div>`s. An empty tree reads as an empty page, and the tool
+// description recommends this mode as the default — so the cheap view said there was nothing to
+// drive.
+//
+// `data-testid` was tried as the fix, on the premise that it is "a handle its author put there to be
+// driven". Measured against our own instrumented bench app, that premise is false: the lean tree on
+// its dashboard went to 16 nodes and 175 tokens, and EIGHT of them were display elements —
+// kpi-deploys, kpi-success, kpi-p95, kpi-services, area-chart, activity-feed, brand. Half the
+// "interactive" view was things you cannot act on, and the mode roughly doubled to carry them. A
+// testid marks what a TEST cares about, which is a superset of what a driver can use, and it did not
+// help MarkText either — its controls carry no testid.
+//
+// What actually fixed MarkText is `leanSkipped`: the count turns an empty tree into "look again in
+// full mode", and it costs one number. The testid still supplies a NAME and a ref where an element
+// has no accessible name, so a display element remains addressable in `full` — read it there, or
+// query it directly.
+describe('interactive mode stays the actionable view', () => {
+  it('excludes a role-less div that only carries a data-testid', () => {
+    document.body.innerHTML = `<div data-testid="kpi-deploys">40</div><div>just text</div>`;
+    const snap = buildSnapshot({ mode: SnapshotMode.INTERACTIVE });
+    expect(snap.tree).not.toContain('kpi-deploys');
+    expect(snap.tree).not.toContain('just text');
+  });
+
+  // The count is what turns an empty tree into "look again in full mode", and it is the part of the
+  // MarkText fix that survives. It counts MEANINGFUL nodes only — a bare div with no name, role or
+  // layout is not meaningful in either mode, so a named one is the shape that exercises this.
+  it('counts what it passed over, so an empty tree is not an empty page', () => {
+    document.body.innerHTML = `<div aria-label="block picker"><span>x</span></div>`;
+    const snap = buildSnapshot({ mode: SnapshotMode.INTERACTIVE });
+    expect(snap.tree.trim()).toBe('');
+    expect(snap.leanSkipped ?? 0).toBeGreaterThan(0);
+  });
+
+  it('keeps a real control with no role, when it has one', () => {
+    document.body.innerHTML = `<button data-testid="go">Go</button>`;
+    expect(buildSnapshot({ mode: SnapshotMode.INTERACTIVE }).tree).toContain('Go');
+  });
+
+  // A testid does not put an element into `full` either, and does not name one there.
+  //
+  // Naming testid-bearing generics and minting a ref for them read well in isolation — a bare
+  // `- generic` is visible and unaddressable — but `full` is the DEFAULT mode and the price is paid
+  // on every snapshot. Measured A/B on the bench app's dashboard, same view, same build otherwise:
+  // 65 nodes and 622 tokens with it, 58 nodes and 540 without. +15% on the most-called read, for
+  // handles the caller almost always already knows.
+  //
+  // `reticle_query { by: "testid" }` addresses these directly and cost 31 tokens for one element,
+  // which is the right tool for a value you want to ASSERT on rather than drive.
+  it('does not add a testid-only container to full mode', () => {
+    document.body.innerHTML = `<div data-testid="area-chart"><svg></svg></div>`;
+    expect(buildSnapshot({ mode: SnapshotMode.FULL }).tree).not.toContain('area-chart');
+  });
+
+  // Content is never lost: a div whose only content is text still shows that text.
+  it('still shows the text of a text-only testid div', () => {
+    document.body.innerHTML = `<div data-testid="kpi-deploys">40</div>`;
+    expect(buildSnapshot({ mode: SnapshotMode.FULL }).tree).toContain('40');
+  });
+
+  // An element with a real accessible name is untouched by any of this.
+  it('keeps a named generic in full mode', () => {
+    document.body.innerHTML = `<div aria-label="Reticle agent session"><span>x</span></div>`;
+    expect(buildSnapshot({ mode: SnapshotMode.FULL }).tree).toContain('Reticle agent session');
+  });
+
+  it('still excludes ordinary content, so the mode stays lean', () => {
+    document.body.innerHTML = `<p>a paragraph</p><span>a span</span>`;
+    expect(buildSnapshot({ mode: SnapshotMode.INTERACTIVE }).tree.trim()).toBe('');
   });
 });

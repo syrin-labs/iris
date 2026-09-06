@@ -39,14 +39,36 @@ const {
  * `contextBridge` as a proxy, so the reference the preload holds is not the one the renderer passes
  * back and `delete(callback)` would never match.
  *
- * Empty until a renderer subscribes, so records before `connect()` are dropped rather than queued —
- * the SDK only wants activity from the moment it is watching.
+ * Empty until a renderer subscribes. What happens to records made before that is `backlog`, below.
  */
 const sinks = new Map();
 let sinkToken = 0;
 let seq = 0;
 
+/**
+ * IPC that happened before the SDK was watching, held for the first subscriber.
+ *
+ * This used to be dropped, on the reasoning that the SDK only wants activity from the moment it is
+ * watching. That reasoning is a web reflex and it is wrong here. A desktop app loads its data over
+ * IPC on mount, and `connect()` is injected and does asynchronous work, so the app's FIRST calls —
+ * the ones that populate the entire screen — routinely land before any sink exists. Dropping them
+ * does not produce a gap a reader can see: it produces a network view that is empty and looks clean,
+ * which is the failure this project treats as the worst kind. An agent reads it as "the app made no
+ * backend calls" and reports so.
+ *
+ * Bounded, because an app running for hours with no SDK attached must not grow a queue, and replayed
+ * to the FIRST subscriber only: a second `connect()` in the same renderer is not entitled to history
+ * it was not present for.
+ */
+const backlog = [];
+const BACKLOG_MAX = 200;
+let backlogDelivered = false;
+
 function report(record) {
+  if (sinks.size === 0) {
+    if (!backlogDelivered && backlog.length < BACKLOG_MAX) backlog.push(record);
+    return;
+  }
   for (const sink of sinks.values()) {
     try {
       sink(record);
@@ -201,6 +223,19 @@ contextBridge.exposeInMainWorld(RETICLE_IPC_GLOBAL, {
     if (typeof callback !== 'function') return -1;
     sinkToken += 1;
     sinks.set(sinkToken, callback);
+    // Whatever the app did before anyone was listening, in the order it did it. Delivered once: the
+    // records carry their own ids and timestamps, so a duplicate would read as a second call.
+    if (!backlogDelivered) {
+      backlogDelivered = true;
+      const pending = backlog.splice(0, backlog.length);
+      for (const record of pending) {
+        try {
+          callback(record);
+        } catch {
+          /* a renderer sink is best-effort; a bad one must not lose the rest of the backlog */
+        }
+      }
+    }
     return sinkToken;
   },
   /**

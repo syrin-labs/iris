@@ -231,8 +231,14 @@ export function degradedStepResult(step: FlowStep, index: number, label: string)
   };
 }
 
-/** QUERY args for an element anchor — null when the anchor addresses no element. */
-function anchorQueryArgs(anchor: FlowAnchor): Record<string, unknown> | null {
+/**
+ * QUERY args for an element anchor — null when the anchor addresses no element.
+ *
+ * Exported for `arriveAtStartPath`, which has to ask "can step 1 resolve where we already are?"
+ * before deciding to navigate. Sharing this mapping rather than repeating it keeps that question and
+ * the step runner's own resolution asking the same thing of the same anchor.
+ */
+export function anchorQueryArgs(anchor: FlowAnchor): Record<string, unknown> | null {
   if (anchor.kind === AnchorKind.TESTID) return { by: QueryBy.TESTID, value: anchor.value };
   if (anchor.kind === AnchorKind.COMPONENT) return componentQueryArgs(anchor);
   if (anchor.kind === AnchorKind.ROLE && !isDegradedAnchor(anchor)) return roleQueryArgs(anchor);

@@ -1,5 +1,17 @@
 /**
- * Remove source maps from a package's `dist` before it is packed.
+ * Prepare a package's `dist` for packing: drop the tests, then drop the source maps.
+ *
+ * The test half used to be `find dist -name "*.test.*" -delete`, in the prepack of all eight
+ * publishable packages. On Windows `find` is `C:\Windows\System32\find.exe`, a string search with
+ * no relation to the POSIX tool, so that line did not prune anything — it failed with "Access
+ * denied - DIST / File not found - -NAME / File not found - -DELETE" and took the whole prepack
+ * with it. Every `@reticlehq/*` package was therefore unpackable and unpublishable from a Windows
+ * machine, which nothing had noticed because releases have only ever been cut from a mac. Found by
+ * making the install gate run on Windows, where the first thing it does is publish to a local
+ * registry. It is folded in here rather than given its own script because this already walks the
+ * same tree for the same reason, one step later.
+ *
+ * The source-map half:
  *
  * The maps we were shipping could not work. They reference `../src/*.ts`, and the published package
  * contains only `dist`, `README.md` and `NOTICE` — no sources — and tsc emits no `sourcesContent`
@@ -33,11 +45,30 @@ function walk(dir) {
   return out;
 }
 
-const target = process.argv[2] ?? 'dist';
+const args = process.argv.slice(2);
+const target = args.find((a) => !a.startsWith('--')) ?? 'dist';
+
+// `--clean` is the other half of a prepack: `rm -rf dist` before `tsc -b --force`, so a stale file
+// from a previous build cannot ride along in the tarball. Only `@reticlehq/server` needs it, and it
+// lives here rather than in a script of its own because it is the same directory and the same
+// reason. Windows has no `rm`, and the retries are for the same EPERM every Windows delete can hit.
+if (args.includes('--clean')) {
+  rmSync(target, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+  console.error(`prepare-dist: cleaned ${target}`);
+  process.exit(0);
+}
 let removed = 0;
 let stripped = 0;
 
+let tests = 0;
+
 for (const file of walk(target)) {
+  // Tests first, so their maps are never counted or rewritten on the way out.
+  if (/\.test\./.test(file.split(/[\\/]/).pop() ?? '')) {
+    rmSync(file);
+    tests += 1;
+    continue;
+  }
   if (file.endsWith('.map')) {
     rmSync(file);
     removed += 1;
@@ -56,5 +87,5 @@ for (const file of walk(target)) {
 // one console.log here makes that JSON unparseable and takes the gate down with a syntax error
 // rather than a size failure. Verified: it did exactly that the first time.
 console.error(
-  `strip-maps: removed ${String(removed)} maps, stripped ${String(stripped)} references`,
+  `prepare-dist: removed ${String(tests)} test files and ${String(removed)} maps, stripped ${String(stripped)} references`,
 );

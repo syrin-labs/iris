@@ -23,6 +23,7 @@ import {
   RunProfile,
   RunTrigger,
   VerdictStatus,
+  VerifyPhase,
   type ReticleVerificationRun,
 } from '@reticlehq/core';
 import { start, type RunningServer } from '../index.js';
@@ -31,11 +32,13 @@ import { probeDaemon } from '../mcp/mcp-proxy.js';
 import { fetchStatus } from './cli-launch.js';
 import {
   cloudFetch,
+  createProgressReporter,
   resolveCloudConfig,
+  syncProgressToCloud,
   syncRunToCloud,
   SyncOutcome,
 } from '../cloud/cloud-sync.js';
-import { ReticleRunner } from '../runs/reticle-runner.js';
+import { ReticleRunner, type VerifyProgressListener } from '../runs/reticle-runner.js';
 import { createRunnerPort } from '../runs/runner-port.js';
 import { RunStore } from '../runs/run-store.js';
 import { renderRunReport } from '../runs/render-report.js';
@@ -70,7 +73,11 @@ export interface VerifyConnection {
   /** Resolve true once a browser session has connected, or false at timeout. */
   sessionReady(timeoutMs: number): Promise<boolean>;
   listFlows(): Promise<string[]>;
-  verify(): Promise<ReticleVerificationRun>;
+  /**
+   * `onProgress` is narration for a run in flight — see `verify-progress.ts` in core. Optional at
+   * every layer: a connection that ignores it behaves exactly as it did before.
+   */
+  verify(onProgress?: VerifyProgressListener): Promise<ReticleVerificationRun>;
   close(): Promise<void>;
 }
 
@@ -117,8 +124,47 @@ export async function runVerify(args: VerifyArgs, ports: VerifyPorts): Promise<v
       ports.exit(EXIT_FAIL);
       return;
     }
-    const run = await conn.verify();
+    /*
+     * Narrate the run while it happens.
+     *
+     * Everything else the CLI reports is a finished artifact, which is the right shape for evidence
+     * and the wrong shape for the minutes a verification actually takes. Without this the dashboard
+     * has nothing to show between "linked" and "done", and a run that is working looks exactly like
+     * one that has died — the ambiguity somebody spent fifteen minutes inside.
+     *
+     * Opt-in and best-effort: no cloud credentials means nothing is buffered and nothing is sent.
+     */
+    /*
+     * A correlation id for the STREAM, minted before the run exists.
+     *
+     * The artifact's own `runId` is only assigned once verification finishes, and these events have
+     * to be attributable from the first one — so the stream gets its own id, and the dashboard keys
+     * live progress by it until the finished run replaces the whole picture.
+     */
+    const streamId = randomUUID();
+    const cloud = resolveCloudConfig(process.env);
+    const progress = createProgressReporter(streamId, cloud, cloudFetch);
+    let run: ReticleVerificationRun;
+    try {
+      run = await conn.verify(progress.onProgress);
+    } finally {
+      // Stopped before the last flush so the timer cannot fire mid-send, and flushed after it so the
+      // events from the final flow are not thrown away with the interval that would have sent them.
+      progress.stop();
+      await progress.flush().catch(() => undefined);
+    }
     await pushRunToCloud(run, ports); // best-effort; opt-in; never changes the verdict or exit code
+    /*
+     * The last event anybody watching is waiting for, sent after the artifact has actually landed —
+     * so "pushed" on a dashboard means the run is really there, not that we were about to try.
+     */
+    await syncProgressToCloud(
+      streamId,
+      // The run's OWN injected timestamp — no wall clock is read in this path (rule 7).
+      [{ phase: VerifyPhase.PUSHED, at: run.createdAt }],
+      cloud,
+      cloudFetch,
+    ).catch(() => undefined);
     ports.out(renderRunReport(run));
     ports.exit(run.verdict.status === VerdictStatus.PASS ? EXIT_PASS : EXIT_FAIL);
   } catch (error) {
@@ -140,7 +186,7 @@ async function pushRunToCloud(run: ReticleVerificationRun, ports: VerifyPorts): 
   if (null === config) return;
   const result = await syncRunToCloud(run, config, cloudFetch);
   if (result.outcome === SyncOutcome.SYNCED) {
-    ports.out(`↑ run ${run.runId} recorded on the Reticle Cloud dashboard`);
+    ports.out(`↑ run ${run.runId} recorded on the Reticle dashboard`);
   } else {
     ports.fail(
       `cloud run sync failed (${result.status ?? result.error ?? 'error'}); run kept locally`,
@@ -193,6 +239,8 @@ interface LiveOpts {
    *  (--port / RETICLE_PORT / .reticle.json), or a custom-port app never connects. */
   port: number;
   storageState?: string;
+  /** Which connected tab to verify, when the app has more than one open on this port. */
+  sessionId?: string;
 }
 
 /** Split a drive URL into its origin + whether it's loopback — decides token/injection pairing. */
@@ -238,16 +286,17 @@ async function openLiveConnection(opts: LiveOpts): Promise<VerifyConnection> {
     ...(opts.storageState !== undefined ? { storageState: opts.storageState } : {}),
   });
   const deps = buildVerifyDeps(running, opts.reticleRoot, opts.now);
-  const runner = new ReticleRunner(createRunnerPort(deps));
+  const runner = new ReticleRunner(createRunnerPort(deps, opts.sessionId));
   return {
     sessionReady: (timeoutMs) => waitForSession(deps.sessions, timeoutMs, opts.now),
     listFlows: () => deps.flows.list(),
-    verify: async () => {
+    verify: async (onProgress) => {
       const run = await runner.verify({
         project: { name: opts.projectName, framework: RunFramework.OTHER, previewUrl: opts.url },
         agent: { id: VERIFY_AGENT_ID, kind: RunAgentKind.OEM_PIPELINE },
         trigger: { kind: RunTrigger.OEM },
         profile: RunProfile.PROD_PREVIEW,
+        ...(onProgress === undefined ? {} : { onProgress }),
       });
       // Persist the artifact. `reticle gate` decides from RunStore.latest, so without this the
       // documented CI loop is broken end to end: `reticle verify` could pass and the gate would still
@@ -277,23 +326,39 @@ async function openLiveConnection(opts: LiveOpts): Promise<VerifyConnection> {
  * worst answer available, and reached most often by the people with the fewest other options, since
  * the skill offers this command as the way to a verdict with no MCP at all.
  *
- * Three ways out, in the order they are worth trying, and the message says all three rather than
- * picking one: an agent that already has the tools should ask the daemon that is running instead of
- * starting a second one; somebody who wants this command specifically can stop the daemon; and a
- * second port works when the app is configured for it.
+ * The message says every way out rather than picking one, and it says FIRST that a busy port is the
+ * normal state rather than a fault — an install that worked leaves a daemon on it, so a reader who
+ * arrives here has done nothing wrong and should not go looking for what they broke (#689).
  *
- * Attaching to the running daemon the way `reticle drive` now does is the better answer and is not
- * this change — see cli/drive-attach.ts for the shape it should take.
+ * `reticle drive` leads, because it is the only option that works in the state most people are in
+ * when they reach this message: the client exposes no `reticle_*` tools (Codex, Cursor Cloud,
+ * Antigravity, a session whose MCP link dropped), which is exactly when the CLI is reached for. It
+ * ATTACHES to the running daemon rather than binding — see cli/drive-attach.ts — so there is nothing
+ * to stop, nothing to race, and it hands back a sessionId the daemon owns. The advice that used to
+ * lead, "ask the daemon through the tools", is the one thing that reader by construction cannot do.
+ *
+ * Stopping the daemon stays on the list and stays LAST of the working options, with the reason: the
+ * MCP proxy respawns one into the gap, so `stop` is a race the caller usually loses, and it kills
+ * the agent's own link on the way past.
+ *
+ * `verify` itself attaching, rather than needing the port at all, is the real fix and is #689's
+ * first bullet — not this change.
  */
 export function portBusyMessage(port: number): string {
   return (
     `reticle verify needs port ${String(port)} — the port your app dials — and a Reticle daemon is ` +
     'already listening on it. It did not start a second one.\n\n' +
-    '  • If you have the Reticle tools, ask the daemon that is already running instead: ' +
+    '  This is the NORMAL state after a working install, not a fault: the daemon your MCP client ' +
+    'started owns that port.\n\n' +
+    `  • Drive the app through the daemon that is already there — this needs no tools and stops ` +
+    `nothing: npx @reticlehq/server drive <url>\n` +
+    '  • If your client HAS the Reticle tools, ask that daemon directly: ' +
     'reticle_run { tool: "reticle_verify", args: { action: "change", files: ["..."] } }\n' +
-    `  • Or stop it and re-run: npx @reticlehq/server stop --port ${String(port)}\n` +
     `  • Or run both on another port, if your app is configured for it: RETICLE_PORT=<port> ` +
-    'npx @reticlehq/server verify <url>'
+    'npx @reticlehq/server verify <url>\n' +
+    `  • Stopping the daemon (npx @reticlehq/server stop --port ${String(port)}) works, but it cuts ` +
+    "your agent's MCP link and the proxy usually respawns a daemon into the gap before verify can " +
+    'bind — prefer one of the above.'
   );
 }
 
@@ -302,6 +367,7 @@ export function handleVerify(parsed: {
   headless: boolean;
   timeoutMs?: number;
   storageState?: string;
+  sessionId?: string;
   /** Bridge port — parseCliArgs already resolves --port / RETICLE_PORT / .reticle.json into this. */
   port: number;
 }): void {
@@ -318,6 +384,7 @@ export function handleVerify(parsed: {
         now,
         port: parsed.port ?? RETICLE_DEFAULT_PORT,
         ...(parsed.storageState !== undefined ? { storageState: parsed.storageState } : {}),
+        ...(parsed.sessionId !== undefined ? { sessionId: parsed.sessionId } : {}),
       }),
     out: (line) => process.stdout.write(`${line}\n`),
     fail: (line) => process.stderr.write(`${line}\n`),

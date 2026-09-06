@@ -17,7 +17,7 @@
  */
 
 /** What an agent needs to know about the continuity of one session. */
-export interface Attachment {
+interface Attachment {
   /** How long THIS attachment has lasted. Resets on reconnect — it is not the session's lifetime. */
   connectedSinceMs: number;
   /** How many times this session dropped and came back. Zero means it never left. */

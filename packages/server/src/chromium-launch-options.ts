@@ -23,7 +23,7 @@ export const CHROMIUM_ANTI_THROTTLING_ARGS = [
 ] as const;
 
 /** The options object handed to `chromium.launch` at both launch sites. */
-export interface ChromiumLaunchOptions {
+interface ChromiumLaunchOptions {
   headless: boolean;
   args: string[];
 }

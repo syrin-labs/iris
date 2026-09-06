@@ -218,6 +218,27 @@ export function availableUpdate(currentVersion: string = SERVER_VERSION): string
   return latest !== undefined && isNewerVersion(latest, currentVersion) ? latest : undefined;
 }
 
+/**
+ * What the nudge did this daemon run, for the session summary.
+ *
+ * The nudge has shipped for several releases and emitted nothing, so "did the agent get told about
+ * a release, and did anything happen" was unanswerable — and it is the whole adoption mechanism for
+ * a published fix. `versionChange.nudged` is the half that only ever arrives from machines that DID
+ * update; the pinned cohort never fires `version_changed` at all.
+ *
+ * Reads the same module state the delivery path uses rather than adding a counter beside it, so the
+ * two cannot disagree. `shown` is the one-shot delivery flag: it means "an agent was told", never
+ * how often. `offered` is present whenever a newer release was known, whether or not it was
+ * delivered — without it, `shown: false` would mean "nothing was available" and "something was and
+ * the nudge did not fire" at the same time, and only one of those is a defect.
+ */
+export function updateNudgeState(): { shown: boolean; offered?: string } {
+  return {
+    shown: delivered,
+    ...(pending === undefined ? {} : { offered: pending.latestVersion }),
+  };
+}
+
 /** Tests only — drop the module state so each case starts clean. */
 export function resetUpdateNudge(): void {
   pending = undefined;

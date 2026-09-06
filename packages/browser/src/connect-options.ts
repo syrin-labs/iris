@@ -18,7 +18,11 @@ export interface ReticleConnectOptions {
    * agent scope to the right app even when its dev server boots on an unexpected port. Optional.
    */
   projectId?: string;
-  /** Browser/bridge pairing token. Required when either endpoint is non-localhost. */
+  /**
+   * Browser/bridge pairing token. Required whenever the daemon has one, which is the ordinary case:
+   * it auto-provisions `~/.reticle/pairing-token` on first start and then refuses a hello without it,
+   * including on localhost. Non-localhost additionally needs `allowNonLocalhost`.
+   */
   token?: string;
   /** Explicitly allow Reticle on a non-localhost page or bridge. Requires token. */
   allowNonLocalhost?: boolean;

@@ -223,7 +223,8 @@ describe('waiting strengthens the false-green guard rather than weakening it', (
       ev(EventType.DOM_REMOVED, { path: 'form' }),
       ev(EventType.NET_PENDING, { id: 'n1', method: 'POST', url: '/api/login' }),
     ];
-    const found = findContradictions(early).map((c) => c.kind);
+    // `actionSince` states what these windows always were — the act's. See contradictions.ts.
+    const found = findContradictions(early, { actionSince: 0 }).map((c) => c.kind);
     expect(found).toContain(ContradictionKind.REQUEST_NEVER_SETTLED);
     expect(found).not.toContain(ContradictionKind.UI_ADVANCED_REQUEST_FAILED);
   });
@@ -240,7 +241,7 @@ describe('waiting strengthens the false-green guard rather than weakening it', (
         ok: false,
       }),
     ];
-    const found = findContradictions(waited).map((c) => c.kind);
+    const found = findContradictions(waited, { actionSince: 0 }).map((c) => c.kind);
     expect(found).toContain(ContradictionKind.UI_ADVANCED_REQUEST_FAILED);
     // And the weaker absence-derived finding is gone, because it is no longer true.
     expect(found).not.toContain(ContradictionKind.REQUEST_NEVER_SETTLED);

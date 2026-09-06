@@ -10,7 +10,12 @@
  * Emitted from `runTool`, which is the one place both dispatch paths cross, so a tool added later is
  * covered without anybody remembering to cover it.
  */
-import { TelemetryActor, TelemetryEventKind, type RefusalReason } from '@reticlehq/core';
+import {
+  RefusalReason,
+  TelemetryActor,
+  TelemetryEventKind,
+  type NoSessionReason,
+} from '@reticlehq/core';
 import { getTelemetry } from './telemetry.js';
 
 /**
@@ -35,6 +40,26 @@ let sent = 0;
  */
 let lastRefusedTool: string | undefined;
 
+/**
+ * The no-session branch code for the refusal about to be reported, set by whoever threw it.
+ *
+ * `no_session` is the largest refusal cohort and on its own it is a set difference: nothing
+ * connected, and no word on which of several opposite situations that was. The diagnosis that CAN
+ * say is computed where the error is thrown, and the refusal is classified downstream from the
+ * message, so the two never met (#615).
+ *
+ * Module-level and consumed once, like `lastRefusedTool` above and for the same reason: the
+ * producer and the consumer are one hop apart on the same call, and threading a field through every
+ * refusal path to carry it would touch a dozen call sites that have nothing to do with sessions.
+ * Cleared on read so a later refusal cannot inherit a stale reason.
+ */
+let pendingNoSessionReason: NoSessionReason | undefined;
+
+/** Record the branch code for the no-session error being thrown right now. */
+export function notePendingNoSessionReason(reason: NoSessionReason | undefined): void {
+  pendingNoSessionReason = reason;
+}
+
 /** A call that was served. Breaks the retry chain: what follows it is not a retry of anything. */
 export function noteToolServed(): void {
   lastRefusedTool = undefined;
@@ -44,11 +69,24 @@ export function noteToolServed(): void {
 export function reportToolRefused(tool: string, reason: RefusalReason): void {
   const retried = lastRefusedTool === tool;
   lastRefusedTool = tool;
+  // Read and clear whatever the throw left, whether or not this refusal can use it: a reason left
+  // sitting would attach itself to an unrelated refusal later in the session.
+  const noSessionReason = pendingNoSessionReason;
+  pendingNoSessionReason = undefined;
   if (sent >= MAX_REFUSALS_PER_SESSION) return;
   sent += 1;
   void getTelemetry().emit(TelemetryEventKind.TOOL_REFUSED, {
     actor: TelemetryActor.AGENT,
-    refusal: { tool, reason, retried },
+    refusal: {
+      tool,
+      reason,
+      retried,
+      // Only where it means something. On any other refusal reason this field would be answering
+      // a question nobody asked of it.
+      ...(RefusalReason.NO_SESSION === reason && noSessionReason !== undefined
+        ? { noSessionReason }
+        : {}),
+    },
   });
 }
 
@@ -56,4 +94,5 @@ export function reportToolRefused(tool: string, reason: RefusalReason): void {
 export function resetToolRefusals(): void {
   sent = 0;
   lastRefusedTool = undefined;
+  pendingNoSessionReason = undefined;
 }

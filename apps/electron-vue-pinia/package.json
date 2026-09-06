@@ -1,6 +1,6 @@
 {
   "name": "apps-electron-vue-pinia",
-  "version": "1.0.0",
+  "version": "2.13.1",
   "private": true,
   "description": "An Electron application with Vue and TypeScript",
   "main": "./out/main/index.js",
@@ -24,7 +24,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
-    "pinia": "^2.3.0"
+    "pinia": "^4.0.3"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "3.0.0",
@@ -33,9 +33,9 @@
     "@reticlehq/browser": "workspace:*",
     "@reticlehq/electron": "workspace:*",
     "@reticlehq/vite-plugin": "workspace:*",
-    "@types/node": "^22.19.1",
+    "@types/node": "^26.4.0",
     "@vitejs/plugin-vue": "^6.0.2",
-    "electron": "^43.4.1",
+    "electron": "^44.0.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.1",

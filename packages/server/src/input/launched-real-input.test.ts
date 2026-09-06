@@ -5,6 +5,8 @@ import { DriveError, LaunchedRealInputProvider, boxCenter, type ElementBox } fro
 const DRIVE_URL = 'http://localhost:3000/app';
 const SOURCE_BOX: ElementBox = { x: 0, y: 0, width: 200, height: 100 };
 const TARGET_BOX: ElementBox = { x: 400, y: 200, width: 40, height: 20 };
+/** Playwright's own wording when a handle outlives the page it points at. */
+const CLOSED_MESSAGE = 'Target page, context or browser has been closed';
 
 interface MouseCall {
   kind: string;
@@ -22,16 +24,21 @@ interface FakePageState {
   waitForFunctionThrows?: boolean;
   viewport?: { width: number; height: number };
   routes?: string[];
+  /** The human closed the window, or Chromium died. Playwright keeps answering `url()` either way. */
+  closed?: boolean;
 }
 
 function fakePage(state: FakePageState): unknown {
   return {
     url: () => state.url,
+    isClosed: () => true === state.closed,
     setViewportSize: (size: { width: number; height: number }) => {
+      if (true === state.closed) return Promise.reject(new Error(CLOSED_MESSAGE));
       state.viewport = size;
       return Promise.resolve();
     },
     route: (pattern: unknown) => {
+      if (true === state.closed) return Promise.reject(new Error(CLOSED_MESSAGE));
       state.routes = [...(state.routes ?? []), String(pattern)];
       return Promise.resolve();
     },
@@ -395,5 +402,24 @@ describe('the driven provider supports the tools that require a driven browser',
 
     expect(await provider.setViewport?.(DRIVE_URL, { width: 800, height: 600 })).toBe(false);
     expect(await provider.setMocks?.(DRIVE_URL, [])).toBe(false);
+  });
+
+  /**
+   * A page handle is cached for the life of the provider and Playwright keeps answering `url()`
+   * after the page is gone, so a closed window read as available and every call threw
+   * "Target page, context or browser has been closed" — reported from the field on a leased run.
+   * A dead page is the same fact as no page: refuse, do not throw.
+   */
+  it('refuses instead of throwing once the page it owns has been closed', async () => {
+    const spy = newSpy();
+    const provider = makeProvider(spy);
+    await provider.navigate();
+    spy.state.page.closed = true;
+
+    expect(await provider.isAvailableFor(DRIVE_URL)).toBe(false);
+    expect(await provider.setViewport?.(DRIVE_URL, { width: 800, height: 600 })).toBe(false);
+    expect(await provider.setMocks?.(DRIVE_URL, [])).toBe(false);
+    expect((await provider.perform(DRIVE_URL, 'click', SOURCE_BOX, {})).performed).toBe(false);
+    expect(await provider.screenshot(DRIVE_URL, {})).toBeUndefined();
   });
 });

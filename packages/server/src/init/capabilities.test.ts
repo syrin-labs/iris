@@ -48,9 +48,23 @@ describe('storeHints', () => {
     expect(hints[0]).toContain('useStore');
   });
 
-  it('puts TanStack Query first — a stale cache fires no request, so it is the only witness', () => {
-    const hints = storeHints(new Set(['zustand', '@tanstack/react-query']));
-    expect(hints[0]).toContain('tanstackQueryStore');
+  /**
+   * TanStack Query and Redux hand their store to React through a context provider, so the React
+   * adapter finds and registers them on the first commit. A hint for either would be asking the
+   * reader to do work that is already done by the time they read it — and the notice attached to
+   * that hint would then nag about it forever.
+   */
+  it('says nothing about the libraries the running app reveals on its own', () => {
+    expect(storeHints(new Set(['@tanstack/react-query']))).toEqual([]);
+    expect(storeHints(new Set(['redux']))).toEqual([]);
+    expect(storeHints(new Set(['@reduxjs/toolkit']))).toEqual([]);
+  });
+
+  it('still hints the libraries nothing in the running app points at', () => {
+    const hints = storeHints(new Set(['@tanstack/react-query', 'jotai', 'zustand']));
+    expect(hints).toHaveLength(2);
+    expect(hints.join(' ')).toContain('jotaiStore');
+    expect(hints.join(' ')).toContain('useStore');
   });
 
   it('says nothing when the app has no store library we can read', () => {

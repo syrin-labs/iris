@@ -23,6 +23,8 @@ import {
 import { buildReactionReport } from '../events/reaction.js';
 import { findContradictions } from '../events/contradictions.js';
 import { evaluatePredicate, waitForPredicate, PredicateSchema } from '../events/predicate.js';
+import { resolveSessionWithin } from '../session/resolve-within.js';
+import { WALL_CLOCK } from '../session/wall-clock.js';
 import { parsePredicate } from '../events/predicate-parse.js';
 import {
   matchNet,
@@ -256,6 +258,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       const contradictions = findContradictions(filtered, {
         currentDocumentId: session.currentDocumentId,
         currentEditEpoch: session.currentEditEpoch,
+        appOrigin: session.url,
         ...(judgingTheAct ? { ...session.lastAct.effect(), actionSince: actCursor } : {}),
       });
       // carry session health — a throttled tab means the observed timeline may be incomplete.
@@ -282,7 +285,9 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       until: PredicateSchema.optional().describe("Alias for `predicate` (act_and_wait's name)."),
       timeout_ms: timeoutMsSchema
         .optional()
-        .describe('Maximum wait in milliseconds. Default: 4000.'),
+        .describe(
+          'Maximum wait in milliseconds. Default: 4000. Capped at 55000: your MCP client aborts the request before a longer wait can return, so a bound above this would be advertised and not deliverable. To outlast it, poll — several short waits, each of which returns a verdict.',
+        ),
       since: cursorSchema
         .optional()
         .describe('Cursor from a prior reticle_act — scopes the wait to events after that act.'),
@@ -334,17 +339,19 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         ),
     },
     handler: async (deps, args) => {
-      const session = deps.sessions.resolve(asString(args['sessionId']));
+      const waitBudget = asNumber(args['timeout_ms']) ?? DEFAULT_ASSERT_TIMEOUT_MS;
+      // Spend the budget waiting for the APP as well as for the predicate. See resolve-within.
+      const session = await resolveSessionWithin(
+        deps.sessions,
+        asString(args['sessionId']),
+        waitBudget,
+        WALL_CLOCK,
+      );
       // `until` is act_and_wait's name for this — see alias-args.ts.
       const predicate = parsePredicate(aliasParam(args, 'predicate', ['until'])['predicate']);
       // Honesty: explicit since wins; else default to the last act's cursor; else the whole buffer.
       const since = asNumber(args['since']) ?? session.lastAct.cursor() ?? 0;
-      const verdict = await waitForPredicate(
-        session,
-        predicate,
-        asNumber(args['timeout_ms']) ?? DEFAULT_ASSERT_TIMEOUT_MS,
-        since,
-      );
+      const verdict = await waitForPredicate(session, predicate, waitBudget, since);
       // match reticle_assert — wrap with control + session health (throttle matters most while blocking)
       // and the buffer envelope, so a verdict reached over an evicted window says so.
       return withControl(session, {
@@ -380,7 +387,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       timeout_ms: timeoutMsSchema
         .optional()
         .describe(
-          'If > 0, wait up to this many milliseconds before failing. Default: 0 (evaluate once).',
+          'If > 0, wait up to this many milliseconds before failing. Default: 0 (evaluate once). Capped at 55000: your MCP client aborts the request before a longer wait can return, so a bound above this would be advertised and not deliverable. To outlast it, poll — several short waits, each of which returns a verdict.',
         ),
       since: cursorSchema
         .optional()
@@ -456,10 +463,16 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         ),
     },
     handler: async (deps, args) => {
-      const session = deps.sessions.resolve(asString(args['sessionId']));
+      const timeout = asNumber(args['timeout_ms']) ?? 0;
+      // Spend the budget waiting for the APP as well as for the predicate. See resolve-within.
+      const session = await resolveSessionWithin(
+        deps.sessions,
+        asString(args['sessionId']),
+        timeout,
+        WALL_CLOCK,
+      );
       // `until` is act_and_wait's name for this — see alias-args.ts.
       const predicate = parsePredicate(aliasParam(args, 'predicate', ['until'])['predicate']);
-      const timeout = asNumber(args['timeout_ms']) ?? 0;
       // Honesty: explicit since wins; else default to the last act's cursor; else the whole buffer.
       const since = asNumber(args['since']) ?? session.lastAct.cursor() ?? 0;
       // Declared BEFORE the verdict, so the undeclared-change read below finds it open and stays
@@ -506,11 +519,23 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       // The id is checked HERE rather than only inside the helper so a caller that declared no intent
       // touches nothing at all, not even the clock.
       if (intentId !== undefined && Verified.YES === decision['verified']) {
-        await dischargeInlineIntent(deps, asString(args['sessionId']), intentId, {
-          verdictId: inlineVerdictId(ReticleTool.ASSERT, deps.now()),
-          grade: gradeOfPredicate(predicate),
-          at: deps.now(),
-        });
+        await dischargeInlineIntent(
+          deps,
+          asString(args['sessionId']),
+          intentId,
+          {
+            verdictId: inlineVerdictId(ReticleTool.ASSERT, deps.now()),
+            grade: gradeOfPredicate(predicate),
+            at: deps.now(),
+          },
+          /*
+           * An assertion has no element of its own — it observes, it does not act. The file it names
+           * is the one the LAST action touched, which is the code path that produced the state being
+           * asserted about. Already remembered on the session for exactly this reason: an assertion
+           * whose failure has nothing to point at still needs to name a file.
+           */
+          session.lastAct.source(),
+        );
       }
       // Journal the verdict so a LATER turn can read what this one proved. A verdict that lives only
       // in the response lives only in the agent's context window, which is the copy a compaction

@@ -15,8 +15,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { ContradictionKind, EventType, type ReticleEvent } from '@reticlehq/core';
+import { ContradictionKind, EventType, PredicateKind, type ReticleEvent } from '@reticlehq/core';
 import { findContradictions } from './contradictions.js';
+import { declaredExpectations } from './declared.js';
 
 let seq = 0;
 function ev(type: EventType, data: Record<string, unknown> = {}): ReticleEvent {
@@ -30,12 +31,12 @@ const failedCall = (method: string, url: string, status: number): ReticleEvent =
 
 const kindsOf = (found: { kind: string }[]): string[] => found.map((c) => c.kind);
 
-describe('a declared expected failure is not a contradiction', () => {
-  const loginFailed = (status: number): ReticleEvent[] => [
-    domChanged(),
-    failedCall('POST', '/api/v1/auth/login', status),
-  ];
+const loginFailed = (status: number): ReticleEvent[] => [
+  domChanged(),
+  failedCall('POST', '/api/v1/auth/login', status),
+];
 
+describe('a declared expected failure is not a contradiction', () => {
   it('stays silent when the caller declared exactly this failing call', () => {
     const found = findContradictions(loginFailed(500), {
       expectedFailures: [{ method: 'POST', urlContains: '/api/v1/auth/login', status: 500 }],
@@ -56,7 +57,10 @@ describe('a declared expected failure is not a contradiction', () => {
   it('still catches a failure the caller did NOT declare', () => {
     const found = findContradictions(
       [...loginFailed(500), failedCall('POST', '/api/v1/orders', 500)],
-      { expectedFailures: [{ method: 'POST', urlContains: '/api/v1/auth/login', status: 500 }] },
+      {
+        expectedFailures: [{ method: 'POST', urlContains: '/api/v1/auth/login', status: 500 }],
+        actionSince: 0,
+      },
     );
     expect(kindsOf(found)).toContain(ContradictionKind.UI_ADVANCED_REQUEST_FAILED);
     expect(found[0]?.detail).toContain('/api/v1/orders');
@@ -66,12 +70,13 @@ describe('a declared expected failure is not a contradiction', () => {
   it('still catches a failure whose status is not the declared one', () => {
     const found = findContradictions(loginFailed(503), {
       expectedFailures: [{ urlContains: '/api/v1/auth/login', status: 500 }],
+      actionSince: 0,
     });
     expect(kindsOf(found)).toContain(ContradictionKind.UI_ADVANCED_REQUEST_FAILED);
   });
 
   it('still catches it with no declaration at all', () => {
-    expect(kindsOf(findContradictions(loginFailed(500)))).toContain(
+    expect(kindsOf(findContradictions(loginFailed(500), { actionSince: 0 }))).toContain(
       ContradictionKind.UI_ADVANCED_REQUEST_FAILED,
     );
   });
@@ -103,6 +108,59 @@ describe('a declared expected failure is not a contradiction', () => {
       { expectedFailures: [{ urlContains: '/api/v1/auth/login', status: 500 }] },
     );
     expect(kindsOf(found)).toContain(ContradictionKind.FAILURE_MISATTRIBUTED);
+  });
+});
+
+describe('a declared denial on screen is proof of the 401, not a contradiction', () => {
+  it('stays silent when the caller asserted Access denied over a 401', () => {
+    const declared = declaredExpectations({
+      kind: PredicateKind.TEXT,
+      contains: 'Access denied',
+    });
+    const found = findContradictions(loginFailed(401), {
+      expectedFailures: declared.netFailures,
+      actionSince: 0,
+    });
+    expect(kindsOf(found)).not.toContain(ContradictionKind.UI_ADVANCED_REQUEST_FAILED);
+  });
+
+  it('stays silent for a 403 the same way — platform-only page, Access denied', () => {
+    const declared = declaredExpectations({
+      kind: PredicateKind.TEXT,
+      contains: 'Access denied',
+    });
+    const found = findContradictions(loginFailed(403), {
+      expectedFailures: declared.netFailures,
+      actionSince: 0,
+    });
+    expect(kindsOf(found)).not.toContain(ContradictionKind.UI_ADVANCED_REQUEST_FAILED);
+  });
+
+  // ── Negative controls ───────────────────────────────────────────────────────────────────────
+  // A 5xx with denial copy on screen is the misattributed-fault shape, not an expected auth
+  // denial. Suppressing the heuristic here would hide the one case the other rule exists for.
+  it('still catches a 500 — denial copy does not amnesty a server fault', () => {
+    const declared = declaredExpectations({
+      kind: PredicateKind.TEXT,
+      contains: 'Access denied',
+    });
+    const found = findContradictions(loginFailed(500), {
+      expectedFailures: declared.netFailures,
+      actionSince: 0,
+    });
+    expect(kindsOf(found)).toContain(ContradictionKind.UI_ADVANCED_REQUEST_FAILED);
+  });
+
+  it('still catches a success SIGNAL fired over the 401', () => {
+    const declared = declaredExpectations({
+      kind: PredicateKind.TEXT,
+      contains: 'Access denied',
+    });
+    const found = findContradictions(
+      [...loginFailed(401), ev(EventType.SIGNAL, { name: 'auth:granted' })],
+      { expectedFailures: declared.netFailures },
+    );
+    expect(kindsOf(found)).toContain(ContradictionKind.SIGNAL_CONTRADICTED);
   });
 });
 

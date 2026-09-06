@@ -171,7 +171,11 @@ describe('the verdict carries the clause that decided it', () => {
       alreadyTrue: true,
     });
     const verification = verificationOf(VERIFY, { ...decision, pass: true }, 1);
-    expect(verification?.verified).toBe('unknown');
+    // `no-fault` since `already_true` was regraded off `unknown`: over a SETTLED window the engine
+    // saw everything and the fault is in the assertion, so the remedy is "assert something", not
+    // "look harder". What this test is actually about is the clause travelling with the verdict,
+    // which is asserted on the next line and is unaffected by the word.
+    expect(verification?.verified).toBe('no-fault');
     expect(verification?.reason).toBe(VerifiedReason.ALREADY_TRUE);
   });
 

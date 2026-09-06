@@ -1,0 +1,122 @@
+# The onboarding script's own gates, on every OS it claims to support.
+#
+# This exists because "Windows is supported" was, until now, a claim backed by reading. The parsing
+# in setup/platform-probe.mjs is unit-tested from any OS, but `npx.cmd` spawning, `where`, `netstat`
+# and `taskkill` teardown only ever EXECUTE on Windows — and a path nothing executes is a path
+# nobody has checked. Port discovery there returned nothing at all until recently, which would have
+# failed every CRA-style dev server on the platform with the most users.
+#
+# The break matrix is POSIX-only by construction: its scenarios build fake `node`/`npx`/`claude`
+# shims as /bin/sh scripts. Saying so here is better than pretending the number covers Windows.
+name: setup gates
+
+on:
+  pull_request:
+    paths: ['setup/**', '.github/workflows/setup-gates.yml']
+  push:
+    branches: [main]
+    paths: ['setup/**', '.github/workflows/setup-gates.yml']
+
+jobs:
+  # Pure logic, everywhere. This is what actually executes the Windows parsing.
+  units:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node setup/platform-probe.test.mjs
+      - run: node setup/pick-session.test.mjs
+      # Which codex conversation to resume. Windows matters here specifically: the transcript paths
+      # are joined and compared, and a separator mismatch would silently match nothing — i.e. refuse
+      # every codex restart on the platform, quietly, which reads as "the feature does not work".
+      - run: node setup/codex-session.test.mjs
+      # Which agent clients get an MCP entry, on which platform, and which are left for a human. It
+      # passes and always did — it simply had no runner, so nothing would have noticed if it stopped.
+      # A test nobody runs is not coverage; it is a file that looks like coverage.
+      - run: node setup/agents.test.mjs
+
+  # The gates that need no network and no browser, on every OS — including the Node-version refusal,
+  # which is the one guard that has to work on a machine too old to run the rest of the script.
+  early-gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: no package.json is refused, by path
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/empty" && cd "$RUNNER_TEMP/empty"
+          out=$(node "$GITHUB_WORKSPACE/setup/reticle.mjs" --json --timeout 2 2>&1 || true)
+          echo "$out" | grep -q "no package.json" || { echo "$out"; exit 1; }
+      - name: malformed package.json names the file, not a stack trace
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/bad" && cd "$RUNNER_TEMP/bad"
+          printf '{ "name": "x", }' > package.json
+          out=$(node "$GITHUB_WORKSPACE/setup/reticle.mjs" --json --timeout 2 2>&1 || true)
+          echo "$out" | grep -q "not valid JSON" || { echo "$out"; exit 1; }
+          echo "$out" | grep -qE "^\s+at .+:[0-9]+:[0-9]+" && { echo "leaked a stack trace"; exit 1; }
+          exit 0
+      - name: a project with no dev script stops rather than inventing one
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/nodev" && cd "$RUNNER_TEMP/nodev"
+          printf '{"name":"x","version":"1.0.0","scripts":{"build":"true"}}' > package.json
+          out=$(node "$GITHUB_WORKSPACE/setup/reticle.mjs" --json --timeout 2 2>&1 || true)
+          echo "$out" | grep -q "rather than invent" || { echo "$out"; exit 1; }
+      # The launcher, on the machine that has to run it. `reticle.sh` refuses on Windows by design —
+      # a stock box has no `sh` — so `reticle.cmd` is its sibling, and neither is worth having if
+      # nobody checks that it still finds reticle.mjs from its own directory. The POSIX half is
+      # covered by reticle.test.mjs in the break-matrix job below, which never runs on Windows.
+      - name: the Windows launcher finds reticle.mjs
+        if: runner.os == 'Windows'
+        # Driven from PowerShell rather than `shell: cmd`. The launcher under test is a .cmd; the
+        # STEP does not have to be, and a cmd step is its own parsing hazard — an unquoted `(` in an
+        # echo is a syntax error there, which is how the first attempt at this check produced no
+        # output whatsoever, including the marker meant to explain the absence.
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'launcher'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Push-Location $dir
+          $out = & cmd /c "`"$env:GITHUB_WORKSPACE\setup\reticle.cmd`" --json --timeout 2" 2>&1 | Out-String
+          Pop-Location
+          Write-Host "---- launcher said ----"
+          Write-Host $out
+          if ($out -notmatch 'no package.json') { throw 'the launcher did not reach reticle.mjs' }
+          # A REFUSAL is the pass here, and setup exits non-zero when it refuses — correctly. A pwsh
+          # step fails on a non-zero $LASTEXITCODE left behind by the last native command, so without
+          # this the step reports the launcher's success as its own failure.
+          exit 0
+
+  # POSIX-only, and labelled as such: the scenarios shim /bin/sh executables.
+  break-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node setup/reticle.test.mjs
+      # The matrix drives the SHIPPED cli for every scenario that reaches `init`, so dist has to
+      # exist. Without this the whole matrix failed with `Cannot find module dist/cli.js` and
+      # reported it as a missing diagnosis, which is a different bug entirely.
+      - run: corepack enable && pnpm install --frozen-lockfile
+      - run: pnpm --filter @reticlehq/core --filter @reticlehq/server build
+      # Scenarios that reach `init` need the registry; the rest are hermetic. A failure here is a
+      # regression in a diagnosis, which is the thing this script is judged on.
+      - run: node setup/break-matrix.mjs
+        timeout-minutes: 25

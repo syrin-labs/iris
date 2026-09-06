@@ -132,7 +132,6 @@ export class HudShell {
         <button type="button" ${CHAT_MIN_ATTR} class="reticle-chat-min" title="${CHAT_MIN_LABEL}" aria-label="${CHAT_MIN_LABEL}">${hiIconHtml(PresenterIcon.CARET_DOWN, PRESENTER_ICON_SIZE.TOOLBAR)}</button>
         ${actStripHtml}
         <span class="reticle-tally" data-reticle-tally hidden></span>
-        <span class="reticle-chip" data-reticle-chip></span>
         ${bannerHtml}
         <div class="${HUD_LOG_WELL_CLASS}"><div ${logAttr}></div></div>
         ${flowsHtml}

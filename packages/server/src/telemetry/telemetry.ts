@@ -9,7 +9,7 @@
  *   - it is best-effort and non-blocking: a send failure NEVER changes what the tool does.
  *
  * Events are `@reticlehq/core`'s `TelemetryEventSchema`, mapped at the wire into PostHog's capture
- * format (https://posthog.com/docs/api/capture) — PostHog is the analytics backend until Reticle Cloud
+ * format (https://posthog.com/docs/api/capture) — PostHog is the analytics backend until the hosted service
  * grows its own; a project API key is WRITE-ONLY by design, so embedding it in an OSS client is safe.
  * Everything here is wrapped so a telemetry bug can never surface to a user — a broken metric must not
  * break a verification.
@@ -98,9 +98,9 @@ const SEND_TIMEOUT_MS = 2000;
  * short-lived CLI process pays cold DNS and a cold route on top, which is exactly the case that
  * failed in the field and then succeeded on retry from a warmer process.
  */
-export const FEEDBACK_TIMEOUT_MS = 15_000;
-export const FEEDBACK_RETRIES = 1;
-export const FEEDBACK_RETRY_BACKOFF_MS = 750;
+const FEEDBACK_TIMEOUT_MS = 15_000;
+const FEEDBACK_RETRIES = 1;
+const FEEDBACK_RETRY_BACKOFF_MS = 750;
 
 /**
  * The sender a `detach: true` emit runs in a disowned child (argv: [url, body]) — an in-process fetch
@@ -108,9 +108,24 @@ export const FEEDBACK_RETRY_BACKOFF_MS = 750;
  * (`reticle version`/`gate`) ~800ms. Long-lived daemon events still send in-process: a spawn per tool
  * call would be far heavier than a fetch inside an already-running server.
  */
+/**
+ * The budget the DISOWNED child gets, and why it is not `SEND_TIMEOUT_MS`.
+ *
+ * 2s is right for an in-process send: the daemon is waiting on it, so the budget is a latency cost
+ * somebody pays. A detached child pays nobody — the parent has already exited — so the only thing a
+ * short budget there buys is a lost event.
+ *
+ * And it loses the worst ones. Every detached send comes from a SHORT-LIVED CLI process, which pays
+ * cold DNS and a cold TLS route by definition; measured on the feedback path with a WARM cache it
+ * was already 0.694s before any payload moved. `reticle_installed` is the extreme case: it fires
+ * once per machine, on the first Reticle command that machine ever runs, which is the single coldest
+ * network call it will ever make to the collector — so the top of the funnel is the event most
+ * likely to be dropped, and it fails silently like everything else here.
+ */
+const DETACHED_SEND_TIMEOUT_MS = 15_000;
 const DETACHED_SEND_SCRIPT =
   "fetch(process.argv[1],{method:'POST',headers:{'content-type':'application/json'}," +
-  `body:process.argv[2],signal:AbortSignal.timeout(${SEND_TIMEOUT_MS})})` +
+  `body:process.argv[2],signal:AbortSignal.timeout(${DETACHED_SEND_TIMEOUT_MS})})` +
   '.catch(()=>{}).finally(()=>process.exit(0))';
 
 /** Env var names — mirror cloud-sync's `RETICLE_*` convention. */

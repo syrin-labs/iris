@@ -190,4 +190,87 @@ describe('reticle_flow_save / reticle_flow_load handlers', () => {
     };
     expect(loaded.steps[0]?.expect?.signal).toBe('diff:shown');
   });
+  /**
+   * `flowName` selects the RECORDING; it never named the file (#698).
+   *
+   * A recording is named at `record{start}` - often `default`, or whatever the drive began as -
+   * while every other flow tool reads a flow name as the thing you load and replay. So a caller
+   * who wanted their flow called `create-table` had no way to say so and had to `mv` it on disk.
+   * The give-away that this confused people rather than merely being undocumented: the
+   * no-recording error in this handler already had to spend a sentence explaining the difference,
+   * after it cost a real investigation.
+   */
+  it('22: reticle_flow_save saves under saveAs, and that name loads back', async () => {
+    const recordings = new RecordingStore();
+    recordings.saveCompiled(
+      program('default', [
+        {
+          tool: ReticleTool.ACT,
+          stable: true,
+          args: { by: QueryBy.TESTID, value: 'pay', action: ActionType.CLICK, args: {} },
+        },
+      ]),
+    );
+    const deps = fakeDeps(memoryFs(), recordings);
+    const saved = (await tool(ReticleTool.FLOW_SAVE).handler(deps, {
+      flowName: 'default',
+      saveAs: 'create-table',
+    })) as { name: string };
+    expect(saved.name).toBe('create-table');
+
+    // A name you cannot load with is not a name.
+    const loaded = (await tool(ReticleTool.FLOW).handler(deps, {
+      action: 'load',
+      flowName: 'create-table',
+    })) as { flowName?: string; error?: string };
+    expect(loaded.error).toBeUndefined();
+    expect(loaded.flowName).toBe('create-table');
+  });
+
+  it('23: omitting saveAs still saves under the recording name', async () => {
+    // The compatibility guard: every existing caller passes only flowName.
+    const recordings = new RecordingStore();
+    recordings.saveCompiled(
+      program('checkout', [
+        {
+          tool: ReticleTool.ACT,
+          stable: true,
+          args: { by: QueryBy.TESTID, value: 'pay', action: ActionType.CLICK, args: {} },
+        },
+      ]),
+    );
+    const deps = fakeDeps(memoryFs(), recordings);
+    const saved = (await tool(ReticleTool.FLOW_SAVE).handler(deps, {
+      flowName: 'checkout',
+    })) as { name: string };
+    expect(saved.name).toBe('checkout');
+  });
+
+  it('24: a saveAs that cannot be a filename is refused, and nothing is written', async () => {
+    // It becomes a path under .reticle/flows/, so a traversal attempt is refused by name rather
+    // than resolved into one - and refusing must not quietly save under the recording name
+    // instead, which would write a file the caller never asked for and report success.
+    const recordings = new RecordingStore();
+    recordings.saveCompiled(
+      program('default', [
+        {
+          tool: ReticleTool.ACT,
+          stable: true,
+          args: { by: QueryBy.TESTID, value: 'pay', action: ActionType.CLICK, args: {} },
+        },
+      ]),
+    );
+    const deps = fakeDeps(memoryFs(), recordings);
+    const res = (await tool(ReticleTool.FLOW_SAVE).handler(deps, {
+      flowName: 'default',
+      saveAs: '../escape',
+    })) as { code?: string };
+    expect(res.code).toBe(FlowErrorCode.INVALID_NAME);
+
+    const loaded = (await tool(ReticleTool.FLOW).handler(deps, {
+      action: 'load',
+      flowName: 'default',
+    })) as { error?: string };
+    expect(loaded.error).toBeDefined();
+  });
 });

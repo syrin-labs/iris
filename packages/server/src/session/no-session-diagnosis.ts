@@ -19,6 +19,8 @@
  * the hot resolve() path and this stays unit-testable.
  */
 
+import { NoSessionReason } from '@reticlehq/core';
+
 import { leaseCaveat, type LeaseBrowserState } from './lease-availability.js';
 import { DEV_SERVER_PORTS } from '../cli/cli-port.js';
 import { siblingListenerNote } from '../cli/sibling-ports.js';
@@ -443,7 +445,37 @@ function stallClause(facts: NoSessionFacts): string {
   );
 }
 
-export function diagnoseNoSession(facts: NoSessionFacts): string {
+function alreadyListeningClause(listening: readonly number[]): string {
+  if (0 === listening.length) return '';
+  if (1 === listening.length) {
+    const port = listening[0];
+    return (
+      ` An app is already listening on ${String(port)}; just open http://localhost:${String(port)} ` +
+      '— do not start a second stack.'
+    );
+  }
+  return (
+    ` An app is already listening on ${listening.join(', ')}; just open one of those URLs — do not ` +
+    'start a second stack.'
+  );
+}
+
+/**
+ * The diagnosis, and the CODE for the branch that produced it.
+ *
+ * The prose has always been well-ranked and it was the only output, so the population that installs
+ * Reticle and never gets an app connected arrived as one undifferentiated silence. "Restarted the
+ * dev server and it still did not connect" and "never started the app" need opposite fixes and were
+ * the same absence (#615).
+ *
+ * One function returning both, rather than a classifier beside the writer. A reason computed
+ * separately would drift from the sentence the user is actually shown, and then the metric would
+ * describe a diagnosis nobody received.
+ */
+export function explainNoSession(facts: NoSessionFacts): {
+  reason: NoSessionReason;
+  message: string;
+} {
   const { everConnected, initialized, listening, port } = facts;
   // Named when known: a claim about a missing file is a claim about ONE directory.
   const where =
@@ -463,18 +495,21 @@ export function diagnoseNoSession(facts: NoSessionFacts): string {
     // tell which session went and had to cover both; it now names the session that actually
     // departed (#611), so this branch is only reached when the thing that vanished WAS the lease.
     if (true === facts.leaseExpired) {
-      return (
+      return reason(
+        NoSessionReason.LEASE_EXPIRED,
         'no browser session connected, but one WAS connected to this daemon earlier, so the wiring ' +
-        'is correct. The session that went away was a pooled lease and it aged out; a lease is a ' +
-        'headless context, not a human tab, and it takes its cookies with it (so an authenticated ' +
-        'app needs signing in again). Re-acquire with reticle_lease {action:"acquire", url} and ' +
-        `carry on. ${RETRY}`
+          'is correct. The session that went away was a pooled lease and it aged out; a lease is a ' +
+          'headless context, not a human tab, and it takes its cookies with it (so an authenticated ' +
+          'app needs signing in again). Re-acquire with reticle_lease {action:"acquire", url} and ' +
+          `carry on.${alreadyListeningClause(listening)} ${RETRY}`,
       );
     }
-    return (
+    return reason(
+      NoSessionReason.TAB_GONE,
       'no browser session connected, but one WAS connected to this daemon earlier, so the wiring ' +
-      'is correct. The tab was closed, navigated away, or hard-reloaded. Ask the human to reopen ' +
-      `the app (or run ${OPEN_CMD_BARE}), or reload the tab. ${leaseAdvice(SELF_SERVE, facts)} ${RETRY}`
+        'is correct. The tab was closed, navigated away, or hard-reloaded. Ask the human to reopen ' +
+        `the app (or run ${OPEN_CMD_BARE}), or reload the tab.${alreadyListeningClause(listening)} ` +
+        `${leaseAdvice(SELF_SERVE, facts)} ${RETRY}`,
     );
   }
 
@@ -488,17 +523,21 @@ export function diagnoseNoSession(facts: NoSessionFacts): string {
         ? `${unattributedListeners(listening)} If the dev server is not running, start it first ` +
           '(the command is in `next_action`).'
         : unattributedListeners(listening);
-    return `${RESTARTED_LEAD} ${OPEN_THE_APP} ${listeners} ${rankedCauses(facts)} ${leaseAdvice(SELF_SERVE, facts)} ${RETRY}`;
+    return reason(
+      NoSessionReason.APP_NOT_REOPENED,
+      `${RESTARTED_LEAD} ${OPEN_THE_APP} ${listeners} ${rankedCauses(facts)} ${leaseAdvice(SELF_SERVE, facts)} ${RETRY}`,
+    );
   }
 
   // A config found elsewhere outranks every "you may have no SDK" branch below: those reason from
   // an absence in ONE directory, and this is a file we read in another. Ranked here so the reader is
   // never sent through an install on a project that has demonstrably been installed.
   if (!initialized && (facts.configsElsewhere ?? []).length > 0) {
-    return (
+    return reason(
+      NoSessionReason.CONFIG_ELSEWHERE,
       'no browser session connected, and this daemon has never seen one. ' +
-      `${configsElsewhereClause(facts)} ${unattributedListeners(listening)} ${OPEN_THE_APP} ` +
-      `${rankedCauses(facts)} ${leaseAdvice(SELF_SERVE, facts)} ${RETRY}`
+        `${configsElsewhereClause(facts)} ${unattributedListeners(listening)} ${OPEN_THE_APP} ` +
+        `${rankedCauses(facts)} ${leaseAdvice(SELF_SERVE, facts)} ${RETRY}`,
     );
   }
 
@@ -518,61 +557,83 @@ export function diagnoseNoSession(facts: NoSessionFacts): string {
     // So: report what was actually checked, name the directory, and name the case where the absence
     // is expected rather than diagnostic.
     if (!initialized) {
-      return (
+      return reason(
+        NoSessionReason.NO_LISTENER_NO_CONFIG,
         'no browser session connected. Two things to weigh, and neither of them is proof. ' +
-        `(1) ${slowListenerClause(facts)}Nothing is listening on the ports Reticle scans (${SCANNED_PORTS}), so the dev server ` +
-        'may not be running — START IT YOURSELF, in the background, using the command in ' +
-        "`next_action` (it is read from this project's own scripts; if there is none, that field " +
-        'says so and you should ask rather than guess). Tell the human in one line that it is ' +
-        'running. That scan is narrow ' +
-        'though: a server on any other port is invisible to it, so if the app IS running, ask for ' +
-        `its URL rather than assuming it is down, and open it with ${OPEN_CMD}. ` +
-        `(2) There is no \`.reticle.json\` in ${where}. That is the ` +
-        `file ${INIT_CMD} writes, so the app may carry no Reticle SDK — but check the app's ` +
-        'OWN directory before re-running `init`: in a monorepo the daemon often runs at the root ' +
-        'while the app lives in a subdirectory, and an app wired by the Vite or Babel plugin ' +
-        `carries the SDK without that file at all.${searchedClause(facts)}${siblingListenerClause(facts)} ${leaseAdvice(URL_THEN_LEASE, facts)} ${RETRY}`
+          `(1) ${slowListenerClause(facts)}Nothing is listening on the ports Reticle scans (${SCANNED_PORTS}), so the dev server ` +
+          'may not be running — START IT YOURSELF, in the background, using the command in ' +
+          "`next_action` (it is read from this project's own scripts; if there is none, that field " +
+          'says so and you should ask rather than guess). Tell the human in one line that it is ' +
+          'running. That scan is narrow ' +
+          'though: a server on any other port is invisible to it, so if the app IS running, ask for ' +
+          `its URL rather than assuming it is down, and open it with ${OPEN_CMD}. ` +
+          `(2) There is no \`.reticle.json\` in ${where}. That is the ` +
+          `file ${INIT_CMD} writes, so the app may carry no Reticle SDK — but check the app's ` +
+          'OWN directory before re-running `init`: in a monorepo the daemon often runs at the root ' +
+          'while the app lives in a subdirectory, and an app wired by the Vite or Babel plugin ' +
+          `carries the SDK without that file at all.${searchedClause(facts)}${siblingListenerClause(facts)} ${leaseAdvice(URL_THEN_LEASE, facts)} ${RETRY}`,
       );
     }
-    return (
+    return reason(
+      NoSessionReason.NO_LISTENER,
       `${stallClause(facts)}no browser session connected, and this daemon has never seen one. ${OPEN_THE_APP} ` +
-      'Nothing is listening on the ports Reticle scans ' +
-      `(${SCANNED_PORTS}) either, and the most common reason for that is a dev server that is not ` +
-      'running: start it yourself in the background with the command in `next_action` — it is read ' +
-      "from this project's own scripts, and says so rather than guessing when there is none — tell " +
-      'the human in one line that it is running, then open the app in a browser. ' +
-      // The caveat is here rather than omitted because the scan is NARROW, and the old sentence
-      // spent its confidence as though an empty result were proof of absence. Reported twice: a
-      // scripted drive of 2.5.0 asserted the app was not running while it served 200 on :7699, and
-      // an agent was told nothing was listening while a dev server answered on :5000 under a custom
-      // hostname. The common defaults have since been added to the scanned set, which narrows the
-      // gap and cannot close it — anything passed to `--port` is still invisible.
-      'That scan is narrow, so it is not proof: a server on any other port is invisible to it. If ' +
-      // Deliberately NOT offering reticle_lease here, and a test pins that: a lease opens a URL, and
-      // if nothing is listening there is nothing at any URL to open. Asking for the real one is the
-      // only move that can recover the :7699 case.
-      `the app IS running, ask the human for its URL rather than assuming it is down. ${leaseAdvice(URL_THEN_LEASE, facts)}` +
-      `${siblingListenerClause(facts)} ${RETRY}`
+        'Nothing is listening on the ports Reticle scans ' +
+        `(${SCANNED_PORTS}) either, and the most common reason for that is a dev server that is not ` +
+        'running: start it yourself in the background with the command in `next_action` — it is read ' +
+        "from this project's own scripts, and says so rather than guessing when there is none — tell " +
+        'the human in one line that it is running, then open the app in a browser. ' +
+        // The caveat is here rather than omitted because the scan is NARROW, and the old sentence
+        // spent its confidence as though an empty result were proof of absence. Reported twice: a
+        // scripted drive of 2.5.0 asserted the app was not running while it served 200 on :7699, and
+        // an agent was told nothing was listening while a dev server answered on :5000 under a custom
+        // hostname. The common defaults have since been added to the scanned set, which narrows the
+        // gap and cannot close it — anything passed to `--port` is still invisible.
+        'That scan is narrow, so it is not proof: a server on any other port is invisible to it. If ' +
+        // Deliberately NOT offering reticle_lease here, and a test pins that: a lease opens a URL, and
+        // if nothing is listening there is nothing at any URL to open. Asking for the real one is the
+        // only move that can recover the :7699 case.
+        `the app IS running, ask the human for its URL rather than assuming it is down. ${leaseAdvice(URL_THEN_LEASE, facts)}` +
+        `${siblingListenerClause(facts)} ${RETRY}`,
     );
   }
 
   if (!initialized) {
-    return (
+    return reason(
+      NoSessionReason.NO_CONFIG,
       'no browser session connected, and this daemon has never seen one. ' +
-      `What was actually checked: there is no \`.reticle.json\` in ${where}. That is the file ` +
-      `${INIT_CMD} writes, so the app may carry no Reticle SDK — but it is not proof, and the ` +
-      'same absence is expected in a monorepo whose daemon runs at the root while the app lives in ' +
-      "a subdirectory, or in an app wired by the Vite or Babel plugin. Check the app's OWN " +
-      `directory: if it has no config, run ${INIT_CMD} there and restart the dev server; if it ` +
-      `has one, the app is wired and simply has no page open — ${OPEN_CMD}. ` +
-      `${unattributedListeners(listening)}${searchedClause(facts)}${siblingListenerClause(facts)} ${RETRY}`
+        `What was actually checked: there is no \`.reticle.json\` in ${where}. That is the file ` +
+        `${INIT_CMD} writes, so the app may carry no Reticle SDK — but it is not proof, and the ` +
+        'same absence is expected in a monorepo whose daemon runs at the root while the app lives in ' +
+        "a subdirectory, or in an app wired by the Vite or Babel plugin. Check the app's OWN " +
+        `directory: if it has no config, run ${INIT_CMD} there and restart the dev server; if it ` +
+        `has one, the app is wired and simply has no page open — ${OPEN_CMD}. ` +
+        `${unattributedListeners(listening)}${searchedClause(facts)}${siblingListenerClause(facts)} ${RETRY}`,
     );
   }
 
-  return (
+  return reason(
+    NoSessionReason.SDK_NOT_REACHING_DAEMON,
     `${stallClause(facts)}no browser session connected, and this daemon has never seen one for this project, which is ` +
-    `wired for Reticle. ${OPEN_THE_APP} ${unattributedListeners(listening)} ` +
-    'If the page IS open and still does not appear, the app is wired and the SDK is not reaching ' +
-    `this daemon (on ${String(port)}). ${rankedCauses(facts)} ${leaseAdvice(SELF_SERVE, facts)} ${RETRY}`
+      `wired for Reticle. ${OPEN_THE_APP} ${unattributedListeners(listening)} ` +
+      'If the page IS open and still does not appear, the app is wired and the SDK is not reaching ' +
+      `this daemon (on ${String(port)}). ${rankedCauses(facts)} ${leaseAdvice(SELF_SERVE, facts)} ${RETRY}`,
   );
+}
+
+/** Pair a branch's verdict with its prose, so neither can be produced without the other. */
+function reason(
+  code: NoSessionReason,
+  message: string,
+): { reason: NoSessionReason; message: string } {
+  return { reason: code, message };
+}
+
+/**
+ * The message alone, for the callers that render it.
+ *
+ * Kept as the narrow surface it always was: most callers want the sentence, and handing them the
+ * pair would spread a telemetry concern across every error path that shows a user this text.
+ */
+export function diagnoseNoSession(facts: NoSessionFacts): string {
+  return explainNoSession(facts).message;
 }

@@ -9,6 +9,7 @@ import { installReticle } from './reticle-dev.js';
 import { installRegressions } from './reticle-regress.js';
 import { installBugInjector } from './reticle-bug-injector.js';
 import { installNoSource, installOpaqueShell } from './reticle-opaque.js';
+import { installAmbientTraffic } from './reticle-ambient.js';
 
 // Dev-only: wire the proof layer into this running dashboard (presenter + capabilities +
 // store). Tree-shaken out of production builds.
@@ -27,6 +28,7 @@ if (import.meta.env.DEV) {
   installRegressions(); // no-op unless ?reticle-break=<testids> — controlled regression knob for benchmarks
   installOpaqueShell(); // no-op unless ?opaque=<1|2> — strips testids (+role/aria) for the opaque-shell metric
   installNoSource(); // no-op unless ?nosource=1 — the file:line ablation
+  installAmbientTraffic(); // no-op unless ?ambient=<ids> — traffic the user did NOT cause (negative cases)
 }
 
 const rootElement = document.getElementById('root');

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll } from 'vitest';
 import { createRequire } from 'node:module';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,6 +8,16 @@ const require = createRequire(import.meta.url);
 const { withReticle, readPairingToken, discoverDaemonUrl } = require('./index.cjs');
 
 const TOKEN_ENV = 'RETICLE_PAIRING_TOKEN_DIR';
+
+// withReticle now mints; keep it out of the real ~/.reticle during tests that do not set the env.
+const defaultTokenDir = mkdtempSync(join(tmpdir(), 'reticle-next-default-token-'));
+const savedTokenDir = process.env[TOKEN_ENV];
+process.env[TOKEN_ENV] = defaultTokenDir;
+afterAll(() => {
+  if (savedTokenDir === undefined) delete process.env[TOKEN_ENV];
+  else process.env[TOKEN_ENV] = savedTokenDir;
+  rmSync(defaultTokenDir, { recursive: true, force: true });
+});
 
 describe('readPairingToken', () => {
   const previous = process.env[TOKEN_ENV];
@@ -28,10 +38,13 @@ describe('readPairingToken', () => {
     expect(readPairingToken()).toBe('tok-from-daemon');
   });
 
-  it('returns undefined when the file is missing, so connect proceeds without a token', () => {
+  it('mints a token when the file is missing, so next dev before the daemon still authenticates', () => {
     dir = mkdtempSync(join(tmpdir(), 'reticle-next-token-'));
     process.env[TOKEN_ENV] = dir;
-    expect(readPairingToken()).toBeUndefined();
+    const token = readPairingToken();
+    expect(typeof token).toBe('string');
+    expect((token ?? '').length).toBeGreaterThan(0);
+    expect(readPairingToken()).toBe(token);
   });
 });
 
@@ -194,6 +207,12 @@ describe('withReticle forwards the discovered daemon', () => {
   it('publishes nothing when no daemon serves this project', () => {
     const config = scenario(undefined);
     expect(config.env.NEXT_PUBLIC_RETICLE_URL).toBeUndefined();
+  });
+
+  it('mints and publishes a pairing token when the daemon has not written one yet', () => {
+    const config = scenario(undefined);
+    expect(typeof config.env.NEXT_PUBLIC_RETICLE_TOKEN).toBe('string');
+    expect(config.env.NEXT_PUBLIC_RETICLE_TOKEN.length).toBeGreaterThan(0);
   });
 
   it('leaves production builds untouched', () => {

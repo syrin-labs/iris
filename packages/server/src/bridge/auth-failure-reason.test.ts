@@ -31,18 +31,41 @@ describe('why the bridge refused', () => {
 
   it('stays plain when this daemon HAS served the same project', () => {
     // Same project, wrong token: that really is a token problem.
-    const reason = authFailureReason(new Set(['proj-abc', 'proj-other']), 'proj-abc');
+    const reason = authFailureReason(new Set(['proj-abc', 'proj-other']), 'proj-abc', 'wrong');
     expect(reason).toContain('authentication failed');
     expect(reason).not.toContain('different project');
+    expect(reason).not.toContain('no pairing token');
   });
 
   it('stays plain when the daemon has served nothing yet — there is no evidence either way', () => {
     // A fresh daemon rejecting the first app it sees is a token problem until proven otherwise.
-    expect(authFailureReason(new Set(), 'proj-xyz')).toContain('authentication failed');
+    expect(authFailureReason(new Set(), 'proj-xyz', 'wrong')).toContain('authentication failed');
+    expect(authFailureReason(new Set(), 'proj-xyz', 'wrong')).not.toContain('no pairing token');
   });
 
-  it('stays plain when the HELLO names no project', () => {
-    expect(authFailureReason(new Set(['proj-abc']), undefined)).toContain('authentication failed');
+  it('stays plain when the HELLO names no project but did present a token', () => {
+    expect(authFailureReason(new Set(['proj-abc']), undefined, 'wrong')).toContain(
+      'authentication failed',
+    );
+    expect(authFailureReason(new Set(['proj-abc']), undefined, 'wrong')).not.toContain(
+      'no pairing token',
+    );
+  });
+
+  it('names a missing token, because a reload cannot mint one into a frozen snippet', () => {
+    const reason = authFailureReason(new Set(), undefined, undefined);
+    expect(reason).toContain('no pairing token');
+    expect(reason).not.toMatch(/reload/i);
+  });
+
+  it('treats an empty token the same as a missing one', () => {
+    expect(authFailureReason(new Set(['proj-abc']), 'proj-abc', '')).toContain('no pairing token');
+  });
+
+  it('names a missing token even when this daemon has already served the same project', () => {
+    expect(authFailureReason(new Set(['proj-abc']), 'proj-abc', undefined)).toContain(
+      'no pairing token',
+    );
   });
 
   it('fits a WebSocket close reason, which is capped at 123 bytes', () => {

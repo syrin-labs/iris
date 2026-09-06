@@ -27,6 +27,8 @@ interface StatusPayload {
    * running the command we tell them to run in `init`'s closing line deserves the same sentence.
    */
   why?: string;
+  /** Port of the verify HTTP endpoint this daemon serves — present only when started with `--http`. */
+  verifyPort?: number;
 }
 
 export function statusPayload(
@@ -34,6 +36,7 @@ export function statusPayload(
   sessions: SessionInfo[],
   /** The no-session diagnosis, injected so this stays pure and the port probe stays off this path. */
   why?: string,
+  verifyPort?: number,
 ): StatusPayload {
   return {
     running: true,
@@ -44,5 +47,28 @@ export function statusPayload(
     // Only when there is nothing to explain away: a diagnosis printed beside a live session would
     // contradict it.
     ...(0 === sessionCount && why !== undefined ? { why } : {}),
+    ...(verifyPort === undefined ? {} : { verifyPort }),
   };
+}
+
+/**
+ * Why `serve --http` cannot claim success against an already-running daemon — or undefined when
+ * that daemon already serves the verify HTTP endpoint on the wanted port.
+ *
+ * `serve` never hands flags to a daemon that is already up, so `--http`/`--http-port` against one
+ * used to be accepted, dropped, and reported as success (#687). This is the read side of the
+ * `verifyPort` field above: the daemon says which port it serves, and `serve` compares. A daemon
+ * too old to report the field — or one that did not answer /status — reads as "not honoured",
+ * which errs loud rather than green.
+ */
+export function verifyEndpointMismatch(status: unknown, wantedPort: number): string | undefined {
+  const served =
+    'object' === typeof status && status !== null
+      ? (status as Record<string, unknown>)['verifyPort']
+      : undefined;
+  if (served === wantedPort) return undefined;
+  const fix = 'stop it (`reticle stop`) and run `reticle serve --http` again';
+  return 'number' === typeof served
+    ? `the daemon already running serves the verify HTTP endpoint on :${String(served)}, not :${String(wantedPort)} — ${fix}`
+    : `a daemon is already running without the verify HTTP endpoint — \`--http\` cannot be applied to it; ${fix}`;
 }

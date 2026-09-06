@@ -30,6 +30,20 @@ export interface StatusFacts {
    * paths do the first without the second.
    */
   initialized: boolean;
+  /**
+   * Ports of dev servers that ANNOUNCED themselves — i.e. that have Reticle loaded in the process
+   * actually running.
+   *
+   * `nextActionFor` already ranks on a listening-port list; it just never had one from here, so this
+   * command passed `[]` and every wired project with a live dev server was told "the app is probably
+   * not running". That is advice contradicting the terminal the reader is looking at, and it sends
+   * them to restart something already up.
+   *
+   * Stronger than the port scan the field was designed for: a scanned port proves something is
+   * listening, an announced one proves it is listening AND instrumented. Optional so every existing
+   * caller keeps today's behaviour.
+   */
+  devServerPorts?: readonly number[];
 }
 
 /**
@@ -69,9 +83,9 @@ export function statusNextAction(facts: StatusFacts): string | undefined {
     ).replace(/\s+/g, ' ');
   }
 
-  // The daemon is up and no page has connected. `nextActionFor` owns the ranking; the CLI cannot see
-  // listening ports or a dev command from here, so it passes what it has and lets that function say
-  // what is missing rather than guessing at it.
+  // The daemon is up and no page has connected. `nextActionFor` owns the ranking; this passes what
+  // it has and lets that function say what is missing rather than guessing at it. It CAN see
+  // listening ports now — the announced ones — which is what the empty list here used to cost.
   const next = nextActionFor({
     // The durable bit IS this side's `everConnected`. In-process the flag means "this daemon has served
     // a session", which a daemon seconds old cannot know; from the CLI the honest equivalent is "an app
@@ -79,7 +93,7 @@ export function statusNextAction(facts: StatusFacts): string | undefined {
     // is in question at all.
     everConnected: facts.previouslyConnected,
     initialized: facts.initialized,
-    listening: [],
+    listening: facts.devServerPorts ?? [],
     dev: undefined,
     previouslyConnected: facts.previouslyConnected,
   });

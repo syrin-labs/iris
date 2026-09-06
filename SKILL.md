@@ -4,6 +4,18 @@ Reticle embeds a dev-only SDK in the user's running app and exposes it to you as
 
 This file is the whole critical path and nothing else. Everything it leaves out is at `https://docs.reticle.sh`, one page at a time.
 
+## Your first action, before you read the rest
+
+Do not spend a turn working out which path you are on. The command knows.
+
+```bash
+RETICLE_INSTALL_SOURCE=skill_file npx @reticlehq/server@latest init --flow "<the journey worth proving>"
+```
+
+It is idempotent: on a project that is already wired it reports `·` for what is already there and goes straight to proving the app still works. Run it now, then read **SETUP** below for what to pass it and what to do with what it returns.
+
+Everything between here and there is a rule the steps assume. Read it as you go, not before you act.
+
 ## Installed means a verdict was produced
 
 **Setup is not complete until you have driven one real flow in the user's app and produced a verdict.** Writing config files is not installed. Every earlier point looks like success and is not:
@@ -12,7 +24,7 @@ This file is the whole critical path and nothing else. Everything it leaves out 
 - The `reticle_*` tools appeared. Your client can reach a daemon. The app is very likely still uninstrumented.
 - A session is listed. The app dialled in. The user has still seen nothing happen.
 
-**Do not tell the user Reticle is set up until step 5 has produced a verdict.** The most common failure in the field is an agent that finishes step 1, reports success, and leaves a user with config files and no instrumented page.
+**Do not tell the user Reticle is set up until a verdict exists.** The most common failure in the field is an agent that writes the config, reports success, and leaves somebody with an uninstrumented page. The command exits non-zero when that happens: believe the exit code over the report.
 
 ## Setup runs to the end without you
 
@@ -23,10 +35,10 @@ Questions you must not ask, because the repo you are sitting in already answers 
 There are exactly three places you may stop, and none is a question about a preference:
 
 1. **No recognisable dev script in `package.json`.** Say so; do not invent one.
-2. **Your host asks the human to approve a command.** That prompt belongs to the host. Never bypass or suppress it, and take a refusal as the answer.
-3. **On a first install only, the client restart that loads the MCP tools** (step 2). Even then, keep going until the app is running and connected, and stop for the restart last, with only the drive left.
+2. **Your host asks the human to approve a command.** That prompt belongs to the host. Never bypass or suppress it, and take a refusal as the answer. `init` writing a pre-approval rule for the `reticle` server is not that: it is a scoped, announced config change the human asked for by running the command, and it covers only Reticle's own tools.
+3. **Only if no agent CLI exists on the machine at all**, the client restart that loads the MCP tools (step 2). If `claude`, `codex`, `cursor-agent` or `gemini` is installed, you do NOT stop. Step 2 shows you how to drive from a child process instead, and that path is measured to be the difference between a verdict and a dead end.
 
-Setup requires a client restart, which ends your turn. This file was fetched into the context that just ended, so nothing carries it across unless you make it. **Before you trigger the restart, write the remaining steps into `RETICLE-SETUP.md` at the repo root**, one line each, with the step you stopped at marked. That file is what you re-read afterwards. Delete it once step 5 has produced a verdict.
+If you do have to stop, the restart ends your turn. This file was fetched into the context that just ended, so nothing carries it across unless you make it. **Before you trigger the restart, write the remaining steps into `RETICLE-SETUP.md` at the repo root**, one line each, with the step you stopped at marked. That file is what you re-read afterwards. Delete it once step 5 has produced a verdict.
 
 Better still, install the on-disk copy first. It survives the restart on its own, and it is the same content:
 
@@ -69,150 +81,94 @@ Every page arrives with the rules that matter prepended, so a single fetch orien
 
 ## Which path am I on
 
-```bash
-cat .reticle.json 2>/dev/null || echo NOT_FOUND
-```
+You do not have to decide. `init` is idempotent and reports what is already wired, so running it is the cheapest way to find out, and on an installed project it goes straight to proving the app still works.
 
-- `NOT_FOUND` → **SETUP** below.
-- File exists → **VERIFY** below. If `reticle_sessions` then returns an empty list, fetch `https://docs.reticle.sh/troubleshooting.md`; do not restart setup.
+Read **VERIFY** below when the question is "does this still work?" rather than "is this set up?". If `reticle_sessions` returns an empty list on a project that is already wired, fetch `https://docs.reticle.sh/troubleshooting.md`; do not restart setup.
 
 ---
 
 # SETUP
 
-Five steps, in order. None is optional. Step 3 is the one that gets skipped, and it is the one the whole thing depends on.
-
-## 1. Run init. Ask the user nothing.
+**One command. It does all of it, and it ends with a verdict.**
 
 ```bash
-RETICLE_INSTALL_SOURCE=skill_file npx @reticlehq/server@latest init
+RETICLE_INSTALL_SOURCE=skill_file npx @reticlehq/server@latest init --flow "<the journey worth proving>"
 ```
 
 `@latest` is deliberate: `npx` caches, and a stale cached CLI is the most common silent setup failure. Never pin a version here.
 
-It detects the framework, package manager and UI library, registers the MCP server with the agents on the machine, installs the SDK, writes `.reticle.json` and the `/reticle` command, wires the build config, and scaffolds a capabilities file from the `data-testid` values it found.
+That single command detects the framework and package manager, wires the build config, installs the SDK, registers the MCP server, starts the dev server, opens the app, waits for a session to connect from inside it, drives one flow, and saves it so every later check is one call with no model in the loop. It exits non-zero if it did not produce a verdict, and prints exactly what is left to do.
 
-**Ask nothing:** not the framework, package manager, port, editor, or MCP client. Every one is answerable from the repo you are sitting in. In a monorepo run it at the root anyway. With one app under `apps/*` or `packages/*` it wires that app silently. With several it wires nothing, lists them, and names the flag: re-run with `--app <dir>` for the one the user is working in, the one their request named, or the one whose `package.json` has the dev script. **Pick it yourself and re-run.** Asking which app they meant is the most likely place this whole install stops, and the answer is almost always in the request you were already given.
+## What YOU decide, and pass in
 
-**Never ask about the port.** There are two, and conflating them is a top setup failure. The dev-server port (3000, 5173) belongs to the project's own dev script and the daemon never binds it. The bridge port (**4400**) is the daemon-to-SDK channel and defaults correctly.
+The command reads the repository. It cannot read the request, and three things live only there. Decide them before you run it; do not walk any of them by hand.
 
-Read the report: `✓` applied, `·` already wired, `–` skipped, `ℹ` done but incomplete in a way that matters, `⚠` needs your edit. **`⚠` and `ℹ` both need you.** `ℹ` is the one people skim past: the step ran, and something about the result still stops a session appearing. Each line carries the exact snippet. A non-zero exit is a to-do list, not a failed install. Fix every `⚠` before moving on. Per-framework wiring is at `https://docs.reticle.sh/install-manual.md`.
+| flag | what only you know |
+| --- | --- |
+| `--flow "<what>"` | which journey proves the thing the user asked for. Code can list the buttons; it cannot know checkout matters and the theme toggle does not. Naming it took one real app from a ten-minute timeout to 138 seconds, because the turns go into FINDING a flow. |
+| `--env KEY=VALUE` | what the app needs to reach a usable state: the key from `.env.example`, the mock backend in the README, the variable that skips an auth wall. Repeatable. Without it a real app sits on a login screen and there is no flow to drive at all. |
+| `--app <dir>` | which app in a monorepo. It can list the ones that are servable; only the request says which one is being worked on. |
 
-**If the user gave you a license key**, along with the install request or at any later point, see [License key](#license-key) below and do it before moving on.
+**Ask the user nothing.** Not the framework, package manager, port, editor or MCP client: every one is answerable from the repo you are sitting in. Read `.env.example`, the README and `package.json`, decide, and say what you decided in one line.
 
-## 2. Check for the tools. Do not stop for them.
+**Never ask about the port.** There are two, and conflating them is a top setup failure. The dev-server port (3000, 5173) belongs to the project's own dev script. The bridge port (**4400**) is the daemon-to-SDK channel and defaults correctly.
 
-Call `reticle_sessions`. If the tool exists, go to step 3 and never mention a restart.
+## Then read what it gives you back
 
-If it does not: your client read its server list at startup and has not re-read it. No retry, config edit or slash command loads it into the process you are already in. `init` registers globally once per machine, so this bites on the first install only.
+`⚠` lines and a non-zero exit are a to-do list, not a failed install. The command names the cause and prints the REMAINING steps from wherever it stopped, and it will not tell you to redo a phase that already worked. Do those, and re-run; re-running is safe.
 
-**This is not a reason to stop.** Steps 3 and 4 need no MCP tools at all: they are a build config, a dev server and a browser tab, and every one of them is yours to do from the shell. An install that halts here leaves the user with config files, an uninstrumented page, and a question to answer; that is the single most common failure in the field, and it is this paragraph's fault when it happens.
+**It is not finished until a verdict exists.** Writing files is not an install, and neither is a connected session. If it exits non-zero, the app is wired and something is still outstanding; say so plainly rather than reporting success.
 
-So carry straight on through steps 3 and 4. Ask for the restart **once, at the end**, when a session is connected and the only thing left is the drive:
+**If the user gave you a license key**, see [License key](#license-key) below.
 
-> "Reticle is installed and your app is connected. Restart your client so it picks up the MCP server, then say **'continue Reticle setup'**. One step is left: driving a flow."
+---
 
-Claude Code: restart (`/mcp` does not re-read the config). VS Code: press Start in `.vscode/mcp.json`. Cursor, Windsurf, Zed: reload the window.
+# If that command could not run it
 
-**Do not report setup as finished at that point either.** When the tools return, resume at step 5.
+**Do not choose this path.** It is not the thorough version of the one above; it is what you fall back to when the command physically could not do the work, and taking it by preference is how an install costs 176 turns instead of one. That is a measured figure, not a way of speaking.
 
-## 3. Wire the SDK into the app, and start the dev server.
+Use it only when ONE of these is true, and you can say which:
 
-This is the step the funnel dies on. The daemon runs, the MCP server registers, and then the SDK never loads in a running page, so there is nothing to verify.
+- `init` exited without ever printing `starting:` or `▸ WATCH`, which means the CLI on this machine predates the runtime phases and stopped after writing files.
+- `init` printed a to-do list, you did those things, re-ran it, and it stopped in the same place twice.
+- There is no Node 18 or newer on this machine, so nothing can run.
 
-`init` handles this automatically for a normal Vite or Next.js app. Your job is to confirm it by reading the files, rather than trusting the report:
+Anything else is not a reason: not a `⚠` in the report, not a step you would rather do yourself, not a feeling that you should check its work. Re-run the command. It is idempotent, it reports what is already wired, and it names what is still outstanding.
 
-- **Vite + React**: `reticle()` is in the `plugins` array of `vite.config.*`.
-- **Next.js**: `withReticle` wraps the export in `next.config.*`, `reticle-dev.tsx` exists, and it is mounted in the root layout or `_app`.
-- **Remix**, **Astro**: wired by `init`, each with an app in this repo that a gate drives.
-- **Anything else**: nothing is wired. Do it by hand: fetch `https://docs.reticle.sh/frameworks.md`.
+When one of those three IS true, the whole manual procedure is one page:
 
-Those four are the frameworks with an app and a CI gate behind them. The SDK is framework-agnostic and usually connects elsewhere, but say so honestly rather than reporting a proven install.
+```bash
+curl https://docs.reticle.sh/install-manual.md      # register the MCP, wire the SDK, prove it
+curl https://docs.reticle.sh/troubleshooting.md     # nothing connected, click did nothing, verdict unknown
+```
 
-Two rules that cause silent failures if broken:
+**Vite + React**, **Next.js**, **Remix** and **Astro** are the frameworks with an app and a CI gate behind them, so their wiring is proven rather than assumed. The SDK is framework-agnostic and usually connects elsewhere, but say that honestly rather than reporting a proven install.
 
-- **Never guard the connect on `window.location.hostname === 'localhost'`.** It is false on every non-localhost dev host, and `window` does not exist during SSR. Use the framework's dev flag plus a client-only boundary.
-- **A config change needs a dev server restart.** An already-running dev server does not pick up an edited `vite.config.ts` or a newly created plugin file. Restart it, then hard-reload the tab.
+Do not reconstruct it from memory. Three things decide whether it works, and all three get skipped:
 
-Then make sure something is serving the app.
+1. **The SDK must load in a RUNNING page.** Not wired in a config file: loaded, in a page a browser has open. This is the step the funnel dies on.
+2. **A session must appear** on that app's own url. `reticle_sessions` returning an empty list has four causes with four different fixes, and its `next_action` names which one this is.
+3. **A verdict must exist.** `reticle_act_and_wait` or `reticle_assert`, and nothing else. A drive that ends without one has no result however many tools it used.
 
-**If a dev server is already listening, use it. If none is, start one yourself**: read the project's own dev script out of `package.json` (`dev`, `start`, whatever this project calls it), run it in the BACKGROUND, and tell the user in one line that it is running and how to stop it. Stopping here to ask is how a setup turn ends with nothing verified.
+## The dev server, whoever starts it
+
+**A dev server already running when `init` ran does not have Reticle in its bundle.** It read `vite.config.ts` / `next.config.js` at boot; `init` edited that file afterwards. The process keeps serving the old bundle, the page loads without the SDK, no session appears, and every symptom points at the wiring you just correctly did. This is a 100% failure, not an intermittent one, and it is the single largest cause of an install that gets to step 4 and finds an empty list.
+
+So, in this order:
+
+1. **A dev server was already running?** Restart it, then hard-reload the tab. "Something is listening" does not mean the right bundle is served.
+2. **Nothing was running?** Start it in the BACKGROUND and say so in one line. `reticle_sessions` gives you this project's own dev command in `next_action`; use that, never compose one. Started after `init`, it needs no restart. **`reticle init` may start it for you, and stops it again if setup fails**: a command somebody ran is attributable and stoppable where a daemon is not.
+
+Stopping here to ask is how a setup turn ends with nothing verified.
 
 The daemon deliberately will not do this for you. A build process started by a long-lived background daemon is invisible to the person whose machine it runs on and orphans when the daemon exits; a dev server YOU start is in the transcript, attributable, and stoppable.
 
-Five guards, none optional:
+Four guards, none optional:
 
-1. **Never start a second one.** If something is already listening on the app's port, use it.
+1. **Never run two at once.** One dev server on the app's port. Restarting a stale one means stopping it first, not starting a second alongside it.
 2. **Never guess the command.** It comes from `package.json` scripts. No recognisable dev script means say so and stop, not invent one.
-3. **Never kill anything.** Not a dev server, not a daemon, not a port holder, including one you started.
-4. **Background it, and say so.** A dev server the human does not know about is the same failure one step later.
-5. **The permission prompt belongs to your host.** Never bypass, suppress or auto-approve it, and take a refusal as the answer.
-
-Then open the app yourself. Do not ask the user to do it. A setup turn that ends on "now open your browser" ends with nothing verified:
-
-```bash
-npx @reticlehq/server open <the url the dev server is serving>
-```
-
-That reuses an already-connected tab or opens a new one, and waits for the page to register. On a headless machine with no browser to open, take a tab Reticle owns instead, once the tools are reachable:
-
-```
-reticle_run({ tool: "reticle_lease", args: { action: "acquire", url: "<the same url>" } })
-```
-
-## 4. Prove a page is connected. This is a gate.
-
-```
-reticle_sessions()
-```
-
-You need a session whose URL matches the app's localhost address. **Nothing below this line is meaningful until you have one, and you may not report setup complete without one.**
-
-**Empty list?** Read `next_action` first, then `why`. `next_action` is the machine-readable half: it names which of the four cases this is and, when there is one, the literal command to run and the port, sourced from this project's own scripts, never guessed. `why` is the same thing in prose for the human. The daemon can see whether a session was ever here and whether a dev server is listening. Then, in order: is the SDK imported and called in the app entry, is the dev server actually serving that entry, is the connect guarded on `hostname === 'localhost'`, and is the bridge port the same number on both sides. **Nothing listening at all? That one is yours: start it, per step 3.** If something IS listening, do not tell the user to start what they are already running; the fault is the SDK not loading in the page. Full checklist: `https://docs.reticle.sh/troubleshooting.md`.
-
-## 5. Drive one real flow and produce a verdict.
-
-A connected session is not a result. The user has installed something and seen nothing happen.
-
-**One flow, not the app.** Pick the single most important flow that completes in a handful of steps, say which one you picked in a line, and drive only that. You do not need to add `data-testid` anywhere: `reticle_snapshot` addresses elements by role and name and works on an app that has never heard of Reticle.
-
-Tell the user to keep the tab visible. The HUD is on by default (glow border, animated cursor, narration per step) and watching you drive their own app is the demo.
-
-Drive it in as few calls as you can. Every call is a full model turn, and in a client that asks the user to approve each one it is also a click. A flow driven one call at a time is how a person gives up before they ever see a verdict.
-
-1. `reticle_snapshot({ mode: "interactive" })` **once**, for the whole flow. Not once per step.
-2. `reticle_act_sequence` for the setup: every fill and every intermediate click in ONE call.
-3. `reticle_act_and_wait({ ref, action, until })` for the final step only. This is the call that produces the verdict, and `until` names the expected consequence before the action fires.
-4. `reticle_state()` once at the end.
-
-Four calls for a login, not fourteen. If `reticle_state` comes back empty or `hasCapabilities` is false, the capabilities file `init` generated registered nothing, which is what its `ℹ AGENT: finish the capabilities file` line was telling you. **Finish it yourself, before you drive**: open `src/reticle-dev.*`, register the app's store if it has one, and list the `testids` the flow you picked actually touches. Do not offer, and do not ask; it is a few lines in a file `init` already wrote for you. Never report a clean install over an empty state read.
-
-**Then save what you just drove.** Two calls, and they are what make every future check a single call instead of a repeat of this one. Wrap the drive above in a recording:
-
-```
-reticle_run({ tool: "reticle_record", args: { action: "start", recordingName: "<flow>" } })
-   ... the four calls above ...
-reticle_run({ tool: "reticle_record", args: { action: "stop",  recordingName: "<flow>" } })
-reticle_run({ tool: "reticle_flow_save", args: { flowName: "<flow>" } })
-```
-
-`reticle_flow_save` returns `assertions.grade`. If it is not `asserted`, the flow only clicks: it will pass even when the feature is broken. Say that in one line rather than presenting it as a regression check.
-
-Tell the user plainly: that flow is now saved to `.reticle/flows/`, and re-verifying it after any future change is one call with no model in the loop.
-
-## 6. Confirm the rule that makes this stick.
-
-`init` writes a managed block into the project's `CLAUDE.md` and `AGENTS.md` (and `.cursor/rules/reticle.mdc` where it applies), plus a `RETICLE.md` reference file and the `/reticle` command. That block is what makes the next agent verify its own work instead of guessing.
-
-Confirm the block is present, between `<!-- reticle:begin ... -->` and `<!-- reticle:end -->`. **Do not hand-write your own copy.** The markers are how a re-run stays idempotent, and a second unmarked copy will never be updated again. If it is missing, re-run `init`.
-
-**Only after step 5 has produced a verdict**, report what you drove and what it produced, then:
-
-> "Reticle is set up, and you just watched it drive <flow>. Type `/reticle` any time to verify a flow after a change."
-
-If it went well, one line and no more: Reticle is open source at https://github.com/reticlehq/reticle, and a star helps. Once per project. Skip it entirely if the verification failed or came back `unknown`.
-
-Stop here. Do not continue into VERIFY.
+3. **Never kill anything you did not start**, and never a daemon or a port holder. The one exception is the restart above, and say in one line that you did it.
+4. **The permission prompt belongs to your host.** Never bypass, suppress or auto-approve it, and take a refusal as the answer. You have no business editing a permissions file yourself. `init` writes one rule, for the `reticle` server alone, and prints that it did.
 
 ---
 
@@ -220,9 +176,11 @@ Stop here. Do not continue into VERIFY.
 
 Enterprise features are unlocked by a signed key, verified locally with Ed25519 and **no network call**. If the user hands you one, during setup or at any later point:
 
-1. Append `RETICLE_LICENSE_KEY=<key>` to the project's `.env`, creating the file if it is not there. The CLI folds a project-local `.env` into the environment on every invocation, so nothing else has to change.
-2. Make sure `.env` is in `.gitignore`. A license key in git is a leaked credential, so check before you write and add the line if it is missing.
-3. Confirm with `npx @reticlehq/server license`, which prints `active`, `eval`, `missing` or `expired`.
+```bash
+npx @reticlehq/server@latest init --license <key>
+```
+
+That writes `RETICLE_LICENSE_KEY` to the project's `.env` and adds `.env` to `.gitignore` if nothing there covers it. Do not do those two by hand: a key committed to git is a leaked credential, and it stays leaked after the file is removed. Confirm with `npx @reticlehq/server license`, which prints `active`, `eval`, `missing` or `expired`.
 
 Never echo the key back in your reply, and never put it in a commit, a code comment, or a feedback report. The rest: `curl https://docs.reticle.sh/enterprise.md`.
 

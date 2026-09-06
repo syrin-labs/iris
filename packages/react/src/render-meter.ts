@@ -20,6 +20,7 @@ import { RETICLE_RENDER_PREHOOK, RETICLE_RENDERS_STORE } from '@reticlehq/core';
 import { registerStore } from '@reticlehq/browser';
 import { HYDRATION_COMPLETE_SIGNAL, createHydrationTracker } from './hydration.js';
 import { createCommitAggregator } from './commit-aggregator.js';
+import { autoRegisterStores } from './auto-stores.js';
 
 const HOOK_KEY = '__REACT_DEVTOOLS_GLOBAL_HOOK__';
 const RENDER_STORE = RETICLE_RENDERS_STORE;
@@ -48,11 +49,38 @@ const commitStream = createCommitAggregator({
   flush: (n) => reticleInstance()?.renderCommit?.(n),
 });
 
+/**
+ * How many commits to keep looking for providers over.
+ *
+ * Discovery has to happen AFTER a commit — at install time the tree is empty and there is nothing to
+ * find — and it cannot be a one-shot on the first commit either, because a provider can mount late
+ * (a lazy route, a QueryClient created in an effect). A handful of attempts covers both without
+ * turning a walk of the whole fiber tree into a per-commit cost for the life of the session.
+ */
+const DISCOVERY_COMMITS = 10;
+
+/**
+ * Counted separately from `commits`, which is seeded from the pre-hook's total and reset by
+ * `resetRenderMeter`. Either would have decided how many discovery attempts we get on grounds that
+ * have nothing to do with discovery — a page that had already committed 50 times before `install()`
+ * ran would have got none at all.
+ */
+let discoveryAttempts = 0;
+
 /** One React commit: bump the counter, fire hydration on the first, and feed the throttled stream. */
 function onReactCommit(): void {
   commits += 1;
   hydration.onCommit();
   commitStream.onCommit();
+  if (discoveryAttempts < DISCOVERY_COMMITS && 'undefined' !== typeof document) {
+    discoveryAttempts += 1;
+    // Never allowed to break a render: this runs inside React's own commit callback.
+    try {
+      autoRegisterStores(document);
+    } catch {
+      /* discovery is a bonus, not a contract */
+    }
+  }
 }
 
 interface DevtoolsHook {

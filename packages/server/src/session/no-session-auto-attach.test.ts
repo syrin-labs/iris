@@ -66,6 +66,8 @@ function stubSessions(count = 0): Stub {
     everConnected: () => false,
     // Nothing has departed in these cases, so the lease branch stays off.
     lastDeparted: () => undefined,
+    // Registered alongside the hint (#615): the branch code for the same diagnosis.
+    setNoSessionReason: () => {},
     setNoSessionHint: (fn: (() => string | undefined) | undefined) => {
       hint = fn;
     },

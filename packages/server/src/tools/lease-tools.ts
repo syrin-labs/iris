@@ -1,10 +1,11 @@
 /**
  * Lease tools — the agent-facing surface of the BrowserPool.
  *
- * `reticle_lease_acquire` opens a fresh isolated headless context navigated to the app URL and returns
- * the sessionId the app's SDK will register (stamped via __reticle_session so the lease and the session
- * correlate 1:1). This is the "one of 10 flows" entry point: 10 agents acquire 10 leases, the pool
- * keeps them in ONE browser, capped and queued. `reticle_lease_release` frees the slot.
+ * `reticle_lease_acquire` opens an isolated headless context navigated to the app URL and returns
+ * the sessionId the app's SDK will register. A second acquire on the same origin reuses the live
+ * lease rather than minting another tab — that second tab used to poison default session resolution
+ * for the rest of the run. The parallel suite still mints via `acquireLeasedSession`, because ten
+ * flows on one origin need isolation on purpose.
  *
  * Attach-only: the pool drives a browser against an already-running dev server — it never starts one.
  */
@@ -14,6 +15,11 @@ import { leaseNotConnectedHint, type LeaseEvidence } from './lease-hint.js';
 import { probeSdkMarker } from './sdk-marker-probe.js';
 import { readProjectFramework, readProjectId } from '../cli/cli-port.js';
 import { hasConnectedBefore } from '../session/connection-memory.js';
+import {
+  AGENT_DRIVING_ELSEWHERE,
+  AGENT_DRIVING_HERE_AGAIN,
+  watchersToNotify,
+} from '../session/lease-visibility.js';
 import { reticleStateHome } from '../daemon/daemon.js';
 import { RETICLE_URL_PARAM, RETICLE_DEFAULT_PORT } from '@reticlehq/core';
 import { ReticleTool } from './tool-names.js';
@@ -52,6 +58,24 @@ async function leaseEvidence(deps: ToolDeps, port: number, url: string): Promise
 
 const POOL_UNAVAILABLE =
   'browser pool unavailable — the lease tools need the daemon-managed pool (start Reticle via `reticle mcp`).';
+
+/** The origin of a URL, or undefined when it does not parse. */
+export function originOf(url: string): string | undefined {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+const ALREADY_HELD_LEASE = 'you already hold a lease on this origin';
+
+function alreadyHeldHint(sessionId: string, origin: string): string {
+  return (
+    `${ALREADY_HELD_LEASE} (${origin}): ${sessionId} — reused it rather than opening a second ` +
+    'tab, which would make every later call require sessionId. Release first if you want a fresh one.'
+  );
+}
 
 /**
  * Append Reticle identity params (__reticle_session, optional __reticle_project) to a URL so the app's own SDK
@@ -238,7 +262,7 @@ export async function waitForLeasedSession(
 export const LEASE_ACQUIRE_TOOL: ToolDef = {
   name: ReticleTool.LEASE_ACQUIRE,
   description:
-    'Lease a fresh isolated headless browser context from the shared pool and navigate it to the app URL (the app must already be running and embed @reticlehq/core). Returns the sessionId the leased tab registers — pass it to other tools. The pool keeps all leases in ONE browser and caps concurrency; if at capacity this waits for a free slot. Release with reticle_lease{action:"release"} when the flow is done.',
+    'Lease a fresh isolated headless browser context from the shared pool and navigate it to the app URL (the app must already be running and embed @reticlehq/core). If this origin is already leased and still connected, this returns THAT session rather than minting a second tab — a second acquire on the same origin poisons default session resolution. Returns the sessionId the leased tab registers — pass it to other tools. The pool keeps all leases in ONE browser and caps concurrency; if at capacity this waits for a free slot. Release with reticle_lease{action:"release"} when the flow is done. PREFER AN ALREADY-OPEN TAB: if reticle_sessions lists a non-leased session for this app, drive THAT instead — a lease is invisible to the person watching the app, whose HUD lives in their own tab, and a tab flagged hidden/throttled is often still driveable. Lease for isolation you actually need (a second identity, a clean context, parallel flows) or when driving the open tab has failed — this call answers with `preferExisting` when a live tab was available.',
   inputSchema: {
     url: z
       .string()
@@ -263,7 +287,27 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
       ),
     leased: z.number().describe('How many contexts are currently leased from the pool.'),
     queued: z.number().describe('How many acquires are waiting for a free slot.'),
+    preferExisting: z
+      .object({ sessionId: z.string(), note: z.string() })
+      .optional()
+      .describe(
+        'Present when a live NON-leased tab for this app was already connected. That tab is the one a human can see; this lease is not. Release this lease and drive that sessionId unless you specifically need an isolated context.',
+      ),
+    reused: z
+      .boolean()
+      .optional()
+      .describe(
+        'True when this acquire returned an existing live lease on the same origin rather than minting a second context.',
+      ),
     hint: z.string().optional(),
+    versionSkew: z
+      .string()
+      .optional()
+      .describe(
+        "Present when the leased tab's SDK disagrees with this daemon. ready is still true — the " +
+          'page dialled in — but CDP-backed tools (screenshot, viewport, real input, network_mock) ' +
+          'will fail until the versions match. Same sentence as reticle_sessions.versionSkew.',
+      ),
   },
   handler: async (deps: ToolDeps, args) => {
     const pool = deps.pool;
@@ -283,6 +327,33 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
       }
     }
     const projectId = asString(args['projectId']);
+    // Sampled BEFORE acquiring: afterwards this lease is itself a session, and the point is to name
+    // a tab that already existed. A human's open tab is the one they can watch, so if one is here
+    // the agent should be told at the moment it is choosing — not after it has gone dark on them.
+    const alreadyOpen = liveTabFor(deps, projectId);
+    const origin = originOf(url);
+    const existing = origin === undefined ? undefined : pool.leaseIdOnOrigin?.(origin);
+    if (existing !== undefined && origin !== undefined) {
+      if (deps.sessions.get(existing) !== undefined) {
+        pool.touch(existing);
+        return {
+          sessionId: existing,
+          url,
+          ready: true,
+          reused: true,
+          expiresInMs: pool.leaseTtlMs(),
+          leased: pool.activeCount(),
+          queued: pool.queuedCount(),
+          hint: alreadyHeldHint(existing, origin),
+          ...(alreadyOpen === undefined
+            ? {}
+            : { preferExisting: { sessionId: alreadyOpen, note: PREFER_EXISTING_NOTE } }),
+        };
+      }
+      // The lease is still held but the tab has gone — a reload dropped the session. Free the
+      // slot and mint, rather than handing back a dead id or leaving both contexts occupied.
+      await pool.release(existing);
+    }
     const sessionId = newLeaseId();
     const navUrl = appendReticleParams(url, sessionId, projectId);
     let lease;
@@ -306,6 +377,12 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
     // without this the touches miss, the lease ages out despite continuous activity, and the
     // reaper closes the context mid-flow. See BrowserPool.alias and #157.
     if (registeredId !== undefined) pool.alias(registeredId, lease.sessionId);
+    // The lease now exists, so any HUD a human is watching has just gone dark. Say so.
+    tellWatchers(deps, projectId, AGENT_DRIVING_ELSEWHERE);
+    // ready means the SDK dialled in — not that contracts match. Carry the skew warning on acquire
+    // so the agent does not learn it only after a CDP tool invents a closed page (#688).
+    const versionSkew =
+      registeredId === undefined ? undefined : deps.sessions.get(registeredId)?.versionSkew;
     return {
       sessionId: registeredId ?? lease.sessionId,
       url,
@@ -313,6 +390,15 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
       expiresInMs: pool.leaseTtlMs(),
       leased: pool.activeCount(),
       queued: pool.queuedCount(),
+      ...(alreadyOpen === undefined
+        ? {}
+        : {
+            preferExisting: {
+              sessionId: alreadyOpen,
+              note: PREFER_EXISTING_NOTE,
+            },
+          }),
+      ...(versionSkew === undefined ? {} : { versionSkew }),
       ...(ready
         ? {}
         : { hint: await notConnectedHint(deps, url, pool.dialFailureUrl?.(lease.sessionId)) }),
@@ -354,9 +440,68 @@ const LEASE_RELEASE_TOOL: ToolDef = {
     if (sessionId === undefined || 0 === sessionId.length) {
       throw new Error('reticle_lease{action:"release"} requires a sessionId');
     }
+    // Read the project BEFORE releasing: afterwards the session is gone and there is nothing to
+    // ask which project it belonged to.
+    const projectId = deps.sessions.get(sessionId)?.projectId;
     await pool.release(sessionId);
+    // Only once the LAST lease is gone. Announcing "live again" while another lease still drives
+    // would be a lie, and a HUD that says the wrong thing is worse than one that says nothing.
+    if (0 === pool.activeCount()) tellWatchers(deps, projectId, AGENT_DRIVING_HERE_AGAIN);
     return { released: true, leased: pool.activeCount() };
   },
 };
+
+/**
+ * What to say when a lease was taken while a real tab was already open.
+ *
+ * Not a refusal. Leases are the highest-value path for autonomous work and an agent that genuinely
+ * needs isolation must still get one — but a human watching their own tab cannot see a lease, so
+ * when both exist the visible one is the better default and the agent should hear that here, where
+ * it is choosing, rather than discover it when somebody asks why nothing is happening.
+ */
+const PREFER_EXISTING_NOTE =
+  'a non-leased tab for this app was already connected — that is the one a human can see, and this lease is not. Unless you need an isolated context (a second identity, a clean profile, parallel flows), release this lease and drive that sessionId instead.';
+
+/**
+ * The first live non-leased session for this project, if any.
+ *
+ * Reuses the watcher selector rather than re-deriving "which sessions belong to a human": one rule
+ * for one question, so the tab we announce to and the tab we recommend can never disagree.
+ */
+function liveTabFor(deps: ToolDeps, projectId: string | undefined): string | undefined {
+  const pool = deps.pool;
+  if (pool === undefined) return undefined;
+  try {
+    const candidates = deps.sessions
+      .all()
+      .map((session) => ({ id: session.id, projectId: session.projectId }));
+    return watchersToNotify(candidates, pool.leasedSessionIds(), projectId)[0];
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Tell the tabs a human is watching that the agent has gone somewhere they cannot see.
+ *
+ * Fire-and-forget, and deliberately never able to fail the tool: this is a courtesy to a person, and
+ * a lease that succeeded must not be reported as failed because a narration could not be posted to
+ * some unrelated tab. `pushNarration` is already fire-and-forget; the try/catch covers a session
+ * that disconnects between listing it and posting to it.
+ */
+function tellWatchers(deps: ToolDeps, projectId: string | undefined, text: string): void {
+  const pool = deps.pool;
+  if (pool === undefined) return;
+  try {
+    const candidates = deps.sessions
+      .all()
+      .map((session) => ({ id: session.id, projectId: session.projectId }));
+    for (const id of watchersToNotify(candidates, pool.leasedSessionIds(), projectId)) {
+      deps.sessions.get(id)?.pushNarration(text);
+    }
+  } catch {
+    // A HUD that missed one line is a smaller problem than a lease reported as broken.
+  }
+}
 
 export const LEASE_TOOLS: ToolDef[] = [LEASE_ACQUIRE_TOOL, LEASE_RELEASE_TOOL];

@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { runCloudCommand } from './cloud-cli.js';
 
 interface RecordedRequest {
@@ -60,9 +60,10 @@ describe('cloud-cli verb contracts (#555)', () => {
   };
 
   const writeHomeFile = async (rel: string[], content: string): Promise<void> => {
-    const dir = join(home, RETICLE_DIR);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, ...rel), content);
+    const target = join(home, RETICLE_DIR, ...rel);
+    // dirname, not the .reticle root: sessions live one level down, in `sessions/<host>.json`.
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content);
   };
 
   beforeEach(async () => {
@@ -135,6 +136,55 @@ describe('cloud-cli verb contracts (#555)', () => {
     vi.unstubAllEnvs();
     await rm(home, { recursive: true, force: true });
     await rm(cwd, { recursive: true, force: true });
+  });
+
+  /**
+   * A `.reticle/` directory is not proof the app is instrumented.
+   *
+   * `.reticle.json` is what `init` writes and what puts a projectId in the app's BUNDLE, which is
+   * the only thing letting the daemon attribute a session's runs to this repo. Auto-linking on the
+   * mere existence of `.reticle/` produced a repo that was linked to a cloud project and could not
+   * report to it — runs pooled into the daemon's own ledger, and `sync` here answered "nothing to
+   * send" immediately after two verdicts were recorded. Measured on this repo's own bench app.
+   */
+  describe('auto-link after login only fires for a repo that can actually report', () => {
+    const loginResponder = (url: string): { body: unknown } =>
+      url.endsWith('/v1/auth/request-code')
+        ? { body: { devCode: '654321' } }
+        : { body: { token: 'tok_1', org: { name: 'Acme', id: 'org_acme' } } };
+
+    it('does not link a directory that has a .reticle/ but no .reticle.json', async () => {
+      process.env['RETICLE_CLOUD_URL'] = TEST_URL;
+      responder = loginResponder;
+      // The artifacts directory alone — the shape bench-app was in.
+      await writeRepoFile(['impact.json'], '{}');
+
+      const code = await runCloudCommand(['login', '--email', 'dev@example.com']);
+
+      expect(code).toBe(0);
+      // Signed in, but nothing was minted or bound: no key request went out.
+      expect(requests.filter((r) => r.url.endsWith('/v1/keys'))).toEqual([]);
+      expect(stderrBuf).toContain('reticle init');
+    });
+
+    it('links when .reticle.json is present, which is what init writes', async () => {
+      process.env['RETICLE_CLOUD_URL'] = TEST_URL;
+      responder = (url) => {
+        if (url.endsWith('/v1/auth/request-code') || url.endsWith('/v1/auth/login'))
+          return loginResponder(url);
+        if (url.endsWith('/v1/keys'))
+          return { body: { projectId: 'p1', projectName: 'P1', key: 'rk_live_minted0000' } };
+        // The responder cannot see the METHOD, and /v1/projects is both listed and created against.
+        // A superset body satisfies whichever schema the CLI parses it with.
+        return { body: { projects: [], projectId: 'p1', name: 'P1' } };
+      };
+      await writeFile(join(cwd, '.reticle.json'), JSON.stringify({ projectId: 'p1' }));
+
+      const code = await runCloudCommand(['login', '--email', 'dev@example.com']);
+
+      expect(code).toBe(0);
+      expect(requests.filter((r) => r.url.endsWith('/v1/keys')).length).toBe(1);
+    });
   });
 
   it('login --email exchanges a dev-mailed code and persists the session (POST shapes)', async () => {
@@ -217,6 +267,78 @@ describe('cloud-cli verb contracts (#555)', () => {
     expect(stderrBuf).toContain('https://staging.reticle.sh');
   });
 
+  it('login --url dials the host given on the command line, over env and over the default', async () => {
+    // A flag beats an environment variable for a one-off: it is visible in shell history, it cannot
+    // leak into a sibling process, and it is the spelling somebody reaches for without reading docs.
+    process.env['RETICLE_CLOUD_URL'] = 'https://staging.reticle.sh';
+    responder = () => ({ status: 500, body: { error: { message: 'down' } } });
+
+    const code = await runCloudCommand(['login', '--url', 'https://other.reticle.sh']);
+
+    expect(code).toBe(1);
+    expect(requests[0]?.url).toBe('https://other.reticle.sh/v1/auth/device/start');
+  });
+
+  it('holds a session per host, so staging and production can both be logged in', async () => {
+    // The point of keying by host. Two logins, neither clobbering the other, and each command
+    // picking the token that belongs to the host it is actually dialling.
+    await writeHomeFile(
+      ['sessions', 'app.reticle.sh.json'],
+      '{"token":"prod-token","orgName":"Prod","url":"https://app.reticle.sh"}',
+    );
+    await writeHomeFile(
+      ['sessions', 'staging.reticle.sh.json'],
+      '{"token":"staging-token","orgName":"Staging","url":"https://staging.reticle.sh"}',
+    );
+    responder = () => ({ status: 200, body: { projects: [] } });
+
+    process.env['RETICLE_CLOUD_URL'] = 'https://staging.reticle.sh';
+    await runCloudCommand(['project', 'ls']);
+    expect(requests[0]?.authorization).toBe('Bearer staging-token');
+
+    requests = [];
+    process.env['RETICLE_CLOUD_URL'] = 'https://app.reticle.sh';
+    await runCloudCommand(['project', 'ls']);
+    expect(requests[0]?.authorization).toBe('Bearer prod-token');
+  });
+
+  it('reads a pre-existing session.json, so an already-logged-in machine is not signed out by upgrading', async () => {
+    await writeHomeFile(
+      [SESSION_FILE],
+      '{"token":"legacy-token","orgName":"Acme","url":"http://localhost:9999"}',
+    );
+    responder = () => ({ status: 200, body: { projects: [] } });
+
+    await runCloudCommand(['project', 'ls']);
+
+    expect(requests[0]?.url).toContain('http://localhost:9999');
+    expect(requests[0]?.authorization).toBe('Bearer legacy-token');
+  });
+
+  it('logout signs out of one host and leaves the other logged in', async () => {
+    await writeHomeFile(
+      ['sessions', 'app.reticle.sh.json'],
+      '{"token":"prod-token","orgName":"Prod","url":"https://app.reticle.sh"}',
+    );
+    await writeHomeFile(
+      ['sessions', 'staging.reticle.sh.json'],
+      '{"token":"staging-token","orgName":"Staging","url":"https://staging.reticle.sh"}',
+    );
+    process.env['RETICLE_CLOUD_URL'] = 'https://staging.reticle.sh';
+
+    const code = await runCloudCommand(['logout']);
+
+    expect(code).toBe(0);
+    // Signing out of staging must not sign you out of production. A logout that quietly cleared
+    // every environment would be discovered at the worst moment, mid-incident, on the other one.
+    await expect(
+      readFile(join(home, RETICLE_DIR, 'sessions', 'staging.reticle.sh.json'), 'utf8'),
+    ).rejects.toThrow();
+    expect(
+      await readFile(join(home, RETICLE_DIR, 'sessions', 'app.reticle.sh.json'), 'utf8'),
+    ).toContain('prod-token');
+  });
+
   it('logout clears the cached session file without touching the network', async () => {
     await writeHomeFile([SESSION_FILE], '{"token":"tok","orgName":"Acme","url":"http://c"}');
 
@@ -224,7 +346,7 @@ describe('cloud-cli verb contracts (#555)', () => {
 
     expect(code).toBe(0);
     expect(await readFile(join(home, RETICLE_DIR, SESSION_FILE), 'utf8')).toBe('');
-    expect(lastJsonOutput()).toEqual({ loggedOut: true });
+    expect(lastJsonOutput()).toEqual({ loggedOut: true, url: 'http://c' });
     expect(requests).toHaveLength(0);
   });
 
@@ -292,7 +414,218 @@ describe('cloud-cli verb contracts (#555)', () => {
     const creds = JSON.parse(
       await readFile(join(home, RETICLE_DIR, CREDENTIALS_FILE), 'utf8'),
     ) as Record<string, unknown>;
-    expect(creds['proj_1']).toBe(TEST_KEY);
+    // Stamped with the cloud that minted it, so a project called `default` on two different clouds
+    // cannot share one slot — the collision that sent a production key to a localhost server.
+    expect(creds['proj_1']).toEqual({ key: TEST_KEY, url: TEST_URL });
+  });
+
+  it('link --project creates the project when it does not exist yet, and says so', async () => {
+    // Before this, `link --project storefront` refused with "create it with `reticle project
+    // create`" — a second command to satisfy a bookkeeping step the tool can do itself, and the
+    // only reason the magic path (bare `link`) existed was to avoid it. Naming a project you have
+    // not created yet is the COMMON case for a first repo, not an error.
+    await writeHomeFile([SESSION_FILE], `{"token":"tok","orgName":"Acme","url":"${TEST_URL}"}`);
+    // The stub sees only the URL, and the list and the create share one path — so distinguish by
+    // order: the list is asked first, the create second.
+    let projectCalls = 0;
+    responder = (url) => {
+      if (url.endsWith('/v1/projects')) {
+        projectCalls += 1;
+        return 1 === projectCalls
+          ? { body: { projects: [] } }
+          : { body: { projectId: 'proj_new', name: 'Storefront' } };
+      }
+      return {
+        body: { projectId: 'proj_new', projectName: 'Storefront', key: 'rk_live_abcd1234ef' },
+      };
+    };
+
+    const code = await runCloudCommand(['link', '--project', 'Storefront']);
+
+    expect(code).toBe(0);
+    const created = requests.find((r) => 'POST' === r.method && r.url.endsWith('/v1/projects'));
+    expect(created, 'it creates the project instead of refusing').toBeDefined();
+    expect(created?.body).toEqual({ name: 'Storefront' });
+    // ...and SAYS it created one, because silently creating is its own surprise.
+    expect(stderrBuf).toContain('created');
+  });
+
+  it('link --project does NOT create a duplicate when the project already exists', async () => {
+    await writeHomeFile([SESSION_FILE], `{"token":"tok","orgName":"Acme","url":"${TEST_URL}"}`);
+    responder = (url) => {
+      if (true === url.endsWith('/v1/projects'))
+        return { body: { projects: [{ projectId: 'proj_1', name: 'Storefront' }] } };
+      return {
+        body: { projectId: 'proj_1', projectName: 'Storefront', key: 'rk_live_abcd1234ef' },
+      };
+    };
+
+    await runCloudCommand(['link', '--project', 'storefront']);
+
+    expect(requests.filter((r) => 'POST' === r.method && r.url.endsWith('/v1/projects'))).toEqual(
+      [],
+    );
+  });
+
+  it('link says what it just did, in the words a human needs to not repeat it by hand', async () => {
+    // The reported failure this exists for: somebody pasted a masked placeholder key into a .env
+    // because their mental model said "I must make a key and put it somewhere". A key had already
+    // been minted and stored OUTSIDE the repo. They did not need another step — they needed to be
+    // told the step had happened.
+    await writeHomeFile([SESSION_FILE], `{"token":"tok","orgName":"Acme","url":"${TEST_URL}"}`);
+    responder = (url) => {
+      if (true === url.endsWith('/v1/projects'))
+        return { body: { projects: [{ projectId: 'proj_1', name: 'Storefront' }] } };
+      return {
+        body: { projectId: 'proj_1', projectName: 'Storefront', key: 'rk_live_abcd1234ef' },
+      };
+    };
+
+    await runCloudCommand(['link', '--project', 'storefront']);
+
+    // Which project it bound to.
+    expect(stderrBuf).toContain('Storefront');
+    // That a key was minted, identified the way the dashboard identifies it — never in full.
+    expect(stderrBuf).toContain('rk_live_abcd1234');
+    expect(stderrBuf, 'the secret itself must never be printed').not.toContain(
+      'rk_live_abcd1234ef',
+    );
+    // And that it lives outside the repo, which is the fact that stops the .env paste.
+    expect(stderrBuf).toContain('credentials.json');
+    expect(stderrBuf).toContain('not in your repo');
+  });
+
+  /**
+   * The stored key is VALID but belongs to somebody else.
+   *
+   * `link` names every project "default", so two accounts on one cloud shared the slot
+   * `<url>::default`. Validation could never catch it: the other tenant's key works perfectly, it
+   * just is not ours. Measured end to end against a real API — a brand-new workspace signed in and
+   * was handed a stranger's key, and every run it pushed would have landed in their dashboard.
+   */
+  it('refuses to reuse a key that belongs to a DIFFERENT organisation', async () => {
+    await writeHomeFile(
+      [SESSION_FILE],
+      `{"token":"tok","orgName":"Acme","orgId":"org_mine","url":"${TEST_URL}"}`,
+    );
+    await writeHomeFile([CREDENTIALS_FILE], JSON.stringify({ proj_1: 'rk_live_theirs000' }));
+    responder = (url) => {
+      if (true === url.endsWith('/v1/projects'))
+        return { body: { projects: [{ projectId: 'proj_1', name: 'Storefront' }] } };
+      if (true === url.endsWith('/v1/keys'))
+        return {
+          body: { projectId: 'proj_1', projectName: 'Storefront', key: 'rk_live_mine00000' },
+        };
+      return { body: { projectId: 'proj_1', projectName: 'Storefront', orgId: 'org_theirs' } };
+    };
+
+    const code = await runCloudCommand(['link', '--project', 'storefront']);
+
+    expect(code).toBe(0);
+    expect(
+      requests.filter((r) => 'POST' === r.method && r.url.endsWith('/v1/keys')).length,
+      "a key of our own is minted rather than borrowing the other tenant's",
+    ).toBe(1);
+    const creds = JSON.parse(
+      await readFile(join(home, RETICLE_DIR, CREDENTIALS_FILE), 'utf8'),
+    ) as Record<string, unknown>;
+    // Ours is filed under the org slot...
+    expect(creds[`${TEST_URL}::org::org_mine::proj_1`]).toBe('rk_live_mine00000');
+    // ...and THEIR entry is left exactly as it was. Overwriting it would be the same disclosure
+    // pointing the other way: their repo would start pushing with our key.
+    expect(creds['proj_1']).toBe('rk_live_theirs000');
+    expect(creds[`${TEST_URL}::proj_1`]).toBeUndefined();
+  });
+
+  it('mints rather than guessing when the cloud cannot name the tenant', async () => {
+    // An older cloud answers whoami without an orgId, so a stored key cannot be proved ours. Minting
+    // a second key is untidy; pushing to the wrong tenant is a disclosure. Only one of those is a
+    // safe default, and this pins which one we chose.
+    await writeHomeFile(
+      [SESSION_FILE],
+      `{"token":"tok","orgName":"Acme","orgId":"org_mine","url":"${TEST_URL}"}`,
+    );
+    await writeHomeFile([CREDENTIALS_FILE], JSON.stringify({ proj_1: 'rk_live_unknown00' }));
+    responder = (url) => {
+      if (true === url.endsWith('/v1/projects'))
+        return { body: { projects: [{ projectId: 'proj_1', name: 'Storefront' }] } };
+      if (true === url.endsWith('/v1/keys'))
+        return {
+          body: { projectId: 'proj_1', projectName: 'Storefront', key: 'rk_live_mine00000' },
+        };
+      return { body: { projectId: 'proj_1', projectName: 'Storefront' } };
+    };
+
+    const code = await runCloudCommand(['link', '--project', 'storefront']);
+
+    expect(code).toBe(0);
+    expect(requests.filter((r) => 'POST' === r.method && r.url.endsWith('/v1/keys')).length).toBe(
+      1,
+    );
+  });
+
+  it('re-linking reuses the stored key instead of minting a second one', async () => {
+    // Credential hygiene. `link` is idempotent about the BINDING and was not about the KEY: two runs
+    // against one project left two live `reticle-cli` keys on the account, each valid, neither
+    // identifiable to a repo. An agent retries — that is what agents do — so this accumulates
+    // silently until somebody has a key list they cannot reason about and revokes the wrong one.
+    await writeHomeFile(
+      [SESSION_FILE],
+      `{"token":"tok","orgName":"Acme","orgId":"org_acme","url":"${TEST_URL}"}`,
+    );
+    await writeHomeFile([CREDENTIALS_FILE], JSON.stringify({ proj_1: 'rk_live_existing00' }));
+    responder = (url) => {
+      if (true === url.endsWith('/v1/projects'))
+        return { body: { projects: [{ projectId: 'proj_1', name: 'Storefront' }] } };
+      // whoami names the tenant, which is what lets a stored key be recognised as OURS. Reuse now
+      // requires that proof — see the foreign-org test below for why.
+      return { body: { projectId: 'proj_1', projectName: 'Storefront', orgId: 'org_acme' } };
+    };
+
+    const code = await runCloudCommand(['link', '--project', 'storefront']);
+
+    expect(code).toBe(0);
+    expect(
+      requests.filter((r) => 'POST' === r.method && r.url.endsWith('/v1/keys')),
+      'no second key is minted for a project already linked on this machine',
+    ).toEqual([]);
+    // It says REUSING, not "minted" — the report has to stay true on the second run.
+    expect(stderrBuf).toContain('reusing');
+    expect(stderrBuf).toContain('rk_live_existing');
+    // And the stored credential is left exactly as it was.
+    const creds = JSON.parse(
+      await readFile(join(home, RETICLE_DIR, CREDENTIALS_FILE), 'utf8'),
+    ) as Record<string, unknown>;
+    // The KEY is unchanged — nothing was minted — and the entry is upgraded to the stamped shape on
+    // the way through, so a legacy credential stops being ambiguous the first time it is reused.
+    expect(creds['proj_1']).toEqual({ key: 'rk_live_existing00', url: TEST_URL });
+  });
+
+  it('mints a fresh key when the stored one no longer works', async () => {
+    // A revoked or rotated key must not strand the repo. Validation is the whoami call the mint
+    // path already makes for dashboardUrl, so reuse costs no extra round trip.
+    await writeHomeFile([SESSION_FILE], `{"token":"tok","orgName":"Acme","url":"${TEST_URL}"}`);
+    await writeHomeFile([CREDENTIALS_FILE], JSON.stringify({ proj_1: 'rk_live_revoked000' }));
+    responder = (url) => {
+      if (true === url.endsWith('/v1/projects'))
+        return { body: { projects: [{ projectId: 'proj_1', name: 'Storefront' }] } };
+      if (true === url.endsWith('/v1/cloud/whoami'))
+        return { status: 401, body: { error: { message: 'revoked' } } };
+      return {
+        body: { projectId: 'proj_1', projectName: 'Storefront', key: 'rk_live_fresh00000' },
+      };
+    };
+
+    const code = await runCloudCommand(['link', '--project', 'storefront']);
+
+    expect(code).toBe(0);
+    expect(requests.filter((r) => 'POST' === r.method && r.url.endsWith('/v1/keys')).length).toBe(
+      1,
+    );
+    const creds = JSON.parse(
+      await readFile(join(home, RETICLE_DIR, CREDENTIALS_FILE), 'utf8'),
+    ) as Record<string, unknown>;
+    expect(creds['proj_1']).toEqual({ key: 'rk_live_fresh00000', url: TEST_URL });
   });
 
   it('config rewrites sync flags and verify mode in place without dialling', async () => {

@@ -162,6 +162,13 @@ export const RECOVERY = {
     'editor keeps its own document model, so writing to the DOM would look right and submit the old ' +
     'content. Drive the same outcome another way (a plain input, a command, a keyboard action) or ' +
     'assert on the result instead of typing it. Known gap, already reported: no need to file it.',
+  HOVER_NEEDS_POINTER:
+    'Hover needs a real pointer: a synthetic mouseover does not apply CSS :hover, and Reticle ' +
+    'refuses rather than reporting the styles as applied. Acquire a tab with ' +
+    'reticle_run { tool: "reticle_lease", action: "acquire", url } — reticle_lease is not ' +
+    'advertised under the default profile, so it is reached through reticle_run, not called ' +
+    'directly — or ask the human to drive with `reticle drive` / RETICLE_CDP_URL. This is a ' +
+    'deliberate refusal, not a defect: there is nothing to report.',
   TOKEN_REQUIRED:
     'The bridge binds beyond localhost and requires a pairing token. Set the same token in the SDK ' +
     'init (@reticlehq/core) and the Reticle server config, then reconnect.',
@@ -228,6 +235,7 @@ const REASON_OF: Record<keyof typeof RECOVERY, RefusalReason> = {
   TARGET_MISSED: RefusalReason.NO_MATCH,
   FLOW_STEP_MISSING: RefusalReason.NO_MATCH,
   UNSUPPORTED_SURFACE: RefusalReason.UNSUPPORTED,
+  HOVER_NEEDS_POINTER: RefusalReason.UNSUPPORTED,
   NOT_EDITABLE: RefusalReason.UNSUPPORTED,
   CONFIRM_DANGEROUS: RefusalReason.UNSUPPORTED,
   WRONG_TARGET: RefusalReason.UNSUPPORTED,
@@ -277,6 +285,7 @@ const RULES: readonly { readonly match: RegExp; readonly hint: string }[] = [
   // broken. Order matters: contenteditable and disabled/readonly are `cannot <verb> …` messages too,
   // so they must be tested before the general wrong-target rule.
   { match: /contenteditable/i, hint: RECOVERY.UNSUPPORTED_SURFACE },
+  { match: /cannot hover without a real pointer/i, hint: RECOVERY.HOVER_NEEDS_POINTER },
   { match: /cannot \w+ a (disabled|readonly) </i, hint: RECOVERY.NOT_EDITABLE },
   // Three spellings ship — "action", "native action", "WebMCP tool" — and the rule matched one, so
   // two thirds of the same deliberate refusal still read as a possible defect.

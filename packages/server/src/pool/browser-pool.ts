@@ -31,6 +31,31 @@ export interface PooledPage {
    * compare against and pass.
    */
   screenshot?(opts?: { fullPage?: boolean }): Promise<Uint8Array>;
+  /**
+   * Move the real pointer to (x, y) so CSS `:hover` applies. OPTIONAL, like `screenshot`: a fake
+   * that does not implement it makes hover refuse rather than dispatch a synthetic mouseover that
+   * reports dispatched/settled while the styles never ran.
+   */
+  hover?(x: number, y: number): Promise<void>;
+  /**
+   * Install (or clear) network mocks on this page. OPTIONAL: a fake that does not implement it
+   * makes `reticle_network_mock` refuse rather than claiming it stubbed a request it cannot intercept.
+   */
+  installMocks?(rules: readonly PooledMockRule[]): Promise<void>;
+}
+
+/**
+ * One interception rule the pool can install. Same fields as the drive-path mock rule, kept here so
+ * the pool does not import Playwright.
+ */
+export interface PooledMockRule {
+  urlContains: string;
+  method?: string;
+  status?: number;
+  body?: string;
+  contentType?: string;
+  delayMs?: number;
+  abort?: boolean;
 }
 
 /** An isolated browsing context (cookies/storage). Real Playwright `BrowserContext` satisfies this. */
@@ -177,6 +202,32 @@ export class BrowserPool {
   }
 
   /**
+   * The public session id of an active lease on this origin, if we already hold one.
+   *
+   * The lease TOOL reuses that id instead of minting a second context: a second acquire on the same
+   * origin used to leave both tabs connected and poison default session resolution (#600). The pool's
+   * own `acquire` still mints — the parallel suite needs isolation on purpose.
+   *
+   * Prefers the alias the agent was given, when the app registered under its own name.
+   */
+  leaseIdOnOrigin(origin: string): string | undefined {
+    for (const [leaseId, lease] of this.#active) {
+      let leaseOrigin: string | undefined;
+      try {
+        leaseOrigin = new URL(lease.url).origin;
+      } catch {
+        continue;
+      }
+      if (leaseOrigin !== origin) continue;
+      for (const [alias, id] of this.#aliases) {
+        if (id === leaseId) return alias;
+      }
+      return leaseId;
+    }
+    return undefined;
+  }
+
+  /**
    * Release a lease by its sessionId (closes the context, frees the slot). No-op if unknown.
    *
    * Resolves an alias first, because the agent releases with the id it was GIVEN, which for an app
@@ -243,6 +294,44 @@ export class BrowserPool {
       // A capture that fails is not a broken lease. Report "could not capture" and leave the lease
       // usable — the alternative is losing a working context to one bad frame.
       return undefined;
+    }
+  }
+
+  /**
+   * Move the real pointer on a leased page, or false when this session is not a lease or cannot
+   * hover. Same optional-capability contract as screenshotLease: absence must read as "could not
+   * hover", never as a successful dispatch of a synthetic mouseover.
+   *
+   * Touches the lease like any other tool call, so hovering keeps it alive.
+   */
+  async hoverLease(sessionId: string, x: number, y: number): Promise<boolean> {
+    const lease = this.#active.get(sessionId);
+    if (lease === undefined || lease.page.hover === undefined) return false;
+    this.touch(sessionId);
+    try {
+      await lease.page.hover(x, y);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Install network mocks on a leased page, or false when this session is not a lease or cannot
+   * intercept. Same optional-capability contract as screenshotLease: absence must read as "could not
+   * mock", never as a stub that applied to nothing.
+   *
+   * Touches the lease like any other tool call, so mocking keeps it alive.
+   */
+  async setMocksLease(sessionId: string, rules: readonly PooledMockRule[]): Promise<boolean> {
+    const lease = this.#active.get(sessionId);
+    if (lease === undefined || lease.page.installMocks === undefined) return false;
+    this.touch(sessionId);
+    try {
+      await lease.page.installMocks(rules);
+      return true;
+    } catch {
+      return false;
     }
   }
 

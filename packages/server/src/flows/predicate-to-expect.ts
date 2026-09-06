@@ -102,14 +102,23 @@ export function predicateToExpect(predicate: Predicate): FlowExpect | undefined 
  * `reticle_verify` then correctly called it `unverifiable` — the record → save → verify path
  * completing all the way to a run that could never be a pass. Found by driving it.
  *
- * The list below is exactly what `successToPredicate` reads, plus the testid the step runner
- * asserts directly against the DOM. Anything it cannot compile is still dropped.
+ * The list below is exactly what `successToPredicate` reads, including an element located by
+ * role or name. A testid is also asserted directly against the DOM by the step runner. Anything
+ * it cannot compile is still dropped.
  */
 export function enforcedOnReplay(expect: FlowExpect | undefined): FlowExpect | undefined {
   if (expect === undefined) return undefined;
   const kept: FlowExpect = {};
-  // The step runner asserts this one directly against the live DOM, before the predicate engine.
-  if (expect.element?.testid !== undefined) kept.element = expect.element;
+  // The step runner asserts a testid against the live DOM before the predicate engine. Role and
+  // name are not that path: successToPredicate compiles them, and dropping them here made a
+  // recorded `until` by button name vanish so the saved flow could not go red.
+  const element = expect.element;
+  if (
+    undefined !== element &&
+    (undefined !== element.testid || undefined !== element.role || undefined !== element.name)
+  ) {
+    kept.element = element;
+  }
   // Everything `successToPredicate` can compile. Replay evaluates EVERY kind of expect through it
   // (see assertStepExpect); this list is what that function actually reads.
   if (expect.state !== undefined) kept.state = expect.state;

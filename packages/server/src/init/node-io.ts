@@ -4,7 +4,16 @@
  * command, not the MCP stdio transport.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  accessSync,
+  constants,
+} from 'node:fs';
 import { NodePlatform } from '../platform.js';
 import { join, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
@@ -92,6 +101,15 @@ export function buildNodeIo(cwd: string): InitIo {
       // Inherit stdio so the install's own progress is visible to the user.
       const result = spawnSync(command, shellSafe(args), { cwd, stdio: 'inherit', ...shellOpt() });
       return 0 === result.status;
+    },
+    /** One access check, rather than discovering it as an EACCES stack four phases later. */
+    canWrite() {
+      try {
+        accessSync(cwd, constants.W_OK);
+        return true;
+      } catch {
+        return false;
+      }
     },
     probe(command, args) {
       // Quiet yes/no check (CLI availability, existing registration). Never throws.

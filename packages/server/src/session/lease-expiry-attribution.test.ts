@@ -40,6 +40,8 @@ function stubSessions(departed: string | undefined): {
     // the lease sentence is a candidate at all.
     everConnected: () => true,
     lastDeparted: () => departed,
+    // Registered alongside the hint (#615): the branch code for the same diagnosis.
+    setNoSessionReason: () => {},
     setNoSessionHint: (hint: (() => string | undefined) | undefined) => {
       installed = hint;
     },

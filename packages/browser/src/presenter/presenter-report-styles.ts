@@ -94,6 +94,11 @@ export const REPORT_CSS = `
   display:inline-block;margin-top:8px;font-size:10px;color:var(--reticle-c-active);
   text-decoration:none;}
 [${REPORT_PANEL_ATTR}] .reticle-report-defects-more:hover{text-decoration:underline;}
+[${REPORT_PANEL_ATTR}] .reticle-report-local-only{
+  margin:14px 0 0;padding-top:10px;border-top:1px solid var(--reticle-line);
+  color:var(--reticle-faint);font-size:10px;line-height:1.45;}
+[${REPORT_PANEL_ATTR}] .reticle-report-local-only code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--reticle-c-active);}
 [${REPORT_PANEL_ATTR}] .reticle-report-chart-wrap{margin-top:12px;}
 [${REPORT_PANEL_ATTR}] .reticle-report-section{
   display:block;margin-bottom:6px;color:var(--reticle-faint);font-size:9.5px;

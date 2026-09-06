@@ -17,6 +17,7 @@ import { buildDynamicTools } from '../tools/dynamic-tools.js';
 import { runTool, SESSION_BOUND_TOOLS } from '../tools/invoke-tool.js';
 import { sessionEnvelopeShape } from '../tools/tool-kit.js';
 import { buildErrorPayload } from '../tools/error-recovery.js';
+import { takeVersionSkewOnto } from '../version/version-nudge.js';
 import { resultIsError } from './mcp-is-error.js';
 import { buildServerInstructions } from './server-instructions.js';
 import { unadvertisedToolHelp } from '../tools/unadvertised-help.js';
@@ -614,7 +615,12 @@ export function createMcpServer(
         // Every error the agent hits should answer "what next?", not just "what broke".
         return {
           isError: true as const,
-          content: [{ type: 'text' as const, text: JSON.stringify(buildErrorPayload(message)) }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(takeVersionSkewOnto(buildErrorPayload(message))),
+            },
+          ],
         };
       }
     });

@@ -26,12 +26,18 @@
  * holds a customer list.
  */
 import { LicenseActivation } from '@reticlehq/core';
-import { describeLicense } from '../license/license.js';
+import { describeLicense, LICENSE_KEY_ENV } from '../license/license.js';
 
 /** The activation facts that ride the wire. All absent on a build with no issuer key baked. */
-export interface LicenseFacts {
+interface LicenseFacts {
   licenseId?: string;
   licenseStatus?: LicenseActivation;
+  /**
+   * A key was placed, whether or not this build could judge it. See LICENSE_KEY_PRESENT in core.
+   * Reported even in evaluation mode, which is the whole point: that is the case where every other
+   * licence property is deliberately silent.
+   */
+  licenseKeyPresent?: boolean;
 }
 
 /**
@@ -48,12 +54,22 @@ export interface LicenseFacts {
  * Never throws. A telemetry property may not change behaviour (rule 5), and this one sits in front of
  * key parsing, which is the part most likely to be handed something malformed.
  */
-export function licenseFacts(now: number, env: NodeJS.ProcessEnv = process.env): LicenseFacts {
+export function licenseFacts(
+  now: number,
+  env: NodeJS.ProcessEnv = process.env,
+  baked?: string,
+): LicenseFacts {
   try {
-    const report = describeLicense(now, env);
-    if (LicenseActivation.EVAL === report.status) return {};
+    const report =
+      baked === undefined ? describeLicense(now, env) : describeLicense(now, env, baked);
+    // Asked BEFORE the eval short-circuit, because eval is exactly the case that used to be silent.
+    const keyPresent = (env[LICENSE_KEY_ENV] ?? '').length > 0;
+    if (LicenseActivation.EVAL === report.status) {
+      return keyPresent ? { licenseKeyPresent: true } : {};
+    }
     return {
       licenseStatus: report.status,
+      ...(keyPresent ? { licenseKeyPresent: true } : {}),
       ...(report.licenseId !== undefined ? { licenseId: report.licenseId } : {}),
     };
   } catch {

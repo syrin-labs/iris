@@ -42,9 +42,19 @@ export const BUFFER_EVICTION_WARNING =
  * Thrown when a tool needs a live browser session and none is connected. Names the #1 real cause in a
  * multi-repo / multi-agent setup — a PORT MISMATCH between the app's SDK and the daemon — so the agent
  * checks the wiring instead of only the "is the SDK enabled?" dead end.
+ *
+ * It used to end by naming `reticle_wait_ready`, which is retired (see RETIRED_FROM_SURFACE) and
+ * answers `unknown tool`. This is the most-thrown error in the product — `resolve` raises it on
+ * every tool call while nothing is connected — so the one sentence carrying the ACTION sent the
+ * reader to a tool that does not exist, at the moment they had least idea what to do next.
+ *
+ * `reticle_sessions` is the live answer and a strictly better one: it returns the ranked diagnosis
+ * (which of the causes above this actually is, plus the port scan and a next action) rather than
+ * blocking and telling you nothing. It is the same tool `#unknownSessionError` already points at,
+ * so the two no-session paths now agree.
  */
 export const NO_SESSION_CONNECTED_ERROR =
-  "no browser session connected. Two things to check: (1) your app is running with @reticlehq/browser enabled, and (2) it points at THIS daemon's port — a mismatch between the app's reticle({ port }) / VITE_RETICLE_WS_URL and the daemon's RETICLE_PORT is the usual cause. reticle_wait_ready blocks briefly for a session to appear.";
+  "no browser session connected. Two things to check: (1) your app is running with @reticlehq/browser enabled, and (2) it points at THIS daemon's port — a mismatch between the app's reticle({ port }) / VITE_RETICLE_WS_URL and the daemon's RETICLE_PORT is the usual cause. Call reticle_sessions for the diagnosis — it names which of these it is, and what to do next — rather than retrying this call.";
 
 /** Surfaced on act/assert results when the target tab is throttled. */
 export const THROTTLED_WARNING =
@@ -98,12 +108,75 @@ export const YIELD_WITHOUT_SESSION_NOTE =
   'recorded. If you expected an app to be attached, that is the thing to look into.';
 
 /**
- * Actionable companion to THROTTLED_WARNING. Surfaced on act/assert results and
- * reticle_sessions rows when a tab is hidden/throttled and may be un-focusable/un-recoverable from
- * the in-page SDK + CDP path. Names the escape hatch the AGENT can take first (`reticle_lease`
- * through `reticle_run`, since lease is not on the default surface) and leaves `reticle drive` as
- * the human-side equivalent: an MCP-only agent has no shell, so a CLI sentence is advice it cannot
- * follow. Reticle cannot bring such a tab to front or recover it, so it names the limit instead.
+ * What leasing COSTS, said once and appended to every recommendation that offers it.
+ *
+ * A lease is a separate pooled context. It is the highest-value path in the product for autonomous
+ * work — and it is invisible to the person sitting in front of the app, because the HUD lives in
+ * THEIR tab. Recommending it without saying so produced exactly the failure it invites: an agent
+ * took the advice, drove fifteen calls into a context nobody could see, and the developer watching
+ * an empty HUD asked why nothing was running. The product looked broken while working correctly.
+ *
+ * The tradeoff is the whole content of the hint. An agent that knows a human is watching should
+ * spend a slower tab to stay visible; one working alone should lease and not think about it.
  */
-export const UNSCRIPTABLE_TAB_RECOMMENDATION =
-  'tab hidden/throttled and may be un-focusable from here; refocus it, or acquire a guaranteed scriptable context yourself with `reticle_run { tool: "reticle_lease", action: "acquire", url }` (a human can equivalently run `reticle drive <url>`)';
+export const LEASE_IS_INVISIBLE_NOTE =
+  'note that a lease is a SEPARATE context: the human watching this tab sees nothing of what you do there, so prefer this tab while someone is following along';
+
+/**
+ * A tab that is HIDDEN — backgrounded, or in another window.
+ *
+ * The genuinely risky case, and the one this recommendation was written for. A background tab has
+ * its timers and rAF clamped hard, so synthetic events can land on a page that never advances, and
+ * Reticle cannot bring it to the front. Naming the limit is the honest move.
+ *
+ * Names the escape hatch the AGENT can take first (`reticle_lease` through `reticle_run`, since
+ * lease is not on the default surface) and leaves `reticle drive` as the human-side equivalent: an
+ * MCP-only agent has no shell, so a CLI sentence is advice it cannot follow.
+ */
+/**
+ * A DESKTOP window that has gone to the background, which is a different problem with a different fix.
+ *
+ * The web answer — acquire a lease, or run `reticle drive <url>` — is unavailable here and saying it
+ * is worse than saying nothing. A lease opens a headless BROWSER context; an Electron or Tauri app's
+ * window IS the client, and a browser pointed at the same dev-server URL is a different program with
+ * no main process, no preload and no Rust commands. Driven on MarkText, a shipped Electron editor:
+ * its window went behind, the session reported hidden+throttled, and the only advice offered was the
+ * one thing that could not be done — while the thing that works, bringing the window forward, went
+ * unsaid.
+ *
+ * No `reticle_lease` and no `reticle drive` in this sentence, deliberately. Both are checked by test.
+ */
+export const DESKTOP_WINDOW_BACKGROUNDED =
+  "this app window is in the background, and a backgrounded webview clamps its timers and rAF — a synthetic action can land on a page that never advances. Bring the app window to the front and retry. A lease is NOT the answer for a desktop app: it opens a browser context, which has none of this app's IPC or commands.";
+
+export const HIDDEN_TAB_RECOMMENDATION =
+  'tab hidden and may be un-focusable from here; timers and rAF are clamped in a background tab, so an action can land on a page that never advances. Refocus it, or acquire a guaranteed scriptable context yourself with `reticle_run { tool: "reticle_lease", action: "acquire", url }` (a human can equivalently run `reticle drive <url>`) — ' +
+  LEASE_IS_INVISIBLE_NOTE;
+
+/**
+ * A tab that is NOT hidden but has gone quiet — the `throttled` flag without `hidden`.
+ *
+ * Worth being exact, because the flag's name oversells it: `throttled` is `hidden || stale`, and
+ * stale only means no health heartbeat arrived inside the window. For a tab that is not hidden that
+ * usually means nothing worse than a quiet page, and such a tab is very often driveable.
+ *
+ * Split out because the old single message treated this as equivalent to hidden and it is not.
+ * Measured in the field: a session flagged throttled took a sign-in and two clean net-grade verdicts
+ * with no retries, while the recommendation had already sent the agent into a lease the watching
+ * human could not see. One flag produced advice that cost the product's main trust surface and
+ * bought nothing.
+ *
+ * So this reports the uncertainty honestly — it MAY be slow, timing-sensitive work is what suffers —
+ * and offers the precise instrument for that (`refuseWhenThrottled`) rather than a different
+ * browser.
+ */
+export const THROTTLED_TAB_RECOMMENDATION =
+  'tab is not hidden but has not reported health recently — usually a quiet page rather than a stuck one, and very often still driveable. This is also the tab a human can see, so try it first. Timing-sensitive work (animations, debounces, gestures) is what degrades: pass `refuseWhenThrottled: true` to refuse rather than act over events that may not land. Lease a separate context only if a drive here actually fails; ' +
+  LEASE_IS_INVISIBLE_NOTE;
+
+/**
+ * @deprecated Use {@link HIDDEN_TAB_RECOMMENDATION} or {@link THROTTLED_TAB_RECOMMENDATION}.
+ * Retained so an older consumer pinned to this name still compiles; it is the hidden-tab wording,
+ * which is the case the single message was actually correct for.
+ */
+export const UNSCRIPTABLE_TAB_RECOMMENDATION = HIDDEN_TAB_RECOMMENDATION;

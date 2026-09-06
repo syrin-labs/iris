@@ -29,6 +29,15 @@ function descriptorText(value: unknown): string {
   ].join(' ');
 }
 
+function descriptorRole(value: unknown): string | undefined {
+  const role = asString(asRecord(value)['role']);
+  return role !== undefined && role.length > 0 ? role : undefined;
+}
+
+function isDestructiveDescriptor(value: unknown): boolean {
+  return isDangerousActionText(descriptorText(value), descriptorRole(value));
+}
+
 export function assertNotDestructive(
   action: ActionType,
   innerArgs: Record<string, unknown>,
@@ -36,7 +45,7 @@ export function assertNotDestructive(
 ): void {
   if (action !== ActionType.CLICK && action !== ActionType.DBLCLICK) return;
   if (true === innerArgs[DANGEROUS_ACTION_CONFIRM_ARG]) return;
-  if (!isDangerousActionText(descriptorText(inspected))) return;
+  if (!isDestructiveDescriptor(inspected)) return;
   throw new Error(
     `potentially destructive native action blocked; retry with args.${DANGEROUS_ACTION_CONFIRM_ARG}=true`,
   );
@@ -44,7 +53,8 @@ export function assertNotDestructive(
 
 /**
  * A drag is judged on BOTH ends. Dropping a harmless row onto "Delete" is destructive, and the
- * source alone never says so.
+ * source alone never says so. Each end is classified on its own text and role, so a Payment
+ * option dragged onto Save is not a payment.
  */
 export function assertDragNotDestructive(
   innerArgs: Record<string, unknown>,
@@ -52,7 +62,7 @@ export function assertDragNotDestructive(
   to: unknown,
 ): void {
   if (true === innerArgs[DANGEROUS_ACTION_CONFIRM_ARG]) return;
-  if (!isDangerousActionText(`${descriptorText(from)} ${descriptorText(to)}`)) return;
+  if (!isDestructiveDescriptor(from) && !isDestructiveDescriptor(to)) return;
   throw new Error(
     `potentially destructive native action blocked; retry with args.${DANGEROUS_ACTION_CONFIRM_ARG}=true`,
   );

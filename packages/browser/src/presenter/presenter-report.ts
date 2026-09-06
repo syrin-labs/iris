@@ -191,7 +191,24 @@ export function reportBodyHtml(scope: ImpactScope, dashboardUrl?: string): strin
       scope.savings.minutes.basis,
     ),
   ].join('');
-  return `${streak}${hero}${verdicts}<div class="reticle-report-grid">${cards}</div>${defects(scope, dashboardUrl)}${chart(scope)}`;
+  return `${streak}${hero}${verdicts}<div class="reticle-report-grid">${cards}</div>${defects(scope, dashboardUrl)}${chart(scope)}${localOnly(scope, dashboardUrl)}`;
+}
+
+/**
+ * The one line an UNLINKED user is shown about the dashboard.
+ *
+ * Absent `dashboardUrl` IS the unlinked signal — it is only ever set from a repo's cloud.json — so
+ * this needs no new plumbing and cannot be wrong about the state it describes.
+ *
+ * Gated on a VERDICT, not on tool calls. Somebody who has driven the app but proved nothing has not
+ * yet received the thing this offers to preserve, and offering to keep nothing is an advert. Past
+ * that bar it is a fact about where their record lives, at the foot of a panel they opened on
+ * purpose — which is why it does not need to be dismissible.
+ */
+function localOnly(scope: ImpactScope, dashboardUrl: string | undefined): string {
+  if (dashboardUrl !== undefined) return '';
+  if (scope.counts.verdicts <= 0) return '';
+  return `<p class="reticle-report-local-only">${REPORT_TEXT.LOCAL_ONLY} <code>${REPORT_TEXT.LOCAL_ONLY_ACTION}</code> ${REPORT_TEXT.LOCAL_ONLY_TAIL}</p>`;
 }
 
 export interface ReportHost {

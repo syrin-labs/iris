@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/tauri-smoke",
-  "version": "2.12.0",
+  "version": "2.13.1",
   "private": true,
   "description": "A real Tauri v2 app (Vite + React frontend, Rust commands over invoke) to smoke-test Reticle on Tauri.",
   "type": "module",

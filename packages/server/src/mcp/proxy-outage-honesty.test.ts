@@ -61,7 +61,7 @@ interface FakeDaemon {
  * first time reports 1, which is the number the broken metric already reported, so a test built on
  * one would pass against the defect.
  */
-function startFakeDaemon(): Promise<FakeDaemon> {
+function startFakeDaemon(onPort = 0): Promise<FakeDaemon> {
   const streams: http.ServerResponse[] = [];
   const posts: string[] = [];
   const state = { refuseDials: 0 };
@@ -99,7 +99,7 @@ function startFakeDaemon(): Promise<FakeDaemon> {
     res.write(ENDPOINT_FRAME);
   });
   return new Promise<FakeDaemon>((resolve) => {
-    server.listen(0, LOOPBACK_HOST, () => {
+    server.listen(onPort, LOOPBACK_HOST, () => {
       const address = server.address() as AddressInfo;
       resolve({
         port: address.port,
@@ -146,13 +146,13 @@ describe('what an outage event is allowed to say', () => {
         .map((call) => (call[1] as { outage: OutagePayload }).outage);
   }
 
-  function driveProxy(port: number): PassThrough {
+  function driveProxy(port: number, ensureDaemon?: () => Promise<void>): PassThrough {
     vi.stubEnv('HOME', mkdtempSync(join(tmpdir(), 'reticle-outage-honesty-')));
     const stdin = new PassThrough({ encoding: 'utf8' });
     const realStdin = process.stdin;
     Object.defineProperty(process, 'stdin', { value: stdin, configurable: true });
     vi.spyOn(process.stdout, 'write').mockReturnValue(true);
-    void startMcpProxy(port).catch(() => {});
+    void startMcpProxy(port, ensureDaemon).catch(() => {});
     cleanups.push(() => {
       Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true });
       stdin.destroy();
@@ -222,4 +222,56 @@ describe('what an outage event is allowed to say', () => {
     expect(recovered?.attempts).toBe(3);
     expect(recovered?.reason).toBe(OutageReason.SSE_ENDED);
   }, 20_000);
+
+  /**
+   * The recovery that never got reported, and it is the COMMON one.
+   *
+   * An announced shutdown puts the proxy dormant rather than retrying, so coming back is not a
+   * reconnect — it is a WAKE, driven by the next client request. That path cleared `attempts` before
+   * dialling, so by the time the new session's `endpoint` frame arrived the `attempts > 0` guard on
+   * the recovery report was false and nothing was emitted. Every drop of the commonest class
+   * therefore looked permanent in the data, and every conclusion drawn from that was wrong in the
+   * same direction: a metric that can only say the link went away is not a reliability metric.
+   */
+  it('reports the recovery on the WAKE path too, not only on a reconnect', async () => {
+    const daemon = await startFakeDaemon();
+    const seen = outageReader();
+    // The daemon must genuinely GO, or the drop path reattaches and this test quietly re-runs the
+    // reconnect case above. Verified by doing exactly that first: with the port still held, the
+    // proxy took REATTACH, reported the recovery, and a test written to catch the wake defect
+    // passed against it.
+    const port = daemon.port;
+    let revived: FakeDaemon | undefined;
+    const stdin = driveProxy(port, async () => {
+      revived ??= await startFakeDaemon(port);
+      cleanups.push(() => revived?.close());
+    });
+    stdin.write(clientCall(1));
+    await vi.waitFor(() => expect(daemon.posts.length).toBe(1));
+
+    daemon.streams[0]?.write(SHUTDOWN_FRAME);
+    daemon.streams[0]?.end();
+    await daemon.close();
+    await vi.waitFor(() => expect(seen().length).toBeGreaterThan(0));
+    expect(seen()[0]?.stage).toBe(OutageStage.FIRST);
+
+    // The next client request is what wakes it — but only once the proxy has actually gone dormant,
+    // and that transition is behind a reconnect backoff with no observable edge from out here. So
+    // keep asking: a request that arrives too early is queued rather than lost, and the one that
+    // lands after dormancy is the wake. Polling the stimulus, not the clock.
+    let id = 2;
+    await vi.waitFor(
+      () => {
+        stdin.write(clientCall(id++));
+        expect(seen().some((o) => OutageStage.RECOVERED === o.stage)).toBe(true);
+      },
+      { timeout: 20_000, interval: 250 },
+    );
+    const recovered = seen().find((o) => OutageStage.RECOVERED === o.stage);
+    // The reason the link went away must survive the wake: a recovery that cannot name what it
+    // recovered FROM cannot be crossed against the drop it answers.
+    expect(recovered?.reason).toBe(OutageReason.DAEMON_SHUTDOWN);
+    // And it cost at least the one dial the wake made. The point is that it is reported at all.
+    expect(recovered?.attempts).toBeGreaterThan(0);
+  }, 30_000);
 });

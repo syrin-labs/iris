@@ -221,6 +221,7 @@ describe('browser-side action guards are recognized refusals, not unknown defect
       'NOT_EDITABLE',
       'CONFIRM_DANGEROUS',
       'UNSUPPORTED_SURFACE',
+      'HOVER_NEEDS_POINTER',
     ] as const) {
       expect(typeof RECOVERY[key], key).toBe('string');
     }
@@ -277,6 +278,18 @@ describe('browser-side action guards are recognized refusals, not unknown defect
         'cannot fill a contenteditable element — rich-text editors keep their own document model',
       ),
     ).toBe(RECOVERY.UNSUPPORTED_SURFACE);
+  });
+
+  it('a hover without a real pointer is a named refusal, not a possible bug', () => {
+    expect(
+      recoveryFor(
+        'cannot hover without a real pointer — CSS :hover only applies to a native mouse move, never to a synthetic mouseover',
+      ),
+    ).toBe(RECOVERY.HOVER_NEEDS_POINTER);
+    expect(RECOVERY.HOVER_NEEDS_POINTER).toContain('reticle_run { tool: "reticle_lease"');
+    expect(RECOVERY.HOVER_NEEDS_POINTER.indexOf('reticle_run')).toBeLessThan(
+      RECOVERY.HOVER_NEEDS_POINTER.indexOf('reticle drive'),
+    );
   });
 });
 
@@ -483,6 +496,17 @@ describe('no condition Reticle itself authored is reported as a possible Reticle
       'a missing Chromium',
       'Chromium is not installed for Playwright. Run: npx playwright install chromium',
       RECOVERY.NO_POOL,
+    ],
+    [
+      'a hover without a real pointer',
+      'cannot hover without a real pointer — CSS :hover only applies to a native mouse move, never to a synthetic mouseover',
+      RECOVERY.HOVER_NEEDS_POINTER,
+    ],
+    [
+      'a sequence that names two sessions',
+      "reticle_act_sequence steps name different sessionIds ('lease-1' and 'tab-old'). " +
+        'Pass one sessionId at the top level to target a tab. Nothing was acted on.',
+      RECOVERY.BAD_ARGUMENTS,
     ],
   ])('%s is recognized', (_label, message, expected) => {
     const payload = buildErrorPayload(message);

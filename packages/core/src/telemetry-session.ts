@@ -344,6 +344,33 @@ export const SessionSummarySchema = z.object({
    * asked whether it worked is the finding, so absence and `false` must not look alike.
    */
   endedWithVerdict: z.boolean().optional(),
+  /**
+   * Was the update nudge actually delivered to an agent during this daemon run.
+   *
+   * The nudge is the entire adoption mechanism for a published fix — it rides the tool-result
+   * envelope once per daemon process — and it emitted NOTHING, so the one question it exists to
+   * answer could not be asked. `versionChange.nudged` is the other half and only reaches us from
+   * machines that DID update; the cohort pinned three releases back never fires `version_changed` at
+   * all, which is exactly the cohort worth understanding.
+   *
+   * Crossed against this same installId's `version` on a later day it separates the two causes,
+   * which need opposite fixes: `false` for run after run means the nudge is not firing for them (a
+   * cache that never warms, a check that never returns, an offline machine); `true` for run after
+   * run with a version that never moves means the agent is receiving it and dropping it out of the
+   * envelope, or telling a human who says no.
+   *
+   * Reads the delivery flag, not a counter: the nudge is one-shot per process by design, so `true`
+   * means "an agent was told", never "how often".
+   */
+  updateNudged: z.boolean().optional(),
+  /**
+   * The newer version this daemon knew about, when it knew about one.
+   *
+   * OUR OWN published version number, so it is low-cardinality and carries nothing about the
+   * machine. Without it `updateNudged: false` is two facts at once — nothing was available, or
+   * something was and the nudge did not fire — and only the second is a defect.
+   */
+  updateOffered: z.string().max(32).optional(),
   /** Was this a clean shutdown, or a periodic flush of a still-running session? */
   final: z.boolean(),
   /**
@@ -377,6 +404,41 @@ export const ProjectSize = {
 export type ProjectSize = (typeof ProjectSize)[keyof typeof ProjectSize];
 
 /**
+ * Why a profile carries no `stack`, when it carries none.
+ *
+ * `stack` unknown is one of the largest buckets on the profile, and an empty field is not a cause:
+ * it collapses "the daemon was started somewhere that is not a project" with "we read this app's
+ * manifest and did not recognise what it uses", which need opposite fixes — the first is a
+ * discovery problem, the second is a one-line addition to the dependency table.
+ *
+ * Derived from the branches of `detectStack` rather than computed beside them. A reason assembled
+ * separately from the code that failed drifts from it, and then the dimension is worse than absent
+ * because it is confidently wrong.
+ */
+export const StackUnknownReason = {
+  /** No manifest here, and discovery found no app anywhere below. Usually a daemon started outside the project. */
+  NO_APP_FOUND: 'no_app_found',
+  /** A `package.json` HERE, read fine, naming no dependency in the table. The app is a stack we do not know. */
+  MANIFEST_UNRECOGNISED: 'manifest_unrecognised',
+  /** Discovery found workspace apps and every one of their manifests was unrecognised. */
+  WORKSPACE_APPS_UNRECOGNISED: 'workspace_apps_unrecognised',
+  /**
+   * The cwd manifest DECLARES workspaces and discovery surfaced no app in any of them.
+   *
+   * Separated from `NO_APP_FOUND` because it is a different failure with a different fix, and
+   * likely the dominant one: `findWorkspaceApps` admits a directory only when it holds a Vite or
+   * Next config file, or names `next`/`vite` outright. A workspace app on Angular, Nuxt, SvelteKit
+   * or Remix is therefore never surfaced, so its manifest is never read and no addition to the
+   * stack table could ever reach it. Folded into `NO_APP_FOUND` this reads as "no project here",
+   * which points at discovery scope when the gap is in what discovery will admit.
+   */
+  WORKSPACE_ROOT_NO_APPS: 'workspace_root_no_apps',
+  /** Workspace discovery threw — a permission error, most likely. Distinguished so it cannot masquerade as absence. */
+  DISCOVERY_FAILED: 'discovery_failed',
+} as const;
+export type StackUnknownReason = (typeof StackUnknownReason)[keyof typeof StackUnknownReason];
+
+/**
  * The shape of the project and how much of Reticle it actually uses.
  *
  * `featureDepth` is the one to watch: someone running 40 saved flows with visual baselines and a
@@ -399,6 +461,14 @@ export const ProjectProfileSchema = z.object({
    * that reads one directory reports nothing precisely where the real repos are.
    */
   stackSource: z.enum(['cwd', 'workspace']).optional(),
+  /**
+   * Why there is no `stack`, when there is none. Present ONLY when `stack` is absent.
+   *
+   * Omitted rather than sent as a "resolved" member, so the field's presence is itself the signal —
+   * the same rule the session counters follow. A member meaning "nothing went wrong" would be sent
+   * on every successful profile and would have to be filtered out of every query that uses this.
+   */
+  stackUnknownReason: z.nativeEnum(StackUnknownReason).optional(),
   /** Its MAJOR version only — "breaks on React 19" is a work item, a full semver is a fingerprint. */
   stackMajor: z.number().int().nonnegative().optional(),
   size: z.nativeEnum(ProjectSize).optional(),
@@ -424,6 +494,36 @@ export const ProjectProfileSchema = z.object({
   runCount: z.number().int().nonnegative(),
   /** A git-checked `.reticle/contract.json` — the team declared a testable surface on purpose. */
   hasContract: z.boolean(),
+  /**
+   * Has `reticle init` run in this project — a `.reticle.json` is present.
+   *
+   * The install has two halves and the failure side of the second one is a SET DIFFERENCE:
+   * `daemon_started` minus `app_instrumented`, joined on `sessionId`. That difference says a daemon
+   * ran with nothing wired and cannot say WHY, so the whole non-instrumented majority arrives as one
+   * silence covering four different situations with four different owners.
+   *
+   * This is the first of the two bits that split it, and it is on `project_profiled` deliberately:
+   * that event fires once per daemon start whatever happens afterwards, so it is the only place a
+   * fact about a project reaches us for the users who never instrument anything. `app_instrumented`
+   * carries the same field and cannot answer this, because it only exists when the answer is moot.
+   */
+  initialized: z.boolean().optional(),
+  /**
+   * Has an app for this project EVER connected to Reticle — read from durable state, not from this
+   * process.
+   *
+   * The second bit. `initialized: false` is "never ran init"; `initialized: true` with this `false`
+   * is the cohort the funnel loses — the config was written and no page has ever reached the daemon,
+   * which is the dev server that was never restarted, a plugin that never loaded, or a handshake
+   * refused at the origin gate. `true` here with no `app_instrumented` this run is a working install
+   * whose app simply is not up right now, and reading that as a loss is how the drop-off gets
+   * over-stated.
+   *
+   * Scoped to project + port, like every other reader of this state, so it cannot borrow another
+   * project's success on a shared daemon. OPTIONAL because an older sender has none; absent means
+   * not measured, never `false`.
+   */
+  appConnectedBefore: z.boolean().optional(),
   /** Fail-to-pass bug capsules — the deepest feature in the product. */
   capsuleCount: z.number().int().nonnegative(),
   /** Which of Reticle's feature FAMILIES this project has ever touched. The activation metric. */

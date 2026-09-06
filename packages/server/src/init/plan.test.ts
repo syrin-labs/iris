@@ -41,6 +41,7 @@ function input(partial: Partial<PlanInput>): PlanInput {
     viteConfig: partial.viteConfig ?? null,
     astroConfig: partial.astroConfig,
     astroLayout: partial.astroLayout,
+    ...(partial.astroEnvDts === undefined ? {} : { astroEnvDts: partial.astroEnvDts }),
     nextConfigFile: partial.nextConfigFile ?? null,
     nextConfigSource: partial.nextConfigSource,
     nextLayout: partial.nextLayout,
@@ -437,7 +438,7 @@ describe('buildPlan — install', () => {
  * the file. Same shape as the CRA token notice: a NOTICE beside the write, because `SKILL.md` tells
  * the reader to skip `✓` lines.
  */
-describe('buildPlan — capabilities that will register nothing say so', () => {
+describe('buildPlan — state Reticle cannot reach on its own is named', () => {
   const vitePlan = (partial: Partial<PlanInput> = {}) =>
     buildPlan(
       input({
@@ -447,27 +448,26 @@ describe('buildPlan — capabilities that will register nothing say so', () => {
       }),
     );
 
-  it('raises a NOTICE when the scan found no testids and no store', () => {
-    const plan = vitePlan({ testids: [], storeHints: [] });
+  const capsNotice = (plan: ReturnType<typeof buildPlan>) =>
+    plan.steps.find((s) => s.status === StepStatus.NOTICE && /reticle_state/.test(s.detail));
+
+  /** A module-scope store: nothing in the mounted tree points at it, so only the app can say where. */
+  it('raises a NOTICE for a store the running app cannot reveal', () => {
+    const plan = vitePlan({ testids: [], storeHints: ["registerStore('app', useStore)"] });
     const written = maybeStep(plan, 'Capabilities + store');
     expect(StepStatus.APPLY, 'the step must still WRITE the module').toBe(written?.status);
-
-    const notice = plan.steps.find(
-      (s) => s.status === StepStatus.NOTICE && /capabilit/i.test(s.detail),
-    );
-    expect(
-      notice,
-      'nothing tells the reader that hasCapabilities will stay false until they edit this file',
-    ).toBeDefined();
-    expect(notice?.detail).toMatch(/hasCapabilities/);
+    expect(capsNotice(plan), 'nothing names the one store that will stay invisible').toBeDefined();
   });
 
-  it('stays quiet when the scan actually found something to register', () => {
-    const plan = vitePlan({ testids: ['save-btn', 'row-1'], storeHints: [] });
-    const notice = plan.steps.find(
-      (s) => s.status === StepStatus.NOTICE && /hasCapabilities/.test(s.detail),
-    );
-    expect(notice, 'testids were found — there is nothing to warn about').toBeUndefined();
+  /**
+   * Testids come from the DOM and a context-provided store registers itself, so an app with neither
+   * a detected library nor a scanned testid has nothing anyone needs to be told to go and do.
+   */
+  it('stays quiet when there is nothing only the app could supply', () => {
+    expect(capsNotice(vitePlan({ testids: [], storeHints: [] }))).toBeUndefined();
+    expect(
+      capsNotice(vitePlan({ testids: ['save-btn', 'row-1'], storeHints: [] })),
+    ).toBeUndefined();
   });
 });
 
@@ -481,6 +481,17 @@ describe('buildPlan — CRA pairing token', () => {
         ...partial,
       }),
     );
+
+  it('writes a .js connect module when the CRA app has no TypeScript (#675)', () => {
+    const plan = craPlan({
+      detection: { ...detection(Framework.CRA), typescript: false },
+      craEntry: { path: 'src/index.js', source: "import React from 'react';\n" },
+    });
+    const mod = maybeStep(plan, 'Reticle connect module');
+    expect(mod?.write?.path).toBe('src/reticle-dev.js');
+    expect(mod?.write?.content).not.toContain('export {}');
+    expect(plan.steps.find((s) => 'src/reticle-dev.ts' === s.write?.path)).toBeUndefined();
+  });
 
   it('warns that the env file is gitignored, so a teammate cloning must run init too', () => {
     const written = maybeStep(craPlan({ pairingToken: 'tok-1' }), TOKEN_STEP);
@@ -620,7 +631,7 @@ describe('SvelteKit gets the Vite plugin, not only the client hook', () => {
     const plan = svelteKit({ path: 'vite.config.ts', source: VITE_SRC });
     const step = maybeStep(plan, 'Vite plugin');
     expect(step?.status).toBe(StepStatus.APPLY);
-    expect(step?.write?.content).toContain('reticle({');
+    expect(step?.write?.content).toContain('reticle(');
     expect(step?.detail).toContain('data-reticle-source');
   });
 
@@ -737,6 +748,12 @@ describe('buildPlan — Astro', () => {
     expect(layout.status).toBe(StepStatus.APPLY);
     expect(layout.write?.path).toBe('src/layouts/Layout.astro');
     expect(layout.write?.content).toContain('reticle.connect');
+    // #677: without this, create-astro's `astro check && astro build` fails on undeclared defines.
+    const env = step(plan, 'Astro env types (Vite defines)');
+    expect(env.status).toBe(StepStatus.APPLY);
+    expect(env.write?.path).toBe('src/env.d.ts');
+    expect(env.write?.content).toContain('__RETICLE_TOKEN__');
+    expect(env.write?.content).toContain('__RETICLE_ROOT__');
   });
 
   it('falls back to the printed recipe when the layout is ambiguous', () => {
@@ -759,6 +776,8 @@ describe('buildPlan — Astro', () => {
     expect(s.detail).toContain('__RETICLE_TOKEN__');
     expect(s.detail).toContain('es2022');
     expect(s.detail).toContain('<script>');
+    // #677: the manual recipe must name env.d.ts too.
+    expect(s.detail).toContain('src/env.d.ts');
   });
 
   it('installs the kit but no bundler plugin — Astro owns its own Vite', () => {
@@ -921,5 +940,51 @@ describe('the generated Next component is valid JavaScript', () => {
     expect(src).toContain('NEXT_PUBLIC_RETICLE_ROOT');
     expect(src).toContain('root');
     expect(src).not.toContain('globalThis');
+  });
+});
+
+/**
+ * The install talks to a REGISTRY, and the fallback never said so.
+ *
+ * Offline, behind a proxy that blocks npmjs, or pointed at a corporate mirror that is down: the
+ * install fails and the hint talked about version pinning and pnpm's maturity window. Both are real
+ * causes and neither is this one, so the reader goes hunting through their own dependency versions
+ * for a problem that is entirely about reachability.
+ *
+ * The registry is worth naming for every package manager, because every one of them fetches.
+ */
+describe('a failed dependency install names the registry', () => {
+  const installFallback = (pm: PackageManager): string => {
+    const plan = buildPlan(
+      input({
+        detection: { ...detection(Framework.VITE), packageManager: pm },
+        // The fallback only exists on an APPLY step — a manual step prints the command instead.
+        options: { port: undefined, mcp: true, install: true },
+      }),
+    );
+    return plan.steps.find((s) => 'Install dependencies' === s.title)?.exec?.fallback ?? '';
+  };
+
+  it('names the registry whatever the package manager', () => {
+    for (const pm of [PackageManager.NPM, PackageManager.PNPM, PackageManager.YARN]) {
+      expect(installFallback(pm)).toContain('registry');
+    }
+  });
+
+  // Still says the pnpm-specific thing: the maturity hold is a real cause and this does not replace it.
+  it('keeps the pnpm maturity hint beside it', () => {
+    expect(installFallback(PackageManager.PNPM)).toContain('minimumReleaseAge');
+  });
+
+  // #683: a symlinked pnpm store (a git worktree, or an A/B harness) fails with
+  // ERR_PNPM_UNEXPECTED_VIRTUAL_STORE, a cause the hint did not name at all.
+  it('names the symlinked virtual-store cause on pnpm', () => {
+    expect(installFallback(PackageManager.PNPM)).toContain('ERR_PNPM_UNEXPECTED_VIRTUAL_STORE');
+  });
+
+  it('does not hand a non-pnpm project a pnpm virtual-store remedy', () => {
+    for (const pm of [PackageManager.NPM, PackageManager.YARN]) {
+      expect(installFallback(pm)).not.toContain('ERR_PNPM_UNEXPECTED_VIRTUAL_STORE');
+    }
   });
 });

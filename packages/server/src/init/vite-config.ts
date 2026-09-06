@@ -11,30 +11,38 @@ export const VITE_IMPORT = "import { reticle } from '@reticlehq/vite-plugin';";
 const RETICLE_MARKER = '@reticlehq/vite-plugin';
 
 /**
- * The `reticle(...)` call — the bridge port so the injected connect targets it, and body capture.
+ * The `reticle(...)` call — the bridge port so the injected connect targets it.
  *
- * `captureNetworkBodies` is here rather than in the SDK's defaults, deliberately. Without it a write
- * that answers 2xx with a body nobody recorded grades `unknown / outcome_unread`, because a 200
- * describes the transport and not the result — so the single bug class this product exists to catch is
- * unreachable on a default install. Measured on a real payments UI: a refund posted rupees into a
- * paise field, the server answered 200 having refunded a hundredth of it, the page rendered the amount
- * the user had typed rather than the amount that came back, and every DOM-level check passed. An agent
- * asked to verify that flow had to edit the app's own vite config mid-task to see the payload, and
- * then tell its human to undo the edit.
+ * **`captureNetworkBodies` is OPT-IN.** It was written in by default, and the argument for that was
+ * a good one: without a body, a write that answers 2xx grades `unknown / outcome_unread`, because a
+ * 200 describes the transport and not the result. Measured on a real payments UI — a refund posted
+ * rupees into a paise field, the server answered 200 having refunded a hundredth of it, the page
+ * rendered the amount the user had typed, and every DOM-level check passed.
  *
- * Written into the USER'S config, not switched on inside the SDK, and the difference is the point. A
- * body is the one part of a request that routinely carries personal data: the credential classes are
- * redacted before anything is journalled — tokens, cookies, card numbers, cvv, ssn — but an address or
- * an email is not, and nothing here should decide that for someone silently. In the config it is one
- * visible line they can read, keep, or delete, and an SDK that updates underneath them never starts
- * recording more than it did yesterday.
+ * That argument justifies the CAPABILITY. It does not justify the default, and the distinction is
+ * what #705 is about. A healthcare workspace proxying authenticated API traffic through Vite ran
+ * `init`, and on the first drive their login tokens and patient payloads were in the daemon's
+ * buffer. The old comment here conceded the exact gap — "the credential classes are redacted ... but
+ * an address or an email is not, and nothing here should decide that for someone silently" — and
+ * then decided it for them, because writing the line into their config IS deciding. `init` is run
+ * unattended by an agent; the person who knows the data is sensitive is not in the room.
+ *
+ * So the default is off and the ways in are all deliberate:
+ *   - `reticle init --capture-bodies` writes the line, for someone who has decided
+ *   - `VITE_RETICLE_CAPTURE_BODIES=1` turns it on for ONE dev-server run, no config edit
+ *   - adding the option by hand, which is what the tools tell you to do
+ *
+ * Nothing goes quiet in exchange. Every tool that needs a body already says so when it is missing
+ * and names the option — see honesty/uncaptured-bodies.ts, honesty/verified.ts, predicate-eval.ts
+ * and reconcile-tools.ts — so the capability is discovered at the moment it is wanted, by the person
+ * who wanted it, instead of being switched on before anyone has asked.
  */
-function reticlePluginCall(port: number | undefined): string {
+function reticlePluginCall(port: number | undefined, captureBodies: boolean): string {
   const options = [
     ...(port === undefined ? [] : [`port: ${String(port)}`]),
-    'captureNetworkBodies: true',
+    ...(captureBodies ? ['captureNetworkBodies: true'] : []),
   ];
-  return `reticle({ ${options.join(', ')} })`;
+  return 0 === options.length ? 'reticle()' : `reticle({ ${options.join(', ')} })`;
 }
 /** Matches the start of a `plugins: [` array literal. */
 const PLUGINS_ARRAY = /plugins\s*:\s*\[/;
@@ -76,11 +84,11 @@ function insertImport(source: string): string {
  * what a formatter rewrites, turning a one-line install into a diff against the user's own style. A
  * single-line array needs the space, or the result reads `[reticle(),react()]`.
  */
-function insertPlugin(source: string, port: number | undefined): string {
+function insertPlugin(source: string, port: number | undefined, captureBodies: boolean): string {
   return source.replace(PLUGINS_ARRAY, (match, _g, offset: number) => {
     const next = source[offset + match.length] ?? '';
     const separator = '' === next || /\s/.test(next) ? '' : ' ';
-    return `${match}${reticlePluginCall(port)},${separator}`;
+    return `${match}${reticlePluginCall(port, captureBodies)},${separator}`;
   });
 }
 
@@ -88,25 +96,35 @@ function insertPlugin(source: string, port: number | undefined): string {
  * Add a whole `plugins: [reticle()]` key to a config object that has none, matching the layout of
  * the object it lands in: a multi-line object gets its own indented line, a one-liner stays inline.
  */
-function insertPluginsKey(source: string, port: number | undefined): string {
+function insertPluginsKey(
+  source: string,
+  port: number | undefined,
+  captureBodies: boolean,
+): string {
   return source.replace(CONFIG_OBJECT, (_match, prefix: string, offset: number) => {
     const rest = source.slice(offset + _match.length);
     const multiline = /^\s*\n/.test(rest);
     const indent = /^\s*\n(\s*)\S/.exec(rest)?.[1] ?? '  ';
-    const key = `plugins: [${reticlePluginCall(port)}],`;
+    const key = `plugins: [${reticlePluginCall(port, captureBodies)}],`;
     return multiline ? `${prefix}{\n${indent}${key}` : `${prefix}{ ${key}`;
   });
 }
 
-export function patchViteConfig(source: string, port?: number): VitePatch {
+export function patchViteConfig(source: string, port?: number, captureBodies = false): VitePatch {
   if (source.includes(RETICLE_MARKER)) {
     return { kind: VitePatchKind.ALREADY };
   }
   if (PLUGINS_ARRAY.test(source)) {
-    return { kind: VitePatchKind.APPLY, code: insertImport(insertPlugin(source, port)) };
+    return {
+      kind: VitePatchKind.APPLY,
+      code: insertImport(insertPlugin(source, port, captureBodies)),
+    };
   }
   if (CONFIG_OBJECT.test(source)) {
-    return { kind: VitePatchKind.APPLY, code: insertImport(insertPluginsKey(source, port)) };
+    return {
+      kind: VitePatchKind.APPLY,
+      code: insertImport(insertPluginsKey(source, port, captureBodies)),
+    };
   }
   return { kind: VitePatchKind.MANUAL, reason: NO_PLUGINS_REASON };
 }

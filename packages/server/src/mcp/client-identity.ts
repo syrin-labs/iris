@@ -18,7 +18,7 @@
  * claiming to know it would be inventing it.
  */
 
-export interface McpClientIdentity {
+interface McpClientIdentity {
   name?: string;
   version?: string;
 }

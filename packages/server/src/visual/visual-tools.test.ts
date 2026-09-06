@@ -39,8 +39,8 @@ function fakeProvider(png: Uint8Array): RealInputProvider {
   };
 }
 
-function fakeSession(): Session {
-  return { id: 'demo', url: SESSION_URL } as Session;
+function fakeSession(runtime?: string): Session {
+  return { id: 'demo', url: SESSION_URL, runtime } as Session;
 }
 
 function tool(name: string) {
@@ -63,8 +63,8 @@ describe('visual tools — temp dir, never touches the repo', () => {
     await removeTempDir(join(root, '..'));
   });
 
-  function deps(provider?: RealInputProvider): ToolDeps {
-    const session = fakeSession();
+  function deps(provider?: RealInputProvider, sessionRuntime?: string): ToolDeps {
+    const session = fakeSession(sessionRuntime);
     const sessions: Partial<SessionManager> = { resolve: () => session };
     const base: ToolDeps = {
       sessions: sessions as SessionManager,
@@ -140,5 +140,29 @@ describe('visual tools — temp dir, never touches the repo', () => {
     )) as { ok: boolean; reason: string };
     expect(r.ok).toBe(false);
     expect(r.reason).toBe(VisualReason.BASELINE_MISSING);
+  });
+
+  /**
+   * A baseline belongs to the renderer that produced its pixels, which is decided by the CAPTURE
+   * ROUTE — not by the session named.
+   *
+   * `capture()` tries three: a driven browser, the desktop window's own backing store, then a leased
+   * page. Two of the three are browsers. So naming a Tauri session while a driven browser is attached
+   * yields a BROWSER rendering of that url, and filing it under `tauri/` would overwrite the desktop
+   * baseline with a picture of a different renderer — a later real regression then passes against it.
+   *
+   * Keying on the session's runtime looked equivalent and is exactly this bug.
+   */
+  describe('a visual baseline is keyed by what rendered it', () => {
+    it('files a driven-browser capture as web, even for a desktop session', async () => {
+      const result = (await tool(ReticleTool.SCREENSHOT).handler(
+        deps(fakeProvider(solidPng([10, 20, 30])), 'tauri'),
+        { name: 'home' },
+      )) as { ok: boolean; path?: string };
+      expect(result.ok).toBe(true);
+      // Flat, because a driven browser IS web — never under visual/tauri/.
+      expect(result.path).toBe(join(root, 'visual', 'home.png'));
+      expect(result.path).not.toContain(join('visual', 'tauri'));
+    });
   });
 });

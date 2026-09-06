@@ -56,8 +56,9 @@ describe('a Next app whose dev module registers nothing is told so', () => {
     );
   });
 
-  it('fires when nothing at all was found', () => {
-    expect(notices(buildPlan(input({ storeHints: [], nextFoundStores: [] })))).toHaveLength(1);
+  /** Same rule as the Vite path: with nothing specific to ask for, the notice is not asked for. */
+  it('stays quiet when no library it could name was detected', () => {
+    expect(notices(buildPlan(input({ storeHints: [], nextFoundStores: [] })))).toHaveLength(0);
   });
 });
 

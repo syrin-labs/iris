@@ -2,7 +2,13 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveDaemonForProject, adoptable, resolveMcpPort } from './daemon-resolve.js';
+import {
+  resolveDaemonForProject,
+  adoptable,
+  resolveMcpPort,
+  daemonsServingProjectElsewhere,
+  splitBrainNote,
+} from './daemon-resolve.js';
 
 /**
  * Which daemon does THIS project belong to?
@@ -183,5 +189,83 @@ describe('resolveMcpPort', () => {
     await expect(
       resolveMcpPort(4400, 'shop', dir, { alive: dead, daemonPresent: absent, pickPort: assigned }),
     ).resolves.toBe(4400);
+  });
+});
+
+/**
+ * The other half of the split brain: not "which daemon do I take", but "did the app take a
+ * different one". `resolveMcpPort` relocating is correct and invisible; the app resolving its own
+ * port independently and landing on the daemon the proxy just refused is the failure nobody reports,
+ * because from either side alone everything looks healthy.
+ */
+describe('daemonsServingProjectElsewhere', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  function home(entries: readonly Record<string, unknown>[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'reticle-split-'));
+    dirs.push(dir);
+    for (const e of entries) {
+      writeFileSync(join(dir, `daemon-${String(e['port'])}.json`), JSON.stringify(e));
+    }
+    return dir;
+  }
+
+  const connectedOn =
+    (...ports: number[]) =>
+    (port: number): boolean =>
+      ports.includes(port);
+
+  it('names the live daemon this project’s app actually connected to', () => {
+    const dir = home([
+      { port: 4400, pid: 1, cwd: '/other', startedAt: 1, projectId: 'blog' },
+      { port: 51234, pid: 2, cwd: '/shop', startedAt: 2, projectId: 'shop' },
+    ]);
+    expect(daemonsServingProjectElsewhere('shop', 51234, dir, live, connectedOn(4400))).toEqual([
+      4400,
+    ]);
+  });
+
+  it('says nothing when the app connected to the daemon we are asking from', () => {
+    const dir = home([{ port: 4400, pid: 1, cwd: '/shop', startedAt: 1, projectId: 'shop' }]);
+    expect(daemonsServingProjectElsewhere('shop', 4400, dir, live, connectedOn(4400))).toEqual([]);
+  });
+
+  it('ignores a daemon whose process is gone — history is not a split', () => {
+    const dir = home([{ port: 4400, pid: 1, cwd: '/other', startedAt: 1, projectId: 'blog' }]);
+    expect(daemonsServingProjectElsewhere('shop', 51234, dir, dead, connectedOn(4400))).toEqual([]);
+  });
+
+  it('ignores a live daemon this project never connected to', () => {
+    const dir = home([{ port: 4400, pid: 1, cwd: '/other', startedAt: 1, projectId: 'blog' }]);
+    expect(daemonsServingProjectElsewhere('shop', 51234, dir, live, connectedOn())).toEqual([]);
+  });
+
+  /** No identity, no claim: a caller with no projectId cannot tell its own sessions from anyone's. */
+  it('says nothing for a caller with no project', () => {
+    const dir = home([{ port: 4400, pid: 1, cwd: '/other', startedAt: 1, projectId: 'blog' }]);
+    expect(daemonsServingProjectElsewhere(undefined, 51234, dir, live, connectedOn(4400))).toEqual(
+      [],
+    );
+  });
+});
+
+describe('splitBrainNote', () => {
+  it('is silent when there is no split', () => {
+    expect(splitBrainNote(4400, [])).toBeUndefined();
+  });
+
+  it('names both ports, says the attached one is the empty half, and gives a command', () => {
+    const note = splitBrainNote(51234, [4400]);
+    expect(note).toContain(':4400');
+    expect(note).toContain(':51234');
+    expect(note).toContain('reticle stop --port 4400');
+  });
+
+  /** The advice that would be wrong: this is not an install problem and must not read as one. */
+  it('does not send the reader back to init', () => {
+    expect(splitBrainNote(51234, [4400])).not.toContain('init');
   });
 });

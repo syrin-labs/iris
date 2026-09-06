@@ -166,14 +166,14 @@ describe('the accusation itself', () => {
   it('a window cut between the response and the render accuses a correct app', () => {
     // Exactly what the grace prevents — kept as the statement of the hazard.
     const cut = [write()];
-    expect(findContradictions(cut).map((c) => c.kind)).toContain(
+    expect(findContradictions(cut, { actionSince: 0 }).map((c) => c.kind)).toContain(
       ContradictionKind.RESPONSE_IGNORED,
     );
   });
 
   it('the same window including the render does not', () => {
     const whole = [write(), ev(EventType.DOM_TEXT, { path: 'div' })];
-    expect(findContradictions(whole).map((c) => c.kind)).not.toContain(
+    expect(findContradictions(whole, { actionSince: 0 }).map((c) => c.kind)).not.toContain(
       ContradictionKind.RESPONSE_IGNORED,
     );
   });

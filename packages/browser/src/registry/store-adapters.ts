@@ -1,5 +1,5 @@
 import { nativeWarn } from '../timers/native-console.js';
-import type { StoreLike, StoreSubscribe } from './stores.js';
+import { markAdapterSource, type StoreLike, type StoreSubscribe } from './stores.js';
 
 /**
  * Adapters that give non-`{getState, subscribe}` state libraries the shape `registerStore` wants.
@@ -67,7 +67,7 @@ export function tanstackQueryStore(client: QueryClientLike): StoreLike {
   // effects, a provider remount, HMR — and an adapter holding the old cache would keep answering
   // from a store the app no longer reads, which is a stale-data bug inside the tool whose job is
   // catching stale data.
-  return {
+  const store: StoreLike = {
     getState: (): Record<string, QuerySnapshot> => {
       const out: Record<string, QuerySnapshot> = {};
       for (const query of client.getQueryCache().getAll()) {
@@ -85,6 +85,10 @@ export function tanstackQueryStore(client: QueryClientLike): StoreLike {
     },
     subscribe: (listener: () => void): (() => void) => client.getQueryCache().subscribe(listener),
   };
+  // Registering this adapter claims the CLIENT too, so fiber-tree discovery can tell that the app
+  // already wired this exact QueryClient and must not add a second entry for it.
+  markAdapterSource(store, client);
+  return store;
 }
 
 /**

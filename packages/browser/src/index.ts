@@ -34,6 +34,11 @@ export {
   storeNames,
   readStores,
   readStoresWithTruncation,
+  // Which name a store SOURCE is registered under. The React adapter discovers stores from the fiber
+  // tree and needs this to tell "the app already wired this exact store" from "this is another one" —
+  // a question neither the name nor the read value can answer.
+  sourceOwner,
+  markAdapterSource,
 } from './registry/stores.js';
 export type { StoreGetter, StoreLike, StoreSubscribe } from './registry/stores.js';
 

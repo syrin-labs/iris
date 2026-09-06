@@ -107,3 +107,62 @@ describe('writing what came back', () => {
     expect(readCloudIssues(root)).toEqual({ triage: {} });
   });
 });
+
+/**
+ * The subject stamped on the way OUT.
+ *
+ * The engine derives a record's subject from evidence the record already carries, and this is where
+ * that derivation is applied to what the cloud receives — the server has no access to the binding
+ * and would otherwise file everything it could not read as `unsorted`.
+ *
+ * Nothing covered it at all, on the path a customer's dashboard is actually built from. These exist
+ * because the call CASTS `surface` down to `{ route, flow }` on its way into the ladder — a cast
+ * that erases at runtime, so `surface.files` does still arrive, but which reads as though the file
+ * rung were dropped here. It was mistaken for a live defect once already; the tests are what settle
+ * which it is, and what will notice if the cast ever becomes a real omission.
+ */
+describe('the subject a record arrives with', () => {
+  const intents = (records: Record<string, unknown>): void =>
+    write(ReticleDir.INTENT_FILE, { version: 1, intents: records });
+
+  const subjectOf = (id: string): unknown => {
+    const payload = diskSource(root).derived('intent') as {
+      intents: Record<string, { subject?: unknown }>;
+    };
+    return payload.intents[id]?.subject;
+  };
+
+  it('files a record by the FILE its verdict touched when nothing else places it', () => {
+    intents({
+      a: { statement: 's', surface: { files: ['src/features/checkout/total.ts'] } },
+    });
+    expect(subjectOf('a')).toBe('checkout');
+  });
+
+  it('still prefers the route, which outranks the file', () => {
+    intents({
+      a: { statement: 's', surface: { route: '/billing', files: ['src/features/auth/x.tsx'] } },
+    });
+    expect(subjectOf('a')).toBe('billing');
+  });
+
+  it('still prefers the flow, which outranks both', () => {
+    intents({
+      a: {
+        statement: 's',
+        surface: { flow: 'checkout-pay', route: '/billing', files: ['src/features/auth/x.tsx'] },
+      },
+    });
+    expect(subjectOf('a')).toBe('checkout-pay');
+  });
+
+  it('leaves an explicit subject alone — an agent’s own choice outranks inference', () => {
+    intents({ a: { statement: 's', subject: 'mine', surface: { route: '/billing' } } });
+    expect(subjectOf('a')).toBe('mine');
+  });
+
+  it('falls back to unsorted when the evidence names nothing', () => {
+    intents({ a: { statement: 's' } });
+    expect(subjectOf('a')).toBe('unsorted');
+  });
+});

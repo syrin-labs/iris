@@ -11,7 +11,7 @@ const FlakeRecordSchema = z.object({
   runs: z.number().int().min(0),
   fails: z.number().int().min(0),
 });
-export type FlakeRecord = z.infer<typeof FlakeRecordSchema>;
+type FlakeRecord = z.infer<typeof FlakeRecordSchema>;
 
 /** Per-flow map (flow name → record). */
 export type FlakeLedger = Record<string, FlakeRecord>;

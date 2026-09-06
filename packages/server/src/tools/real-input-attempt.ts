@@ -21,7 +21,7 @@
 import { ActionType, InputModeReason, ReticleCommand, TRANSPORT_LIMITS } from '@reticlehq/core';
 import type { Session } from '../session/session.js';
 import type { ElementBox, RealInputArgs } from '../input/real-input.js';
-import { isPointerAction } from '../input/real-input.js';
+import { boxCenter, isPointerAction } from '../input/real-input.js';
 import { assertDragNotDestructive, assertNotDestructive } from './act-danger.js';
 import { NATIVE_INPUT_ARG } from '@reticlehq/core';
 import { asString, asRecord } from './tools-helpers.js';
@@ -223,10 +223,69 @@ function synthetic(reason?: InputModeReason): RealActResult {
 }
 
 /**
+ * Hover without a native pointer is a false success: synthetic mouseover reports dispatched and
+ * settled while CSS `:hover` never applies. Same refusal shape as contenteditable — name the gap
+ * rather than pretend the action ran.
+ */
+export const HOVER_NEEDS_POINTER_MSG =
+  'cannot hover without a real pointer — CSS :hover only applies to a native mouse move, never to a synthetic mouseover';
+
+function hoverSucceeded(center: { cx: number; cy: number }): RealActResult {
+  return { result: { performed: true, center, action: ActionType.HOVER }, settled: true };
+}
+
+/**
+ * Drive hover through a real pointer (CDP provider, then a leased Playwright page), or refuse.
+ *
+ * A leased tab already owns Chromium — the pool can move the mouse even when `reticle drive` /
+ * `RETICLE_CDP_URL` never configured a provider. Falling through to synthetic dispatch is the
+ * bug: the tool reports done and the styles never ran.
+ */
+async function hoverForReal(
+  deps: ToolDeps,
+  session: Session,
+  ref: string,
+  inner: Record<string, unknown>,
+  provider: ToolDeps['realInput'],
+): Promise<RealActResult> {
+  const providerReady = provider !== undefined && (await provider.isAvailableFor(session.url));
+  if (!providerReady && deps.pool === undefined) {
+    throw new Error(HOVER_NEEDS_POINTER_MSG);
+  }
+
+  const inspected = await commandOrThrow(deps, session.id, ReticleCommand.INSPECT, { ref });
+  assertNotDestructive(ActionType.HOVER, inner, inspected);
+  const box = asBox(inspected);
+  if (box === undefined) {
+    throw new Error(HOVER_NEEDS_POINTER_MSG);
+  }
+
+  if (providerReady && provider !== undefined) {
+    try {
+      const performed = await provider.perform(session.url, ActionType.HOVER, box, {});
+      if (performed.performed) return hoverSucceeded(performed.center);
+    } catch {
+      // A provider error used to fall back to synthetic dispatch. For hover that is a lie.
+    }
+  }
+
+  const { cx, cy } = boxCenter(box);
+  if (true === (await deps.pool?.hoverLease(session.id, cx, cy))) {
+    return hoverSucceeded({ cx, cy });
+  }
+
+  throw new Error(HOVER_NEEDS_POINTER_MSG);
+}
+
+/**
  * Attempt to drive a pointer action via native input. Returns a synthetic outcome (with a
  * `reason` when a provider is configured) whenever the synthetic path should run — no matching
  * page, unresolvable box, declined, etc. A throw inside the provider becomes a synthetic fallback
  * flagged with `fellBack`. `result` is defined only on a real success.
+ *
+ * Hover is the exception: it never returns synthetic. CSS `:hover` is not applied by
+ * `dispatchEvent`, so a synthetic success is the defect. The call either drives a real pointer
+ * or throws.
  */
 export async function tryRealInput(
   deps: ToolDeps,
@@ -238,6 +297,9 @@ export async function tryRealInput(
   const provider = deps.realInput;
   const inner = asRecord(args['args']);
   const askedForNative = true === inner[NATIVE_INPUT_ARG];
+  if (action === ActionType.HOVER) {
+    return hoverForReal(deps, session, ref, inner, provider);
+  }
   if (provider === undefined) {
     // Silent by default: with no provider EVERY action is synthetic, and a reason on all of them is
     // noise on the most-used tool in the product. But an agent that passed native:true asked a
@@ -253,6 +315,13 @@ export async function tryRealInput(
   // isTrusted-gated handlers). hover/drag genuinely need native pointer state, so they stay real.
   if ((action === ActionType.CLICK || action === ActionType.DBLCLICK) && !askedForNative) {
     return synthetic(InputModeReason.SYNTHETIC_CLICK_PREFERRED);
+  }
+
+  // Under version skew CDP is unusable while DOM tools still work (#688). Surface the skew sentence
+  // rather than "page not correlated" / a silent provider-error fallback — those send the agent
+  // hunting a dead context that is not dead.
+  if (session.versionSkew !== undefined) {
+    throw new Error(session.versionSkew);
   }
 
   if (!(await provider.isAvailableFor(session.url)))
@@ -289,6 +358,7 @@ export async function tryRealInput(
     if (!performed.performed) return synthetic(InputModeReason.PROVIDER_DECLINED);
     return { result: { performed: true, center: performed.center, action }, settled: true };
   } catch {
+    if (session.versionSkew !== undefined) throw new Error(session.versionSkew);
     return {
       result: undefined,
       settled: false,

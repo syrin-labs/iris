@@ -82,7 +82,9 @@ describe('contradictions — dev-tooling traffic is not evidence about the app',
   });
 
   it('still reports a REAL request the UI advanced over, and says what it ignored', () => {
-    const found = findContradictions([pending(OVERLAY), pending(APP), domChanged()]);
+    const found = findContradictions([pending(OVERLAY), pending(APP), domChanged()], {
+      actionSince: 0,
+    });
     expect([ContradictionKind.REQUEST_NEVER_SETTLED]).toEqual(found.map((c) => c.kind));
     expect(true).toBe(found[0]?.detail.includes(APP));
     expect(true).toBe(found[0]?.detail.includes('dev tooling'));

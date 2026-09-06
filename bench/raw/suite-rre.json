@@ -4,19 +4,19 @@
   "points": [
     {
       "flows": 2,
-      "reticle_verify_tokens": 90,
+      "reticle_verify_tokens": 76,
       "status": "pass",
       "passed": 2,
       "competitor_redrive_tokens": 60498,
-      "suite_rre_ratio": 672
+      "suite_rre_ratio": 796
     },
     {
       "flows": 4,
-      "reticle_verify_tokens": 90,
+      "reticle_verify_tokens": 76,
       "status": "pass",
       "passed": 4,
       "competitor_redrive_tokens": 120996,
-      "suite_rre_ratio": 1344
+      "suite_rre_ratio": 1592
     }
   ],
   "note": "reticle_flow_verify returns ONE verdict for the whole suite (passing flows counted, only failures detailed) → read-cost ~constant in K. Competitors re-drive each flow with the LLM (~30,249 tok/flow) → cost is K*per-flow. The ratio therefore GROWS with suite size: the chased RRE metric compounds."

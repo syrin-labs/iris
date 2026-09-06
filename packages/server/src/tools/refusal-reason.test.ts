@@ -21,6 +21,7 @@ describe('why a tool refused', () => {
     ['no <option> with value "gold"', RefusalReason.NO_MATCH],
     ['cannot fill a disabled <input>', RefusalReason.UNSUPPORTED],
     ['cannot type into a contenteditable region', RefusalReason.UNSUPPORTED],
+    ['cannot hover without a real pointer', RefusalReason.UNSUPPORTED],
     ['potentially destructive action blocked', RefusalReason.UNSUPPORTED],
     ["unknown action 'clik'", RefusalReason.BAD_ARGS],
     ['invalid flow name: ../escape', RefusalReason.BAD_ARGS],

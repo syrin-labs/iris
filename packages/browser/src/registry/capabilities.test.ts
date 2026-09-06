@@ -72,3 +72,70 @@ describe('capability registry', () => {
     expect(getCapabilities().flows).toEqual([]);
   });
 });
+
+/**
+ * The observed half of the surface. Declaring testids and store names used to be the ONLY way to
+ * have any, which is what made "finish the capabilities file" a step in every install.
+ */
+describe('capabilities observed from the running app', () => {
+  beforeEach(() => {
+    delete (globalThis as { __reticleCapabilities?: unknown }).__reticleCapabilities;
+    delete (globalThis as { __reticleStores?: unknown }).__reticleStores;
+    delete (globalThis as { __reticleStoreSubs?: unknown }).__reticleStoreSubs;
+    document.body.innerHTML = '';
+  });
+
+  it('reports testids the app rendered but never declared', async () => {
+    document.body.innerHTML = '<button data-testid="pay"></button>';
+    const { getCapabilities, hasCapabilities } = await freshModule();
+    expect(getCapabilities().testids).toEqual(['pay']);
+    expect(hasCapabilities()).toBe(true);
+  });
+
+  it('reports a store that was registered rather than declared', async () => {
+    const mod = await freshModule();
+    const { registerStore } = await import('./stores.js');
+    registerStore('cart', { getState: () => ({ items: 1 }), subscribe: () => () => {} });
+    expect(mod.getCapabilities().stores).toContain('cart');
+    expect(mod.hasCapabilities()).toBe(true);
+  });
+
+  it('never advertises Reticle’s own render store as the app’s surface', async () => {
+    const mod = await freshModule();
+    const { registerStore } = await import('./stores.js');
+    registerStore('__reticle_renders', () => ({ commits: 3 }));
+    expect(mod.getCapabilities().stores).toEqual([]);
+    expect(mod.hasCapabilities()).toBe(false);
+  });
+
+  it('keeps a declaration and the observation as one list, without duplicates', async () => {
+    document.body.innerHTML = '<i data-testid="pay"></i><i data-testid="cancel"></i>';
+    const { registerCapabilities, getCapabilities } = await freshModule();
+    registerCapabilities({ testids: ['pay'] });
+    expect(getCapabilities().testids).toEqual(['pay', 'cancel']);
+  });
+
+  it('says there is no surface when the app has neither declared nor rendered one', async () => {
+    const { hasCapabilities } = await freshModule();
+    expect(hasCapabilities()).toBe(false);
+  });
+});
+
+describe('declared and observed stay distinguishable', () => {
+  beforeEach(() => {
+    delete (globalThis as { __reticleCapabilities?: unknown }).__reticleCapabilities;
+    document.body.innerHTML = '';
+  });
+
+  /**
+   * `knownEmptyState` reads this list to tell "the app named this element" from "a testid happens to
+   * be on the page". Merging the DOM in here would make it true for any page with any testid.
+   */
+  it('leaves an observed testid out of the declared list', async () => {
+    document.body.innerHTML = '<i data-testid="observed"></i>';
+    const { registerCapabilities, declaredTestids, getCapabilities } = await freshModule();
+    registerCapabilities({ testids: ['declared'] });
+    expect(declaredTestids()).toEqual(['declared']);
+    expect(getCapabilities().testids).toEqual(['declared', 'observed']);
+  });
+});

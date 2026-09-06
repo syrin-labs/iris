@@ -16,11 +16,14 @@ import { compileSequenceStep } from '../flows/replay.js';
 import { ReticleTool } from './tool-names.js';
 import { healthEnvelope } from '../session/session-health.js';
 import { pausedShortCircuit, pausedOutputShape, withControl } from '../session/control-envelope.js';
-import { asString, asRecord } from './tools-helpers.js';
+import { asRecord, sessionIdFromArgs } from './tools-helpers.js';
 import { describeStepResult, runStepWithStaleRetry } from './act-sequence-retry.js';
 import { assertSequenceSteps } from './act-preflight.js';
 import { type ToolDef, sessionIdShape } from './tool-kit.js';
 import { actCommand } from './act-tools.js';
+// resolveActTarget moved out of act-tools into its own module on this branch; #706 was written
+// against the older layout where act-tools re-exported it.
+import { resolveActTarget } from './act-target.js';
 
 export const ACT_SEQUENCE_TOOL: ToolDef = {
   name: ReticleTool.ACT_SEQUENCE,
@@ -41,7 +44,7 @@ export const ACT_SEQUENCE_TOOL: ToolDef = {
     steps: z
       .array(z.record(z.unknown()))
       .describe(
-        'Ordered list of { ref, action, args? } objects. Each step is equivalent to one reticle_act call; put confirmDangerous:true in a destructive step args object.',
+        'Ordered list of { ref | target, action, args? } objects. Each step is equivalent to one reticle_act call — give `ref` from a snapshot/query, or `target` ({ testid } | { label } | { role, name } | { text }) to resolve in this call. Put confirmDangerous:true in a destructive step args object.',
       ),
     timeout_ms: timeoutMsSchema
       .optional()
@@ -64,7 +67,7 @@ export const ACT_SEQUENCE_TOOL: ToolDef = {
     ...pausedOutputShape,
   },
   handler: async (deps, args) => {
-    const session = deps.sessions.resolve(asString(args['sessionId']));
+    const session = deps.sessions.resolve(sessionIdFromArgs(args));
     const paused = pausedShortCircuit(session);
     if (paused !== undefined) return paused;
     const since = session.elapsed();
@@ -83,14 +86,20 @@ export const ACT_SEQUENCE_TOOL: ToolDef = {
         const step = asRecord(inputSteps[i]);
         try {
           // One retry when the ref went stale under a re-render — see act-sequence-retry.ts.
+          // Resolve `target` with the same helper reticle_act uses, then dispatch by ref. Passing
+          // the unresolved step through used to send `ref: undefined` and the browser blamed a
+          // stale empty ref — the caller went looking for a re-render instead of a missing locator.
           const outcome = await runStepWithStaleRetry(
-            () =>
-              actCommand(
+            async () => {
+              const resolved = await resolveActTarget(session, step);
+              if ('error' === resolved.kind) return { ok: false, error: resolved.message };
+              return actCommand(
                 deps,
                 session,
-                { ref: step['ref'], action: step['action'], args: step['args'] ?? {} },
+                { ref: resolved.ref, action: step['action'], args: step['args'] ?? {} },
                 perStepTimeout,
-              ),
+              );
+            },
             session,
             since,
             perStepTimeout,

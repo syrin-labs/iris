@@ -54,7 +54,7 @@ export function resetMarkIdsForTest(): void {
 }
 
 /** What `resolve` actually did, including WHICH mark — so a caller can verify it hit the right one. */
-export interface ResolveOutcome {
+interface ResolveOutcome {
   resolved: boolean;
   id: string;
   /** The retired mark's note. Absent when nothing was resolved. */

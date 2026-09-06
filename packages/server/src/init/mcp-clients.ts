@@ -207,7 +207,7 @@ export const ClientMergeStatus = {
 } as const;
 export type ClientMergeStatus = (typeof ClientMergeStatus)[keyof typeof ClientMergeStatus];
 
-export interface ClientMergeResult {
+interface ClientMergeResult {
   status: ClientMergeStatus;
   /** Full file content to write. Byte-identical to `existing` when not `apply`. */
   content: string;

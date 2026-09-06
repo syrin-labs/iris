@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/test",
-  "version": "2.12.0",
+  "version": "2.13.1",
   "description": "Reticle test runner: reticleTest spec registry + a runner that drives Reticle tools without MCP/stdio.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,7 @@
     "lint": "eslint src",
     "test:unit": "vitest run src --passWithNoTests",
     "test:coverage": "vitest run src --passWithNoTests --coverage.enabled --coverage.provider=v8 --coverage.reporter=text-summary --coverage.include='src/**/*.ts' --coverage.exclude='src/**/*.test.ts'",
-    "prepack": "tsc -b && find dist -name \"*.test.*\" -delete && node ../../scripts/strip-maps.mjs dist"
+    "prepack": "tsc -b && node ../../scripts/prepare-dist.mjs dist"
   },
   "dependencies": {
     "@reticlehq/core": "workspace:*",

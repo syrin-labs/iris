@@ -129,7 +129,7 @@ Deep detail on one element, including the signals a snapshot/a11y tree omits, so
 Perform one action / several in order.
 
 - **`reticle_act` args:** `ref`, `action`, `args?`, `refuseWhenThrottled?`, `sessionId?`. → `{ since, dispatched, settled, settleReason, result, session, warning? }` where `result = { ok, ref, action, dispatched, settled, settleReason, effect }`. The `session` block `{ lastSeenMs, throttled, focused }` reports tab health on every act; when `throttled` is true a `warning` string is also attached. Pass `refuseWhenThrottled: true` to hard-fail instead of warning (opt-in; default is warn-only so background testing never breaks).
-- **`reticle_act_sequence` args:** `steps: [{ ref, action, args? }]`. → `{ since, dispatched, result }` where `result = { ok, count, effects: [...], steps: [...] }` (one `effect` per step; each step carries its own `dispatched`/`settled`/`settleReason`).
+- **`reticle_act_sequence` args:** `steps: [{ ref | target, action, args? }]`. Each step takes `ref` (from a snapshot/query) or `target` (`{ testid }` / `{ label }` / `{ role, name }` / `{ text }`). That is the same locator `reticle_act` accepts. → `{ since, dispatched, result }` where `result = { ok, count, effects: [...], steps: [...] }` (one `effect` per step; each step carries its own `dispatched`/`settled`/`settleReason`).
 - See [§5](#5-actions-full-list) for the action list.
 
 **Dispatch vs settle.** The action is two phases: the **dispatch** (the synchronous click/fill, which is what can fail) and the **settle** (waiting one animation frame so React's commit lands before we return). The settle is **bounded** (~200ms): in a throttled/background tab `requestAnimationFrame` never fires, so Reticle falls back to a timer and resolves anyway. A settle timeout is therefore **never an error**: `reticle_act` resolves with `settled:false, settleReason:"timeout"` and the dispatch (the click) has still landed. Only a real dispatch failure (stale ref, wrong element type) throws.
@@ -310,9 +310,9 @@ reticle_session {action:"review"}({ sessionId })
 
 Each pending mark carries the human note, the element label, the source **`file:line`** (when the framework stamped one), and a ready-to-act `fix` hint. Open the file, apply the fix, then `reticle_session {action:"review"}({ resolve: "m1" })`. The human watching the panel sees **"✓ fixed: …"** land. Reading never consumes a mark, so you can list → fix → verify → resolve. `reticle_sessions` also reports `pendingMarks` so you notice flagged bugs during normal orientation.
 
-### `reticle_network_mock`: stub the network for error-state testing (driven mode)
+### `reticle_network_mock`: stub the network for error-state testing
 
-On a page Reticle drives (`reticle drive`), make a request return a 500, force it offline, or delay it, so testing error/edge states is one declared rule, no backend changes:
+On a page Reticle drives (`reticle drive`) or a leased Playwright tab (`reticle_lease acquire`), make a request return a 500, force it offline, or delay it, so testing error/edge states is one declared rule, no backend changes:
 
 ```
 reticle_network_mock({ mocks: [{ urlContains: "/api/pay", method: "POST", status: 500 }] })
@@ -321,7 +321,7 @@ reticle_network_mock({ mocks: [{ urlContains: "/api/feed", abort: true }] })   /
 reticle_network_mock({ clear: true }) // turn mocking off
 ```
 
-First matching rule wins (`urlContains` + optional case-insensitive `method`). Needs a driven browser; without one it returns a `recommendation` pointing at `reticle drive`.
+First matching rule wins (`urlContains` + optional case-insensitive `method`). Needs a driven or leased browser; without one it returns a `recommendation` pointing at `reticle drive`.
 
 ### `reticle_viewport`: reproducible visual baselines (driven mode)
 

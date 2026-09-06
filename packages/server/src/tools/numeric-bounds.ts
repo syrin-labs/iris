@@ -21,10 +21,31 @@ import { RING_BUFFER_DEFAULTS, TRANSPORT_LIMITS } from '@reticlehq/core';
 export const MAX_RESULT_COUNT = RING_BUFFER_DEFAULTS.MAX_EVENTS;
 
 /**
- * Hard cap on a wait. The default assert budget is 4s; two minutes is already a hung session.
+ * Hard cap on a numeric millisecond argument that does NOT block the caller's request.
  * `timeout_ms: 0` stays legal — it means evaluate once, do not wait.
  */
 export const MAX_TIMEOUT_MS = 120_000;
+
+/**
+ * Hard cap on a wait the CALLER BLOCKS ON, which is a different ceiling from the one above.
+ *
+ * A blocking wait is bounded by the client's patience, not by ours. The MCP SDK's default request
+ * timeout is 60s and clients configure it lower; we advertised 120s. A caller who believed the
+ * advertised bound and asked for 90s got a TRANSPORT error at 60s — not a Reticle verdict, not a
+ * near-miss diagnosis, nothing to act on. The wait was honoured right up to the point where the
+ * only thing that could report it had gone.
+ *
+ * So the ceiling is set below the SDK default rather than at it: the margin is what lets Reticle's
+ * own "timed out, here is the near miss" answer beat the client's abort. A refused argument is a
+ * bad ceiling costing one round trip; an accepted one that cannot be delivered costs the drive.
+ *
+ * This does not make long waits possible, and is not meant to — it makes the ADVERTISED bound one
+ * that can actually be honoured. A caller that genuinely needs to outlast this polls: several short
+ * waits, each of which returns a verdict. See #601 for the bounded-wait cursor that would let one
+ * call do it properly.
+ */
+const MCP_SDK_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+export const MAX_BLOCKING_WAIT_MS = MCP_SDK_DEFAULT_REQUEST_TIMEOUT_MS - 5_000;
 
 /**
  * `capDepth` at this many levels is already past any store an agent can read.
@@ -36,16 +57,16 @@ export const MAX_TIMEOUT_MS = 120_000;
 export const MAX_STATE_DEPTH = 256;
 
 /** A crawl that clicks forever is not a bound. */
-export const MAX_CRAWL_STEPS = 500;
+const MAX_CRAWL_STEPS = 500;
 
 /** Scroll-to-find steps. Default is 20; hundreds is searching, thousands is a hang. */
 export const MAX_SCROLLS = 200;
 
 /** Fake-clock jump. One day of timers is a test; a billion ms is not. */
-export const MAX_ADVANCE_MS = 86_400_000;
+const MAX_ADVANCE_MS = 86_400_000;
 
 /** Presenter idle window. One hour is a slow app; larger values never fire. */
-export const MAX_IDLE_MS = 3_600_000;
+const MAX_IDLE_MS = 3_600_000;
 
 /** Viewport CSS px — matches the clamp the handler already applied, now as a refusal. */
 export const MIN_VIEWPORT_PX = 64;
@@ -60,7 +81,7 @@ export const cursorSchema = z.number().finite().int().nonnegative();
 /**
  * A wait budget in ms. 0 means evaluate now (documented on assert). Negative cannot be honoured.
  */
-export const timeoutMsSchema = z.number().finite().int().nonnegative().max(MAX_TIMEOUT_MS);
+export const timeoutMsSchema = z.number().finite().int().nonnegative().max(MAX_BLOCKING_WAIT_MS);
 
 /**
  * A count / cap. 0 means "return none", which is a real request. Negative is not.
@@ -124,5 +145,5 @@ export const workerCountSchema = z
  * A row index / list length in a virtualized table. Those lists are large on purpose; the ring
  * buffer's 2000 is the wrong ceiling. A billion-row claim is not a list, it is a hang.
  */
-export const MAX_LIST_INDEX = 1_000_000;
+const MAX_LIST_INDEX = 1_000_000;
 export const listIndexSchema = z.number().finite().int().nonnegative().max(MAX_LIST_INDEX);

@@ -344,6 +344,10 @@ export class Reticle {
       // page observed rather than guessing at the daemon, which it cannot see from in here.
       onUnreachable: ({ url: tried, attempts }) => {
         nativeWarn(unreachableMessage(tried, attempts));
+        // And on screen, not only in a console nobody has open. An instrumented page with a dead
+        // bridge looked exactly like a page with no Reticle in it, so the user could not tell a
+        // daemon they forgot to start from an install that did not work.
+        this.#presenter?.showUnreachable(tried, attempts);
       },
     });
 

@@ -87,6 +87,35 @@ describe('nextActionFor', () => {
     expect(next.port).toBe(5173);
   });
 
+  // The prose half of this same payload says, for this exact branch, that the most likely cause is
+  // a dev server older than the plugin (`no-session-diagnosis.ts`). The executable half said only
+  // "open the app" — and the executable half is the one an agent acts on. An agent that opens a
+  // bundle built before `init` ran gets no session, and nothing in the answer it followed told it
+  // that reloading a stale bundle cannot work however many times it tries.
+  it('a wired app that has NEVER connected names the stale dev server, not just the open', () => {
+    const next = nextActionFor({
+      everConnected: false,
+      initialized: true,
+      listening: [5173],
+      dev: DEV,
+    });
+    expect(next.reason).toMatch(/restart/i);
+    expect(next.reason).toMatch(/dev server/i);
+  });
+
+  // ...and it must NOT say it once a session has connected before: there the wiring is proven and a
+  // restart is a wild goose chase.
+  it('does not blame the dev server once a session has connected before', () => {
+    const next = nextActionFor({
+      everConnected: false,
+      initialized: true,
+      previouslyConnected: true,
+      listening: [5173],
+      dev: DEV,
+    });
+    expect(next.reason).not.toMatch(/restart/i);
+  });
+
   it('never returns a start command while ANYTHING is listening', () => {
     for (const initialized of [true, false]) {
       const next = nextActionFor({
@@ -121,6 +150,21 @@ describe('nextActionFor', () => {
     });
     expect(next.action).toBe(NoSessionAction.REOPEN_APP);
     expect(next.command).toBeUndefined();
+  });
+
+  it('a session was here AND a port is bound: say so, so nobody starts a second stack', () => {
+    const next = nextActionFor({
+      everConnected: true,
+      initialized: true,
+      listening: [5173],
+      dev: DEV,
+    });
+    expect(next.action).toBe(NoSessionAction.REOPEN_APP);
+    expect(next.reason).toContain('5173');
+    expect(next.reason).toMatch(/already listening/i);
+    expect(next.reason).toMatch(/do not start a second/i);
+    expect(next.command).toBe('reticle open http://localhost:5173');
+    expect(next.port).toBe(5173);
   });
 });
 
@@ -183,5 +227,73 @@ describe('the scan is narrow, and the reason must say so in both branches', () =
       dev: DEV,
     });
     expect(withScript.reason).toMatch(/URL|another port|different port/i);
+  });
+});
+
+/**
+ * The split brain: the app is connected, wired and live — to a different daemon on the same machine.
+ *
+ * This is the shape of the field report where every individual check is green and the chain is
+ * broken, and every other action in this file is the wrong one for it. It has to outrank all of
+ * them, including `everConnected`, because it is the only cause here backed by positive evidence
+ * about another process rather than by an absence observed from this one.
+ */
+describe('nextActionFor — the app is on another daemon', () => {
+  const SPLIT = 'this project’s app is connected to a DIFFERENT Reticle daemon (:4400)';
+
+  it('names the split instead of telling the agent to start a running dev server', () => {
+    const next = nextActionFor({
+      everConnected: false,
+      initialized: true,
+      listening: [],
+      dev: DEV,
+      splitBrain: SPLIT,
+    });
+    expect(next.action).toBe(NoSessionAction.DAEMON_SPLIT);
+    expect(next.reason).toBe(SPLIT);
+    expect(next.command).toBeUndefined();
+  });
+
+  it('outranks a dev server that IS listening — opening the page again changes nothing', () => {
+    const next = nextActionFor({
+      everConnected: false,
+      initialized: true,
+      listening: [5173],
+      dev: DEV,
+      splitBrain: SPLIT,
+    });
+    expect(next.action).toBe(NoSessionAction.DAEMON_SPLIT);
+  });
+
+  it('outranks an unwired directory — `init` cannot fix a daemon on the wrong port', () => {
+    const next = nextActionFor({
+      everConnected: false,
+      initialized: false,
+      listening: [5173],
+      dev: DEV,
+      splitBrain: SPLIT,
+    });
+    expect(next.action).toBe(NoSessionAction.DAEMON_SPLIT);
+  });
+
+  it('outranks a session this daemon served earlier', () => {
+    const next = nextActionFor({
+      everConnected: true,
+      initialized: true,
+      listening: [5173],
+      dev: DEV,
+      splitBrain: SPLIT,
+    });
+    expect(next.action).toBe(NoSessionAction.DAEMON_SPLIT);
+  });
+
+  it('changes nothing when there is no split', () => {
+    const next = nextActionFor({
+      everConnected: false,
+      initialized: true,
+      listening: [],
+      dev: DEV,
+    });
+    expect(next.action).toBe(NoSessionAction.START_DEV_SERVER);
   });
 });

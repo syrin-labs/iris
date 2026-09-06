@@ -25,8 +25,21 @@ export {
  */
 export const CLI_USAGE = `usage:  npx @reticlehq/server <command>   (or \`reticle <command>\` once the bin is on your PATH)
 
-  reticle init  [--dry-run] [--port N] [--no-mcp] [--no-install] [--app <dir>]  (wire Reticle into the project in this directory)
+  reticle init  [--dry-run] [--port N] [--no-mcp] [--no-install] [--app <dir>]
+                [--flow "<what to drive>"] [--env KEY=VALUE]... [--files-only]  (wire Reticle into the project in this directory)
                 --app picks WHICH app in a monorepo, when several are found
+                --flow names the journey worth proving, in your own words. Only you know
+                which one matters, and naming it is the difference between a drive that
+                finishes and one that spends its budget looking for something to do
+                --env is what the app needs to reach a usable state: the key from
+                .env.example, the mock backend, the variable that skips an auth wall.
+                Repeatable, and a value may contain spaces and equals signs
+                --files-only writes the files and stops, which is what init did before it
+                learned to boot the app and prove the install works
+                --license writes the key to .env and keeps .env out of git
+                --json puts the result on stdout, so an agent reads one object
+                --no-drive / --no-open / --no-agents / --url / --timeout / --drive-model
+                are the runtime dials: CI, a headless box, or an app you already run
                 --no-mcp skips MORE than the server registration: also the agent rule files
                 (CLAUDE.md / AGENTS.md / .cursor) and the /reticle command, because all three
                 only make sense once the tools are reachable.
@@ -37,7 +50,7 @@ export const CLI_USAGE = `usage:  npx @reticlehq/server <command>   (or \`reticl
   reticle status [--port N]
   reticle doctor [--port N]                            (one command to diagnose setup: Chromium, daemon, port)
   reticle open  [url] [--port N]                        (show the app: reuse the connected tab, else open one)
-  reticle verify <url> [--port N] [--headed] [--timeout N] [--storage-state <file>]  (one-shot: drive the URL, verify saved flows, exit 0=pass)
+  reticle verify <url> [--port N] [--headed] [--timeout N] [--storage-state <file>] [--session-id <id>]  (one-shot: drive the URL, verify saved flows, exit 0=pass)
   reticle affected [--since <ref>] [file...]           (which saved flows must re-verify for the changed files)
   reticle gate [--since <ref>] [file...]               (exit non-zero unless passing artifacts cover the affected flows)
   reticle watch [url]                                  (on save, report which saved flows must re-verify)
@@ -53,8 +66,10 @@ export const CLI_USAGE = `usage:  npx @reticlehq/server <command>   (or \`reticl
   reticle identify --context company|side_project|open_source|learning [--company N] [--email E] [--forget]
                                                        (OPT-IN: tell us who you are, e.g. for support or an enterprise trial)
 
-Cloud (link this project to Reticle Cloud; runs/flows recorded on the dashboard):
-  reticle login --email <e> [--code <c>] [--org <n>]   (sign in: mails a code, then exchanges it)
+Cloud (link this project to Reticle; runs/flows recorded on the dashboard):
+  reticle login [--url <u>] [--email <e>] [--code <c>] [--org <n>]
+                                                       (browser device flow by default; --email mails a code)
+  reticle logout [--url <u>]                           (sign out of ONE host; others stay signed in)
   reticle link  [--project <name|id>]                  (bind this repo: mints a scoped key, writes .reticle/cloud.json)
   reticle whoami                                        (who am I signed in as, and is this repo attached?)
   reticle project <ls|create <name>>                   (list or create cloud projects)
@@ -145,6 +160,8 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'config',
   'push',
   'runs',
+  'issues',
+  'memory',
   'regression',
   'share',
   'doctor',
@@ -171,12 +188,64 @@ const DRY_RUN_FLAG = '--dry-run';
 const YES_FLAG = '--yes';
 const NO_MCP_FLAG = '--no-mcp';
 const APP_FLAG = '--app';
+/**
+ * What only the caller can know, and what it may switch off.
+ *
+ * `--flow`, `--env` and `--app` are an AGENT's answers: which journey proves the thing the user
+ * cares about, what the app needs to reach a usable state, and which app in a monorepo. None is
+ * inferable from the repository alone, and a run without them either guesses or stops.
+ *
+ * `--files-only` is the escape hatch for a caller that wants what init used to do and nothing more.
+ */
+const FLOW_FLAG = '--flow';
+const ENV_FLAG = '--env';
+const FILES_ONLY_FLAG = '--files-only';
+/**
+ * Write `captureNetworkBodies: true` into the app's config. OFF unless asked (#705).
+ *
+ * Body capture is what makes a 2xx write's OUTCOME readable rather than just its transport, so it
+ * is worth having — but a body is the one part of a request that routinely carries personal data,
+ * and `init` runs unattended. Whoever passes this has decided; nothing decides it for them.
+ */
+const CAPTURE_BODIES_FLAG = '--capture-bodies';
+/**
+ * The rest of the runtime surface.
+ *
+ * `--json` is not a convenience: SKILL.md tells an agent to read the result and act on `agentTodo`,
+ * and reading one object is one turn where interpreting a report is several. The three opt-outs are
+ * what a machine without a browser, or a caller already running their app, actually needs.
+ */
+const JSON_FLAG = '--json';
+const NO_DRIVE_FLAG = '--no-drive';
+const NO_OPEN_FLAG = '--no-open';
+const NO_AGENTS_FLAG = '--no-agents';
+/**
+ * Restart the calling client so IT gets the tools.
+ *
+ * The flag was accepted by the prototype and not by `init`, so passing it printed the whole usage
+ * text. `init` decides what a restart should do — including refusing an id with no transcript, which
+ * is the case that looks exactly like success — and prints it; performing the restart is the
+ * caller's, because opening a terminal is not something a one-shot command should do behind a flag.
+ */
+const RELAUNCH_FLAG = '--relaunch';
+const URL_FLAG = '--url';
+const TIMEOUT_FLAG_INIT = '--timeout';
+const DRIVE_MODEL_FLAG = '--drive-model';
+/**
+ * The key, written to .env by the command rather than by hand.
+ *
+ * The instructions used to ask an agent for three steps: append to .env, check .gitignore, confirm.
+ * All three are deterministic, and the second is the one that costs something when skipped, because
+ * a key committed to git is leaked and stays leaked after the file is removed.
+ */
+const LICENSE_FLAG = '--license';
 const NO_INSTALL_FLAG = '--no-install';
 export const HTTP_FLAG = '--http';
 export const HTTP_PORT_FLAG = '--http-port';
 export const HTTP_TOKEN_FLAG = '--http-token';
 const TIMEOUT_FLAG = '--timeout';
 const STORAGE_STATE_FLAG = '--storage-state';
+const SESSION_ID_FLAG = '--session-id';
 
 export type CliResult =
   | {
@@ -186,6 +255,19 @@ export type CliResult =
       dryRun: boolean;
       install: boolean;
       app: string | undefined;
+      flow: string | undefined;
+      env: string[];
+      filesOnly: boolean;
+      captureBodies: boolean;
+      json: boolean;
+      drive: boolean;
+      relaunch: boolean;
+      open: boolean;
+      agents: boolean;
+      url: string | undefined;
+      timeoutSeconds: number | undefined;
+      driveModel: string | undefined;
+      licenseKey: string | undefined;
     }
   | {
       kind: 'serve';
@@ -225,6 +307,7 @@ export type CliResult =
       port: number;
       timeoutMs?: number;
       storageState?: string;
+      sessionId?: string;
     }
   | { kind: 'affected'; files: string[]; since?: string }
   | { kind: 'hunt'; dir: string }
@@ -292,6 +375,10 @@ const missingOperand = (command: string, what: string): ParseError => ({
   kind: 'error',
   message: `${command} needs ${what}`,
 });
+const requiresHttp = (flag: string): ParseError => ({
+  kind: 'error',
+  message: `${flag} requires ${HTTP_FLAG} — it configures the verify endpoint ${HTTP_FLAG} starts`,
+});
 const unknownCommand = (command: string): ParseError => ({
   kind: 'error',
   message: `unknown command '${command}'`,
@@ -347,6 +434,11 @@ function parseServeFlags(
     }
     i++;
   }
+  // Without `--http` these flags configure an endpoint nothing starts, and they were accepted and
+  // silently ignored — worse than being rejected, because the whole reason to pass them is to be
+  // honoured (#687).
+  if (!http && httpPort !== undefined) return requiresHttp(HTTP_PORT_FLAG);
+  if (!http && httpToken !== undefined) return requiresHttp(HTTP_TOKEN_FLAG);
   return {
     kind: 'ok',
     port,
@@ -399,18 +491,21 @@ type VerifySuffix =
       port: number;
       timeoutMs?: number;
       storageState?: string;
+      sessionId?: string;
     }
   | { kind: 'error'; message: string };
 
 /**
- * Parse `verify <url> [--port N] [--headed] [--timeout N] [--storage-state <file>]`. The first
- * non-flag token is the preview URL. `defaultPort` is already env + `.reticle.json` + 4400.
+ * Parse `verify <url> [--port N] [--headed] [--timeout N] [--storage-state <file>]
+ * [--session-id <id>]`. The first non-flag token is the preview URL. `defaultPort` is already
+ * env + `.reticle.json` + 4400.
  */
 function parseVerifySuffix(args: string[], defaultPort: number): VerifySuffix {
   let headless = true;
   let url: string | undefined;
   let timeoutMs: number | undefined;
   let storageState: string | undefined;
+  let sessionId: string | undefined;
   let port = defaultPort;
   let i = 0;
   while (i < args.length) {
@@ -437,6 +532,11 @@ function parseVerifySuffix(args: string[], defaultPort: number): VerifySuffix {
       const v = args[i];
       if (v === undefined) return missingValue(STORAGE_STATE_FLAG);
       storageState = v;
+    } else if (arg === SESSION_ID_FLAG) {
+      i++;
+      const v = args[i];
+      if (v === undefined) return missingValue(SESSION_ID_FLAG);
+      sessionId = v;
     } else if (arg.startsWith('--')) {
       return unknownArgument(arg);
     } else if (url === undefined) {
@@ -454,6 +554,7 @@ function parseVerifySuffix(args: string[], defaultPort: number): VerifySuffix {
     port,
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(storageState !== undefined ? { storageState } : {}),
+    ...(sessionId !== undefined ? { sessionId } : {}),
   };
 }
 
@@ -465,6 +566,19 @@ type InitFlags =
       dryRun: boolean;
       install: boolean;
       app: string | undefined;
+      flow: string | undefined;
+      env: string[];
+      filesOnly: boolean;
+      captureBodies: boolean;
+      json: boolean;
+      drive: boolean;
+      relaunch: boolean;
+      open: boolean;
+      agents: boolean;
+      url: string | undefined;
+      timeoutSeconds: number | undefined;
+      driveModel: string | undefined;
+      licenseKey: string | undefined;
     }
   | { kind: 'error'; message: string };
 
@@ -474,6 +588,20 @@ function parseInitFlags(args: string[]): InitFlags {
   let dryRun = false;
   let install = true;
   let app: string | undefined;
+  let flow: string | undefined;
+  // Repeatable: one variable per flag, so a value containing spaces or `=` needs no quoting rules.
+  const env: string[] = [];
+  let filesOnly = false;
+  let captureBodies = false;
+  let json = false;
+  let drive = true;
+  let open = true;
+  let relaunch = false;
+  let agents = true;
+  let url: string | undefined;
+  let timeoutSeconds: number | undefined;
+  let driveModel: string | undefined;
+  let licenseKey: string | undefined;
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
@@ -492,6 +620,52 @@ function parseInitFlags(args: string[]): InitFlags {
       const value = args[i];
       if (value === undefined) return missingValue(APP_FLAG);
       app = value;
+    } else if (arg === FLOW_FLAG) {
+      i++;
+      const value = args[i];
+      if (value === undefined) return missingValue(FLOW_FLAG);
+      flow = value;
+    } else if (arg === ENV_FLAG) {
+      i++;
+      const value = args[i];
+      if (value === undefined) return missingValue(ENV_FLAG);
+      env.push(value);
+    } else if (arg === FILES_ONLY_FLAG) {
+      filesOnly = true;
+    } else if (arg === CAPTURE_BODIES_FLAG) {
+      captureBodies = true;
+    } else if (arg === JSON_FLAG) {
+      json = true;
+    } else if (arg === NO_DRIVE_FLAG) {
+      drive = false;
+    } else if (arg === NO_OPEN_FLAG) {
+      open = false;
+    } else if (arg === RELAUNCH_FLAG) {
+      relaunch = true;
+    } else if (arg === NO_AGENTS_FLAG) {
+      agents = false;
+    } else if (arg === URL_FLAG) {
+      i++;
+      const value = args[i];
+      if (value === undefined) return missingValue(URL_FLAG);
+      url = value;
+    } else if (arg === LICENSE_FLAG) {
+      i++;
+      const value = args[i];
+      if (value === undefined) return missingValue(LICENSE_FLAG);
+      licenseKey = value;
+    } else if (arg === DRIVE_MODEL_FLAG) {
+      i++;
+      const value = args[i];
+      if (value === undefined) return missingValue(DRIVE_MODEL_FLAG);
+      driveModel = value;
+    } else if (arg === TIMEOUT_FLAG_INIT) {
+      i++;
+      const value = args[i];
+      if (value === undefined) return missingValue(TIMEOUT_FLAG_INIT);
+      const seconds = parseInt(value, 10);
+      if (isNaN(seconds)) return notANumber(TIMEOUT_FLAG_INIT, value);
+      timeoutSeconds = seconds;
     } else if (arg === NO_MCP_FLAG) {
       mcp = false;
     } else if (arg === NO_INSTALL_FLAG) {
@@ -505,7 +679,27 @@ function parseInitFlags(args: string[]): InitFlags {
     }
     i++;
   }
-  return { kind: 'ok', port, mcp, dryRun, install, app };
+  return {
+    kind: 'ok',
+    port,
+    mcp,
+    dryRun,
+    install,
+    app,
+    flow,
+    env,
+    filesOnly,
+    captureBodies,
+    json,
+    drive,
+    open,
+    relaunch,
+    agents,
+    url,
+    timeoutSeconds,
+    driveModel,
+    licenseKey,
+  };
 }
 
 /** Pure CLI arg parser — exported for unit tests. argv = process.argv.slice(2). */
@@ -580,6 +774,19 @@ export function parseCliArgs(
         dryRun: r.dryRun,
         install: r.install,
         app: r.app,
+        flow: r.flow,
+        env: r.env,
+        filesOnly: r.filesOnly,
+        captureBodies: r.captureBodies,
+        json: r.json,
+        drive: r.drive,
+        open: r.open,
+        relaunch: r.relaunch,
+        agents: r.agents,
+        url: r.url,
+        timeoutSeconds: r.timeoutSeconds,
+        driveModel: r.driveModel,
+        licenseKey: r.licenseKey,
       };
     }
     case SERVE_COMMAND: {
@@ -681,6 +888,7 @@ export function parseCliArgs(
         port: r.port,
         ...(r.timeoutMs !== undefined ? { timeoutMs: r.timeoutMs } : {}),
         ...(r.storageState !== undefined ? { storageState: r.storageState } : {}),
+        ...(r.sessionId !== undefined ? { sessionId: r.sessionId } : {}),
       };
     }
     case CAPSULES_COMMAND:

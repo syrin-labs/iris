@@ -3,7 +3,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolveProjectCloud } from './cloud/cloud-config.js';
 import { startSyncDaemon } from './cloud/sync-daemon.js';
-import { PROJECT_REGISTRY_FILE, emptyProjectRegistry, parseProjectRegistry } from '@reticlehq/core';
+import {
+  PROJECT_REGISTRY_FILE,
+  emptyProjectRegistry,
+  parseProjectRegistry,
+  projectCandidates,
+} from '@reticlehq/core';
 import { discoverProjectConfigs, type ConfigDiscovery } from './cli/config-discovery.js';
 import {
   projectCandidatesFrom,
@@ -32,6 +37,8 @@ import { openLoopbackAlias } from './daemon/loopback-alias.js';
 import { reportAppInstrumented } from './telemetry/app-instrumented.js';
 import { resolveBridgeSecurityWithAutoToken } from './bridge/bridge-security.js';
 import { Bridge } from './bridge/bridge.js';
+import { sdkFixForDirectory } from './version/sdk-fix.js';
+import { SERVER_VERSION } from './version/server-version.js';
 import { BaselineStore } from './project/baselines.js';
 import { RecordingStore } from './flows/recordings.js';
 import { initImpact } from './impact/impact-recorder.js';
@@ -57,6 +64,10 @@ import { statusPayload } from './status-payload.js';
 import { CdpRealInputProvider, LaunchedRealInputProvider } from './input/real-input.js';
 import { cpus } from 'node:os';
 import { BrowserPool } from './pool/browser-pool.js';
+import {
+  AGENT_ALREADY_DRIVING_ELSEWHERE,
+  shouldGreetWithLeaseNotice,
+} from './session/lease-visibility.js';
 import { playwrightLauncher, resolveMaxContexts } from './pool/playwright-launcher.js';
 import { LeaseReaper } from './pool/lease-reaper.js';
 import { readJournalEnabled, readProjectId } from './cli/cli-port.js';
@@ -359,7 +370,14 @@ function attachJournal(
 ): void {
   const journalAttach = makeJournalAttach(deps);
   const ambientStore = new AmbientStore(deps.fs, deps.reticleRoot);
+  // Built once, not per session: the resolver walks config discovery and the user-level registry,
+  // and neither changes between two tabs connecting a second apart.
+  const resolveArtifactRoot = artifactRootResolver(deps.reticleRoot);
   bridge.attachSessionCreate((session) => {
+    // Stamp the project's own `.reticle` before ANY counter fires for this session. Without it every
+    // verdict is recorded against wherever the daemon was started, which is how one app's evidence
+    // reached a different account's production dashboard.
+    session.artifactRoot = resolveArtifactRoot(session.projectId).root;
     journalAttach(session);
     // Seed the learned ambient map so a fresh session starts knowing which regions churn, instead of
     // re-learning from zero. Best-effort + async: a late seed still helps, a failure is silent.
@@ -437,6 +455,15 @@ async function resolveRealInput(
 /** Start the Reticle bridge (browser WS endpoint) and, by default, the MCP stdio server. */
 
 /**
+ * The SDK-upgrade sentence for THIS project's package.json, evaluated at each HELLO so a
+ * just-edited manifest is what we name. Falls back to the framework-neutral sensor when cwd is
+ * not an app.
+ */
+function sdkFixForCwd(): string {
+  return sdkFixForDirectory(SERVER_VERSION, process.cwd());
+}
+
+/**
  * Resolve a session's artifact root, from everything this machine knows about where projects live.
  *
  * Built once per daemon and closed over by every tool call. The two sources are read lazily and
@@ -444,6 +471,38 @@ async function resolveRealInput(
  * this daemon is up, and a resolution that used a startup snapshot would keep answering with a map
  * from before the project the agent is now driving existed.
  */
+/**
+ * Every `.reticle` root on this machine that sync should consider, from the same two sources the
+ * artifact resolver uses.
+ *
+ * Read on every call rather than snapshotted, for the same reason: `reticle link` can run in
+ * another terminal while this daemon is up, and a startup snapshot would keep that repo silent
+ * until somebody restarted a process they have no reason to suspect.
+ *
+ * Returns directories that MIGHT be linked; the caller resolves each and skips the ones that are
+ * not. Deciding that here would mean reading every cloud.json on every tick.
+ */
+function knownProjectRoots(): string[] {
+  const roots = new Set<string>();
+  try {
+    const path = join(homedir(), ReticleDir.ROOT, PROJECT_REGISTRY_FILE);
+    if (existsSync(path)) {
+      const registry = parseProjectRegistry(JSON.parse(readFileSync(path, 'utf8')));
+      for (const candidate of projectCandidates(registry))
+        roots.add(join(candidate.directory, ReticleDir.ROOT));
+    }
+  } catch {
+    // A registry that cannot be read is an empty one — never a reason to stop syncing.
+  }
+  try {
+    for (const config of discoverProjectConfigs(process.cwd()).found)
+      roots.add(join(config.directory, ReticleDir.ROOT));
+  } catch {
+    // Same: a diagnostic walk that throws must not take the sync loop with it.
+  }
+  return [...roots];
+}
+
 function artifactRootResolver(daemonRoot: string): (projectId: string | undefined) => ArtifactRoot {
   return (projectId) => {
     let registry = emptyProjectRegistry();
@@ -477,7 +536,7 @@ export async function start(options: StartOptions = {}): Promise<RunningServer> 
   // "nothing recorded yet" over a month of history on disk is the worst version of this feature.
   initImpact({ reticleRoot: options.reticleRoot ?? join(process.cwd(), ReticleDir.ROOT) });
   const security = await resolveBridgeSecurityWithAutoToken(options);
-  const bridge = new Bridge({ port, ...security });
+  const bridge = new Bridge({ port, sdkFix: sdkFixForCwd, ...security });
   // Server-authoritative liveness: a Node-side reaper (immune to browser throttling) ends sessions
   // whose agent has gone idle, so a forgotten/crashed agent never leaves the HUD "running" forever.
   const reaper = new SessionReaper(bridge.sessions);
@@ -516,6 +575,25 @@ export async function start(options: StartOptions = {}): Promise<RunningServer> 
     pool = createBrowserPool(options.headless ?? true);
     leaseReaper = new LeaseReaper(pool);
     leaseReaper.start();
+    /*
+     * Tell a tab that ARRIVES during a lease why its HUD is silent.
+     *
+     * The acquire-time notice only reaches tabs already connected, so opening the app — or merely
+     * reloading it — while an agent held a lease landed somebody on a dark HUD with nothing
+     * explaining it. That is the more common way to hit it, because a person opens the dashboard
+     * precisely when they want to watch. Reported as "dashboard is being watched, but the agent chat
+     * shows nothing".
+     *
+     * Registered separately from the journal hook rather than folded into it: this one needs the
+     * pool, which does not exist on the no-drive path, and session-create handlers are additive.
+     */
+    const leasePool = pool;
+    bridge.attachSessionCreate((session) => {
+      const leasedIds = leasePool.leasedSessionIds();
+      const leasedProjects = leasedIds.map((id) => bridge.sessions.get(id)?.projectId);
+      if (shouldGreetWithLeaseNotice(session, leasedIds, leasedProjects))
+        session.pushNarration(AGENT_ALREADY_DRIVING_ELSEWHERE);
+    });
     const deps = {
       sessions: bridge.sessions,
       pool,
@@ -582,15 +660,25 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
 
   const security = await resolveBridgeSecurityWithAutoToken(options);
   const shared = createSharedServer(security.token === undefined ? {} : { token: security.token });
-  const bridge = new Bridge({ port, server: shared.httpServer, ...security });
+  const bridge = new Bridge({ port, server: shared.httpServer, sdkFix: sdkFixForCwd, ...security });
   // The daemon owns listen (below), so the real bind error is reported there; absorb bridge.ready's
   // mirror rejection so a port collision can't surface as an unhandled promise rejection.
   void bridge.ready.catch(() => undefined);
+  // Declared before attachStatus so the closure below can report it; assigned further down, before
+  // listen — the first status request cannot arrive until after the bind.
+  let verifyHttp: { server: Server; port: number } | undefined;
   // `reticle status` GETs this for a live, at-a-glance view of connected tabs + their health.
   // The same diagnosis agents get on an empty `reticle_sessions`, so `reticle status` — the
   // most-run command in the field — stops answering "sessionCount: 0" and nothing else.
+  // `verifyPort` rides along so a later `serve --http` can tell whether this daemon already honours
+  // the requested `--http-port` instead of silently ignoring the flag (#687).
   shared.attachStatus(() =>
-    statusPayload(bridge.sessions.count(), bridge.sessions.list(), bridge.sessions.noSessionHint()),
+    statusPayload(
+      bridge.sessions.count(),
+      bridge.sessions.list(),
+      bridge.sessions.noSessionHint(),
+      verifyHttp?.port,
+    ),
   );
   // Agent-independent presence: the daemon outlives any single agent, so when the LAST agent's MCP
   // connection drops (it stopped, or is waiting on the human), end every session and push a clear
@@ -635,6 +723,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
   const cloudSync = startSyncDaemon({
     reticleRoot,
     cloud: () => resolveProjectCloud(fs, reticleRoot, homedir(), process.env),
+    // Every OTHER linked repo on this machine, not just the directory the daemon was started in.
+    // One daemon serves many projects, and pushing only its own root left the rest silently
+    // reporting nothing — indistinguishable, on the dashboard, from nobody having verified anything.
+    otherRoots: () => Promise.resolve(knownProjectRoots()),
+    cloudFor: (root) => resolveProjectCloud(fs, root, homedir(), process.env),
   });
   // Scope auto-selection to the active project (from .reticle.json) so a stray tab from another app is
   // never picked when the agent omits a sessionId. Explicit per-call scope/sessionId still overrides.
@@ -660,6 +753,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
     project,
     fs,
     reticleRoot,
+    // The long-lived daemon needs this MORE than the standalone MCP process does, not less: it is
+    // the one that outlives a single project and serves every app on the machine. Omitting it here
+    // silently disabled per-session artifact resolution for every agent that attaches to a running
+    // daemon — the common case — so flows were listed, loaded and healed against wherever the
+    // daemon happened to be launched. Wired in only one of the two places, a resolver is a resolver
+    // that does not run.
+    artifactRootFor: artifactRootResolver(reticleRoot),
     now,
     bridgePort: port,
     browserProbe: probeChromium,
@@ -686,7 +786,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
   // Optional OEM/CI verify endpoint: a host platform POSTs to /verify and gets an ReticleVerificationRun,
   // driving the same flow-replay machinery the agent uses — no MCP stdio, no human. Each verdict is
   // persisted via RunStore. Localhost-bound + token-guarded. Off unless `reticle serve --http`.
-  let verifyHttp: { server: Server; port: number } | undefined;
+  // (`verifyHttp` itself is declared above attachStatus, which reports its port.)
   if (true === options.httpVerify) {
     // Wakes cloud sync when the HTTP verify server persists a run — that path does not push
     // inline the way the MCP one does, so without this its runs waited for the timer.

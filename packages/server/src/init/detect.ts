@@ -14,6 +14,23 @@ export const Framework = {
    */
   NUXT: 'nuxt',
   VITE: 'vite',
+  /**
+   * React Router in FRAMEWORK mode (v7's `@react-router/dev`, the successor to Remix).
+   *
+   * Vite-based, and it renders HTML through its own request handler — so the Vite plugin's
+   * `transformIndexHtml` injection never fires and the connect script never reaches the page. It
+   * used to fall through to `Framework.VITE`, where `init` wired the plugin, reported every step
+   * green, and produced zero sessions: confirmed by a reporter curling the SSR'd HTML (no
+   * `reticle-connect` anywhere) with the daemon showing no session for 20+ minutes (#678).
+   *
+   * The same class as SvelteKit and Astro below, and detected in the same place and for the same
+   * reason: a framework that owns its own HTML rendering is invisible to the injection hook.
+   *
+   * Library mode — `react-router` as a plain dependency with no `@react-router/dev` — is NOT this.
+   * That app renders through its own `index.html` and the plugin works, so it stays on the Vite
+   * path.
+   */
+  REACT_ROUTER: 'react-router',
   SVELTEKIT: 'sveltekit',
   ASTRO: 'astro',
   /** Create React App. No config file exists, so `react-scripts` in the dependencies is the signal. */
@@ -70,6 +87,17 @@ export interface Detection {
    */
   typescript: boolean;
   reactMajor: number | undefined;
+  /**
+   * `react-scripts`' major, when the project has it. `undefined` on every other stack.
+   *
+   * Load-bearing below 5: react-scripts 4 runs webpack 4, whose parser predates optional chaining
+   * and logical assignment. `@reticlehq/browser` ships both untranspiled, and react-scripts excludes
+   * `node_modules` from Babel, so the build dies inside our `dist/` before a session can exist
+   * (#680). The failure has no diagnostic of its own -- the app simply does not compile.
+   *
+   * Optional so every existing fixture keeps compiling without naming it; `detect` always sets it.
+   */
+  reactScriptsMajor?: number | undefined;
   /** React 19 dropped _debugSource, so it needs the build-time source-map stamp. */
   needsSourceMapping: boolean;
   packageManager: PackageManager;
@@ -78,6 +106,11 @@ export interface Detection {
 const NEXT_CONFIGS = ['next.config.js', 'next.config.mjs', 'next.config.ts', 'next.config.cjs'];
 const VITE_CONFIGS = ['vite.config.js', 'vite.config.ts', 'vite.config.mjs', 'vite.config.mts'];
 const SVELTE_CONFIGS = ['svelte.config.js', 'svelte.config.ts', 'svelte.config.mjs'];
+const REACT_ROUTER_CONFIGS = [
+  'react-router.config.ts',
+  'react-router.config.js',
+  'react-router.config.mjs',
+];
 const NUXT_CONFIGS = ['nuxt.config.ts', 'nuxt.config.js', 'nuxt.config.mjs'];
 const ASTRO_CONFIGS = [
   'astro.config.mjs',
@@ -166,6 +199,16 @@ function detectFramework(input: DetectInput): Framework {
   if (depVersion(pkg, 'astro') !== undefined || hasAnyConfig(configFiles, ASTRO_CONFIGS)) {
     return Framework.ASTRO;
   }
+  // React Router framework mode before Vite, for the reason SvelteKit and Astro are: it renders
+  // HTML through its own request handler, so the plugin's index.html injection never fires. Keyed on
+  // `@react-router/dev` or a `react-router.config.*`, never on `react-router` itself — library mode
+  // is a plain Vite app whose index.html the plugin does reach.
+  if (
+    depVersion(pkg, '@react-router/dev') !== undefined ||
+    hasAnyConfig(configFiles, REACT_ROUTER_CONFIGS)
+  ) {
+    return Framework.REACT_ROUTER;
+  }
   if (depVersion(pkg, 'vite') !== undefined || hasAnyConfig(configFiles, VITE_CONFIGS)) {
     return Framework.VITE;
   }
@@ -194,6 +237,7 @@ export function detect(input: DetectInput): Detection {
   const reactMajor = parseMajor(depVersion(input.pkg, 'react'));
   return {
     framework: detectFramework(input),
+    reactScriptsMajor: parseMajor(depVersion(input.pkg, 'react-scripts')),
     uiLibrary: detectUiLibrary(input.pkg),
     typescript:
       hasAnyConfig(input.configFiles, TS_CONFIGS) ||
