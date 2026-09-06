@@ -1,4 +1,5 @@
 import { REDACTED_VALUE } from './constants.js';
+import { URL_RAW } from './net.js';
 
 /**
  * Wire redaction rules — which field names carry credentials, and which VALUE shapes are secrets
@@ -139,6 +140,122 @@ export function resetActiveRedactionPolicy(): void {
 /** Whether a key carries a credential, under the policy in force. */
 export function isSensitiveKey(key: string): boolean {
   return activePolicy === undefined ? defaultIsSensitiveKey(key) : activePolicy.isSensitiveKey(key);
+}
+
+/** A path segment name that is typically followed by a single-use secret token in the NEXT segment. */
+const SENSITIVE_PATH_SEGMENT =
+  /^(reset|verify|verification|confirm|activate|invite|magic|magiclink|token|key|oauth|unsubscribe|password)$/i;
+/** Only mask a following segment that looks token-like — short ids/words (`reset/form`) are left alone. */
+const PATH_TOKEN_MIN_LENGTH = 12;
+
+/**
+ * Redact credential-bearing values in a URL so they don't leak into the agent transcript / flow / run
+ * artifacts: query params (`?access_token=…`, signed-URL keys), the authority's userinfo, path-embedded
+ * tokens (`/reset/<token>`, `/invite/<token>`), and the fragment an OAuth implicit flow uses. The URL is
+ * returned byte-for-byte when nothing matched.
+ *
+ * Lives in core, beside the key rule, because it is a property of the WIRE rather than of one side of
+ * it. It was implemented in the browser SDK, which was the only consumer until the driven path began
+ * building NET_DETAIL straight from the network stack: those URLs are raw, and a second copy of this
+ * heuristic is the worst possible thing to let drift.
+ *
+ * `isSensitive` defaults to the ambient rule, which is what the browser wants. The server passes its
+ * own session policy explicitly, because a daemon serves many apps in one process and has no ambient
+ * rule to consult.
+ */
+export function redactUrl(
+  raw: string,
+  isSensitive: (key: string) => boolean = isSensitiveKey,
+): string {
+  const hashStart = raw.indexOf('#');
+  const hash = -1 === hashStart ? '' : raw.slice(hashStart);
+  const beforeHash = -1 === hashStart ? raw : raw.slice(0, hashStart);
+  const queryStart = beforeHash.indexOf('?');
+  const pathPart = -1 === queryStart ? beforeHash : beforeHash.slice(0, queryStart);
+  const query = -1 === queryStart ? '' : beforeHash.slice(queryStart + 1);
+
+  let changed = false;
+
+  // Credentials in the authority (`scheme://user:pass@host`) never belong in a transcript.
+  // Match to the LAST `@` before the path (`[^/]*@`, greedy), not the first — a password containing
+  // `@` (`user:p@ss@host`) otherwise left its tail (`ss@host`) in the clear.
+  let authority = pathPart;
+  const userinfo = /^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i.exec(pathPart);
+  if (userinfo !== null) {
+    authority = `${userinfo[1] ?? ''}${REDACTED_VALUE}@${pathPart.slice(userinfo[0].length)}`;
+    changed = true;
+  }
+
+  let newQuery = query;
+  if (query !== '') {
+    const params = new URLSearchParams(query);
+    let queryChanged = false;
+    for (const key of [...params.keys()]) {
+      if (isSensitive(key)) {
+        params.set(key, REDACTED_VALUE);
+        queryChanged = true;
+      }
+    }
+    if (queryChanged) {
+      newQuery = params.toString();
+      changed = true;
+    }
+  }
+
+  const segments = authority.split('/');
+  for (let i = 0; i + 1 < segments.length; i++) {
+    const name = segments[i];
+    const next = segments[i + 1];
+    if (
+      name !== undefined &&
+      next !== undefined &&
+      next.length >= PATH_TOKEN_MIN_LENGTH &&
+      SENSITIVE_PATH_SEGMENT.test(name)
+    ) {
+      segments[i + 1] = REDACTED_VALUE;
+      changed = true;
+    }
+  }
+
+  // OAuth implicit flow puts the access_token in the FRAGMENT (`#access_token=…`), and hash-routers carry
+  // `?token=…` in the hash — redact sensitive params there too, leaving plain anchors (`#section`) alone.
+  //
+  // The key is anchored to the delimiter that must precede it rather than being allowed to start
+  // anywhere. Unanchored, `([A-Za-z0-9_.-]+)=` can begin at every index of a long run of `-` and
+  // rescan the rest of it each time, which is quadratic in the length of the fragment. That was
+  // harmless while this only ever ran in the page on the app's own URLs; it runs in the daemon now,
+  // over URLs read off the network stack, so the input is no longer the app's to vouch for.
+  // Anchoring costs nothing: `#`, `&`, `?` and `/` are already outside the key character class, so
+  // every key this matched before began right after one of them.
+  let newHash = hash;
+  if (hash.length > 1) {
+    newHash = hash.replace(
+      /(^|[#&?/])([A-Za-z0-9_.-]+)=([^&\s]+)/g,
+      (m: string, delimiter: string, key: string) =>
+        isSensitive(key) ? `${delimiter}${key}=${REDACTED_VALUE}` : m,
+    );
+    if (newHash !== hash) changed = true;
+  }
+
+  if (!changed) return raw;
+  const queryOut = -1 === queryStart ? '' : `?${newQuery}`;
+  return `${segments.join('/')}${queryOut}${newHash}`;
+}
+
+/**
+ * Displayed URL plus, when redaction rewrote it, the raw request for graders.
+ *
+ * `url` is what the agent reads. `urlRaw` exists only so `urlContains` can still match a public
+ * path segment that the heuristic rewrote (`/auth/token/refresh-context`), and so two observations of
+ * the same request can be matched to each other. Omitted when nothing changed, so an ordinary request
+ * pays nothing.
+ */
+export function netUrlFields(
+  raw: string,
+  isSensitive: (key: string) => boolean = isSensitiveKey,
+): { url: string } | { url: string; urlRaw: string } {
+  const url = redactUrl(raw, isSensitive);
+  return url === raw ? { url } : { url, [URL_RAW]: raw };
 }
 
 /** Cap on how many declared keys travel in a hello — a bound, not a limit anyone should reach. */

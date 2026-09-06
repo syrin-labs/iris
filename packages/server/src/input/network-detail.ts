@@ -1,8 +1,11 @@
 import {
   EventType,
   REDACTED_VALUE,
+  URL_RAW,
   defaultIsSensitiveKey,
+  netUrlFields,
   scrubKnownSecrets,
+  urlForMatch,
   type RedactionPolicy,
   type ReticleEvent,
 } from '@reticlehq/core';
@@ -19,7 +22,23 @@ import { drivenRedactionPolicy } from './driven-redaction.js';
  */
 
 export interface NetworkDetail {
+  /**
+   * The URL as the agent reads it, redacted by the same rule the in-page observer applies.
+   *
+   * It arrives raw from the driver, exactly like the headers and the request body below, and it
+   * carries credentials just as routinely: a presigned upload, an OAuth callback, a single-use reset
+   * link. Redacting the other two and not this one left the one field nobody had to parse to read.
+   */
   url: string;
+  /**
+   * The URL before redaction, present only when redaction rewrote it.
+   *
+   * The grader-only match haystack, the same field and the same contract as on a NET_REQUEST: it is
+   * how `urlContains` still matches a public path segment the heuristic rewrote, and how the merge
+   * below pairs this detail with the request the SDK reported. `withoutUrlRaw` strips it before any
+   * event is rendered to an agent.
+   */
+  [URL_RAW]?: string;
   method?: string;
   status: number;
   headers: Record<string, string>;
@@ -143,7 +162,7 @@ export function buildNetworkDetail(
   policy: RedactionPolicy = DEFAULT_POLICY,
 ): NetworkDetail {
   return {
-    url: raw.url,
+    ...netUrlFields(raw.url, policy.isSensitiveKey),
     ...(raw.method === undefined ? {} : { method: raw.method }),
     status: raw.status,
     headers: projectHeaders(raw.headers, policy),
@@ -155,10 +174,18 @@ export function buildNetworkDetail(
   };
 }
 
-function keyOf(url: unknown, method: unknown): string {
+/**
+ * The merge key: method plus the RAW url when the observation kept one, else the displayed url.
+ *
+ * Never the displayed url alone. The two sides redact independently, the SDK under the page's own
+ * policy and this module under the daemon's, so the one field they were being compared on is the one
+ * field redaction is allowed to rewrite. Keying on `urlForMatch` compares what was actually
+ * requested, which is identical on both sides by construction.
+ */
+function keyOf(data: Record<string, unknown>): string {
+  const method = data['method'];
   const m = 'string' === typeof method ? method.toUpperCase() : '';
-  const u = 'string' === typeof url ? url : '';
-  return `${m} ${u}`;
+  return `${m} ${urlForMatch(data)}`;
 }
 
 /**
@@ -170,14 +197,13 @@ function keyOf(url: unknown, method: unknown): string {
 export function mergeNetworkDetail(events: readonly ReticleEvent[]): ReticleEvent[] {
   const requestByKey = new Map<string, ReticleEvent>();
   for (const e of events) {
-    if (e.type === EventType.NET_REQUEST)
-      requestByKey.set(keyOf(e.data['url'], e.data['method']), e);
+    if (e.type === EventType.NET_REQUEST) requestByKey.set(keyOf(e.data), e);
   }
   const out: ReticleEvent[] = [];
   const enriched = new Map<ReticleEvent, ReticleEvent>();
   for (const e of events) {
     if (e.type === EventType.NET_DETAIL) {
-      const match = requestByKey.get(keyOf(e.data['url'], e.data['method']));
+      const match = requestByKey.get(keyOf(e.data));
       if (match === undefined) {
         out.push(e); // unmatched detail survives on its own
         continue;
