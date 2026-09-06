@@ -223,6 +223,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 }
 ```
 
+### Streamlit
+
+Streamlit owns the top-level HTML document, so it has no template where the plain script tag below can be added. Scripts passed through `st.markdown(..., unsafe_allow_html=True)` are rendered but do not execute.
+
+With Streamlit 1.63 or newer, run `npx @reticlehq/server init` from the project. It detects a `streamlit` dependency or import and prints a copy-pasteable `st.html(..., unsafe_allow_javascript=True)` helper that loads Reticle once in the app document. Keep that helper development-only and do not commit the pairing token printed inside it.
+
 ### Plain / other frameworks
 
 Anywhere your app boots in dev:

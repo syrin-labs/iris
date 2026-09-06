@@ -438,6 +438,36 @@ export function staticPageSnippet(connectArgLiteral: string): string {
       </script>`;
 }
 
+/**
+ * Streamlit has no served HTML template, and `st.markdown` inserts script markup without executing
+ * it. Streamlit 1.63 added an explicit JavaScript boundary to `st.html`; use a classic script there
+ * so it can dynamically import the ESM SDK in the app document. A head marker makes reruns
+ * idempotent and is removed after an import failure so the next rerun can retry.
+ */
+export function streamlitPageSnippet(connectArgLiteral: string): string {
+  return `import streamlit as st
+
+st.html(
+    """
+    <script>
+      (() => {
+        if (document.getElementById('reticle-streamlit-connect')) return;
+        const marker = document.createElement('meta');
+        marker.id = 'reticle-streamlit-connect';
+        document.head.appendChild(marker);
+        void import('${CDN_SDK_URL}')
+          .then(({ reticle }) => reticle.connect(${connectArgLiteral}))
+          .catch((error) => {
+            marker.remove();
+            throw error;
+          });
+      })();
+    </script>
+    """,
+    unsafe_allow_javascript=True,
+)`;
+}
+
 export function htmlManual(
   port: number | undefined,
   projectId?: string,

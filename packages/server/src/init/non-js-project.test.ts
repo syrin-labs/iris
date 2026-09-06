@@ -8,7 +8,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { detectNonJsEcosystem, noPackageJsonMessage } from './non-js-project.js';
+import {
+  detectNonJsEcosystem,
+  detectStreamlitProject,
+  noPackageJsonMessage,
+  streamlitSetupMessage,
+} from './non-js-project.js';
 
 const withFiles =
   (...files: string[]) =>
@@ -34,6 +39,28 @@ describe('ecosystem detection', () => {
 
   it('says nothing when nothing says', () => {
     expect(detectNonJsEcosystem(withFiles('README.md'))).toBeUndefined();
+  });
+});
+
+describe('Streamlit detection', () => {
+  const detector = (files: Record<string, string>): boolean =>
+    detectStreamlitProject((file) => files[file] ?? null, Object.keys(files));
+
+  it('recognises dependency declarations and direct imports', () => {
+    expect(detector({ 'requirements.txt': 'streamlit==1.49.1\n' })).toBe(true);
+    expect(detector({ 'pyproject.toml': 'dependencies = ["streamlit>=1.40"]\n' })).toBe(true);
+    expect(detector({ 'dashboard.py': 'import streamlit as st\n' })).toBe(true);
+  });
+
+  it('does not confuse a similarly named package or prose with a Streamlit app', () => {
+    expect(detector({ 'requirements.txt': 'streamlit-option-menu\n' })).toBe(false);
+    expect(detector({ 'README.md': 'Run this Streamlit example.' })).toBe(false);
+  });
+
+  it('explains why the generic template advice does not apply', () => {
+    expect(streamlitSetupMessage()).toMatch(/no served template/i);
+    expect(streamlitSetupMessage()).toContain('st.html');
+    expect(streamlitSetupMessage()).toMatch(/app document/i);
   });
 });
 

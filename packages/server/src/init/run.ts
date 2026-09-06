@@ -7,7 +7,11 @@
 import { dirname, join } from 'node:path';
 import { CSP_FILES } from './csp-doctor.js';
 import { preflightRefusal } from './preflight.js';
-import { noPackageJsonMessage } from './non-js-project.js';
+import {
+  detectStreamlitProject,
+  noPackageJsonMessage,
+  streamlitSetupMessage,
+} from './non-js-project.js';
 import { devCommandFrom } from './dev-script.js';
 import { restartHint, FEEDBACK_HINT } from './closing-hint.js';
 import { spanSync } from '../trace.js';
@@ -65,7 +69,12 @@ import {
   CURSOR_PROJECT_MARKER,
 } from './mcp-clients.js';
 import { deriveProjectId, packageName } from './project-id.js';
-import { VITE_DEV_MODULE_PATH, connectArgWithToken, staticPageSnippet } from './snippets.js';
+import {
+  VITE_DEV_MODULE_PATH,
+  connectArgWithToken,
+  staticPageSnippet,
+  streamlitPageSnippet,
+} from './snippets.js';
 import { CLAUDE_COMMAND_PATH, CURSOR_COMMAND_PATH } from './slash-command.js';
 import { SERVER_VERSION } from '../version/server-version.js';
 import { InitFailure, reportInitOutcome } from '../telemetry/init-telemetry.js';
@@ -832,18 +841,22 @@ function runInitSteps(options: InitOptions, io: InitIo): InitResult {
   const redirectedEarly = redirectToWorkspaceApp(options, io, pkgRaw ?? {}, runInit);
   if (redirectedEarly !== null) return redirectedEarly;
   if (null === pkgRaw) {
+    const streamlit = detectStreamlitProject((file) => io.readFile(file), io.rootFiles());
     io.print(
       // Two genuinely different situations used to share one sentence: a JS developer in the wrong
       // directory, and a project that is not JavaScript at all. The second reads the old wording as
       // a path problem and goes looking for a directory that cannot exist — reported from a
       // Streamlit app, where the search continued into hunting for a browser bundle to inject by
       // hand before the real answer surfaced.
-      noPackageJsonMessage((file) => io.exists(join(options.cwd, file))),
+      streamlit
+        ? streamlitSetupMessage()
+        : noPackageJsonMessage((file) => io.exists(join(options.cwd, file))),
     );
     // The message says "add the snippet below". Print the snippet, or the message is the same
     // broken promise in the other direction. `connectArg` carries the port; there is no projectId
     // to bake, because a projectId is derived from the package.json that does not exist here.
-    io.print(staticPageSnippet(connectArgWithToken(options.port, undefined, readPairingToken())));
+    const connect = connectArgWithToken(options.port, undefined, readPairingToken());
+    io.print(streamlit ? streamlitPageSnippet(connect) : staticPageSnippet(connect));
     // The onboarding funnel had NO instrumentation, so a setup that died here was indistinguishable
     // from someone who never ran the command — the two failure modes with the most different fixes.
     reportInitOutcome({ ok: false, reason: InitFailure.NO_PACKAGE_JSON });

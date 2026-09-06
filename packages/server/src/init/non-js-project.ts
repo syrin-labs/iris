@@ -39,6 +39,37 @@ const ECOSYSTEM_MARKERS: readonly (readonly [string, string])[] = [
 /** The one ecosystem where no directory, front end or flag could ever help. */
 const FLUTTER = 'Flutter';
 
+const STREAMLIT_DEPENDENCY_FILES = ['requirements.txt', 'pyproject.toml', 'Pipfile'];
+const STREAMLIT_DEPENDENCY = /(?:^|[\n,"'])\s*streamlit(?:\[[^\]\n]*\])?\s*(?:[<>=!~;]|$)/im;
+const STREAMLIT_IMPORT =
+  /(?:^|\n)\s*(?:import\s+streamlit(?:\s+as\s+\w+)?|from\s+streamlit(?:\.|\s+import))/m;
+
+/** Whether the no-package project is specifically a Streamlit app. */
+export function detectStreamlitProject(
+  readFile: (file: string) => string | null,
+  rootFiles: readonly string[],
+): boolean {
+  for (const file of STREAMLIT_DEPENDENCY_FILES) {
+    const source = readFile(file);
+    if (null !== source && STREAMLIT_DEPENDENCY.test(source)) return true;
+  }
+  for (const file of rootFiles.filter((name) => name.endsWith('.py'))) {
+    const source = readFile(file);
+    if (null !== source && STREAMLIT_IMPORT.test(source)) return true;
+  }
+  return false;
+}
+
+/** The Streamlit-specific explanation printed immediately before its generated helper. */
+export function streamlitSetupMessage(): string {
+  return (
+    'This is a Streamlit project. Streamlit owns the top-level HTML document, so there is no ' +
+    'served template for the generic script tag, and scripts passed to `st.markdown` do not run. ' +
+    'Use Streamlit 1.63 or newer and add the `st.html` helper below during development. It runs ' +
+    'Reticle in the app document and guards against duplicate connections across reruns.'
+  );
+}
+
 /** The ecosystem this directory looks like, or undefined when nothing says. */
 export function detectNonJsEcosystem(exists: (file: string) => boolean): string | undefined {
   for (const [marker, name] of ECOSYSTEM_MARKERS) {
