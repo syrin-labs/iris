@@ -167,8 +167,7 @@ export const OPTIMIZER_OPTIONS_KEY = {
   ESBUILD: 'esbuildOptions',
   ROLLDOWN: 'rolldownOptions',
 } as const;
-export type OptimizerOptionsKey =
-  (typeof OPTIMIZER_OPTIONS_KEY)[keyof typeof OPTIMIZER_OPTIONS_KEY];
+type OptimizerOptionsKey = (typeof OPTIMIZER_OPTIONS_KEY)[keyof typeof OPTIMIZER_OPTIONS_KEY];
 
 /**
  * Which key carries optimizer options on this Vite.
