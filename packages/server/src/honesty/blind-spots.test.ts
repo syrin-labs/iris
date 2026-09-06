@@ -145,6 +145,11 @@ describe('absenceBlindSpotNote', () => {
     expect(absenceBlindSpotNote(pred, [])).toBeUndefined();
   });
 
+  it('not(element { absent: true }) is a double negative — presence — no note', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'element', absent: true } };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
   it('scoped cross-origin check works through not-unwrap', () => {
     const pred: AbsencePred = {
       kind: 'not',
