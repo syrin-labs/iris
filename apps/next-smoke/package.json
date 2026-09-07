@@ -7,7 +7,7 @@
     "dev": "next dev -p 3100"
   },
   "dependencies": {
-    "next": "^16.3.2",
+    "next": "^16.3.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
@@ -15,9 +15,9 @@
     "@reticlehq/browser": "workspace:*",
     "@reticlehq/next": "workspace:*",
     "@reticlehq/react": "workspace:*",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.4.1",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.7",
     "typescript": "^5.7.3"
   }
 }

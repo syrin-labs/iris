@@ -33,9 +33,9 @@
     "@reticlehq/browser": "workspace:*",
     "@reticlehq/electron": "workspace:*",
     "@reticlehq/vite-plugin": "workspace:*",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.4.1",
     "@vitejs/plugin-vue": "^6.0.2",
-    "electron": "^44.0.0",
+    "electron": "^44.1.1",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.1",
@@ -43,7 +43,7 @@
     "prettier": "^3.7.4",
     "typescript": "^5.9.3",
     "vite": "^7.2.6",
-    "vue": "^3.5.25",
+    "vue": "^3.5.42",
     "vue-eslint-parser": "^10.2.0",
     "vue-tsc": "^3.1.6"
   }
