@@ -53,14 +53,33 @@ const CHROMIUM_DIR = /^chromium-\d+$/;
 const CHROMIUM_SEGMENT = /[\\/](chromium-\d+)[\\/]/;
 
 /**
- * The install command, pinned when we know what to pin to.
+ * Pin an `npx playwright <subcommand>` invocation to the playwright the daemon actually bundles.
  *
  * Unpinned is still the right fallback: a wrong-revision download is a bad outcome, but no command
- * at all is a worse one.
+ * at all is a worse one. Shared by `chromiumInstallCommand` and `chromiumInstallDepsCommand`, which
+ * differ only in the subcommand they need pinned.
  */
-export function chromiumInstallCommand(playwrightVersion?: string): string {
+function pinnedPlaywrightCommand(subcommand: string, playwrightVersion?: string): string {
   const pin = playwrightVersion === undefined ? 'playwright' : `playwright@${playwrightVersion}`;
-  return `npx ${pin} install chromium`;
+  return `npx ${pin} ${subcommand}`;
+}
+
+/** The install command, pinned when we know what to pin to. */
+export function chromiumInstallCommand(playwrightVersion?: string): string {
+  return pinnedPlaywrightCommand('install chromium', playwrightVersion);
+}
+
+/**
+ * The install-deps command, pinned the same way `chromiumInstallCommand` is.
+ *
+ * A missing OS shared library (e.g. `libnspr4.so`) is a different failure from a missing browser
+ * binary: the binary is already there, but Playwright's own host-requirement check refuses to launch
+ * it. `npx playwright install chromium` does nothing for that case — the fix is `install-deps`, and
+ * it needs the same pin for the same reason: unpinned, `npx` can resolve a different playwright than
+ * the one the daemon bundles.
+ */
+export function chromiumInstallDepsCommand(playwrightVersion?: string): string {
+  return pinnedPlaywrightCommand('install-deps chromium', playwrightVersion);
 }
 
 /**

@@ -10,7 +10,9 @@ import {
   RunProfile,
   RunTrigger,
   VerdictStatus,
+  VerifyPhase,
   type FlowReplayResult,
+  type VerifyProgressEvent,
 } from '@reticlehq/core';
 import { ReticleRunner, type RunnerPort, type VerifyOptions } from './reticle-runner.js';
 
@@ -118,5 +120,110 @@ describe('ReticleRunner.verify', () => {
     expect(run.verdict.status).toBe(VerdictStatus.FAIL);
     expect(run.verdict.blockingRisks).toBe(1);
     expect(run.changedFiles[0]?.risk).toContain(RiskSurface.PAYMENT);
+  });
+});
+
+/**
+ * Narration for a run in flight.
+ *
+ * A verification is silent for its whole duration — the artifact only exists at the end — so from
+ * outside, a run that is working and a run that has died look identical. That ambiguity is what left
+ * somebody watching a dashboard for fifteen minutes.
+ *
+ * The property worth protecting is not that events are emitted. It is that they can NEVER affect the
+ * run: this is a reporter, and a reporter that can fail the thing it reports on is worse than no
+ * reporter at all.
+ */
+describe('ReticleRunner.verify progress', () => {
+  const collect = async (names: string[]): Promise<VerifyProgressEvent[]> => {
+    const port = fakePort(
+      {
+        login: replay('login', ReplayStatus.OK),
+        checkout: replay('checkout', ReplayStatus.ERROR, {
+          error: { code: 'e', message: 'boom' },
+        }),
+      },
+      names,
+    );
+    const seen: VerifyProgressEvent[] = [];
+    await new ReticleRunner(port).verify({ ...opts, onProgress: (e) => seen.push(e) });
+    return seen;
+  };
+
+  /* "Step 3" without "of 12" does not answer the question somebody watching is actually asking. */
+  it('announces the suite size before replaying anything', async () => {
+    const seen = await collect(['login', 'checkout']);
+    const first = seen[0];
+    expect(first?.phase).toBe(VerifyPhase.FLOWS_FOUND);
+    expect(first?.total).toBe(2);
+  });
+
+  it('brackets every flow with a start and a finish, in order', async () => {
+    const seen = await collect(['login', 'checkout']);
+    const flowEvents = seen.filter(
+      (e) => e.phase === VerifyPhase.FLOW_STARTED || e.phase === VerifyPhase.FLOW_FINISHED,
+    );
+    expect(flowEvents.map((e) => [e.phase, e.name])).toEqual([
+      [VerifyPhase.FLOW_STARTED, 'login'],
+      [VerifyPhase.FLOW_FINISHED, 'login'],
+      [VerifyPhase.FLOW_STARTED, 'checkout'],
+      [VerifyPhase.FLOW_FINISHED, 'checkout'],
+    ]);
+  });
+
+  it('numbers each flow against the total, so a watcher can see how far along it is', async () => {
+    const seen = await collect(['login', 'checkout']);
+    const started = seen.filter((e) => e.phase === VerifyPhase.FLOW_STARTED);
+    expect(started.map((e) => [e.index, e.total])).toEqual([
+      [0, 2],
+      [1, 2],
+    ]);
+  });
+
+  /* A convenience for colouring a row mid-run. The verdict still comes from the graded artifact. */
+  it('says whether each flow replayed cleanly', async () => {
+    const seen = await collect(['login', 'checkout']);
+    const finished = seen.filter((e) => e.phase === VerifyPhase.FLOW_FINISHED);
+    expect(finished.map((e) => [e.name, e.ok])).toEqual([
+      ['login', true],
+      ['checkout', false],
+    ]);
+  });
+
+  it('says when the flows are done and the artifact is being graded', async () => {
+    const seen = await collect(['login']);
+    expect(seen.at(-1)?.phase).toBe(VerifyPhase.GRADING);
+  });
+
+  it('stamps every event from the injected clock, never a wall clock', async () => {
+    const seen = await collect(['login']);
+    expect(seen.every((e) => 'number' === typeof e.at && e.at > 0)).toBe(true);
+  });
+
+  /*
+   * THE rule. A dashboard, a log or an editor is watching; none of them is worth failing a
+   * verification for, and a reporter that can take the run down with it is a liability.
+   */
+  it('completes the run even when the listener throws on every event', async () => {
+    const port = fakePort({ login: replay('login', ReplayStatus.OK) }, ['login']);
+    const run = await new ReticleRunner(port).verify({
+      ...opts,
+      onProgress: () => {
+        throw new Error('listener exploded');
+      },
+    });
+    expect(run.verdict.status).toBe(VerdictStatus.PASS);
+  });
+
+  it('runs exactly as before when nobody is listening', async () => {
+    const port = fakePort({ login: replay('login', ReplayStatus.OK) }, ['login']);
+    const run = await new ReticleRunner(port).verify(opts);
+    expect(run.verdict.status).toBe(VerdictStatus.PASS);
+  });
+
+  it('emits a suite size of zero rather than nothing when there are no flows', async () => {
+    const seen = await collect([]);
+    expect(seen.map((e) => e.phase)).toEqual([VerifyPhase.FLOWS_FOUND, VerifyPhase.GRADING]);
+    expect(seen[0]?.total).toBe(0);
   });
 });

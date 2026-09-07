@@ -58,7 +58,7 @@ export const findCredential = (
   return key;
 };
 
-export interface CredentialWrite {
+interface CredentialWrite {
   projectId: string;
   url: string;
   key: string;

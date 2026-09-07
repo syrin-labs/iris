@@ -18,7 +18,7 @@ import type { Feedback } from '@reticlehq/core';
 /** Reports live beside the rest of the workspace, not in a temp dir somebody has to be told about. */
 const FEEDBACK_SUBDIR = 'feedback';
 
-export interface SavedFeedback {
+interface SavedFeedback {
   path: string;
   /** A ready-to-run command that turns the file into an issue. */
   command: string;

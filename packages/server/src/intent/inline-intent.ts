@@ -36,7 +36,7 @@ const SLUG_EDGES = /^-+|-+$/g;
  * the intent, and a bare digest is unreadable; the digest is there because the slug is truncated and
  * two long statements sharing a prefix must not share a row.
  */
-export function inlineIntentId(statement: string): string {
+function inlineIntentId(statement: string): string {
   const slug = statement
     .toLowerCase()
     .replace(NON_SLUG, SLUG_SEPARATOR)

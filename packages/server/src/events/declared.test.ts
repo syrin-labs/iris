@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { PredicateKind } from '@reticlehq/core';
+import { PredicateKind, QueryBy } from '@reticlehq/core';
 import { declaredExpectations, declaresBodyIndependentChannel } from './declared.js';
 
 describe('a declared failing request is a declaration, not a contradiction', () => {
@@ -32,7 +32,7 @@ describe('a declared failing request is a declaration, not a contradiction', () 
         { kind: PredicateKind.CONSOLE, absent: true },
       ],
     });
-    expect(declared.netFailures).toHaveLength(1);
+    expect(declared.netFailures).toContainEqual({ urlContains: '/api/login', status: 401 });
     expect(declared.rendersContent).toBe(true);
   });
 
@@ -111,6 +111,58 @@ describe('a declared visible consequence', () => {
         ],
       }).rendersContent,
     ).toBe(false);
+  });
+});
+
+/**
+ * The form an agent actually writes for an auth error path is the denial on screen, not
+ * `{ net, status: 401 }`. The 401 is then read as ui-advanced-request-failed against the proof
+ * the caller already had. A denial phrase or an alert role is the declaration; a greeting is not.
+ */
+describe('a declared denial on screen is a declared auth failure', () => {
+  it('reads "Access denied" as 401 and 403, the statuses that mean a denial', () => {
+    const declared = declaredExpectations({
+      kind: PredicateKind.TEXT,
+      contains: 'Access denied',
+    });
+    expect(declared.netFailures).toEqual([{ status: 401 }, { status: 403 }]);
+    expect(declared.rendersContent).toBe(true);
+  });
+
+  it('reads an alert role — the first-report shape, waiting for the login error alert', () => {
+    expect(
+      declaredExpectations({
+        kind: PredicateKind.ELEMENT,
+        query: { role: 'alert' },
+      }).netFailures,
+    ).toEqual([{ status: 401 }, { status: 403 }]);
+  });
+
+  it('reads the Testing-Library spelling of the same alert', () => {
+    expect(
+      declaredExpectations({
+        kind: PredicateKind.ELEMENT,
+        query: { by: QueryBy.ROLE, value: 'alert' },
+      }).netFailures,
+    ).toEqual([{ status: 401 }, { status: 403 }]);
+  });
+
+  // Negative control: on-screen success is not a denial. Honouring it would suppress the
+  // swallowed-401 on every login that rendered "Welcome" over a failed write.
+  it('does not read a greeting as a declared failure', () => {
+    expect(
+      declaredExpectations({ kind: PredicateKind.TEXT, contains: 'Welcome' }).netFailures,
+    ).toEqual([]);
+  });
+
+  it('does not read an absent denial — that assertion cannot witness the error UI', () => {
+    expect(
+      declaredExpectations({
+        kind: PredicateKind.TEXT,
+        contains: 'Access denied',
+        absent: true,
+      }).netFailures,
+    ).toEqual([]);
   });
 });
 

@@ -18,7 +18,7 @@ export const GATE_SKIP_ENV = 'RETICLE_SKIP_GATE';
 
 const MAX_NAMED = 5;
 
-export interface GateHookInput {
+interface GateHookInput {
   /** Flows the changed files touch that have no passing artifact. */
   uncovered: readonly string[];
   /** Flows held back as flaky — reported, never counted as a pass. */

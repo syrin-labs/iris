@@ -152,7 +152,7 @@ export function noteToolDispatched(session: { capture?: CaptureLedger }, tool: s
 }
 
 /** What one session's use of the two features looks like. Everything but `observed` is omitted when nothing was recorded. */
-export interface FeatureCapture {
+interface FeatureCapture {
   /** False when this daemon recorded nothing for the session — "not watched", never "not used". */
   observed: boolean;
   /** The ledger dropped calls, so every count is a floor. Present only when true. */

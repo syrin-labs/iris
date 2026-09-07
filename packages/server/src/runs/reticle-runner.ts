@@ -11,7 +11,15 @@
  */
 
 import { reportRunTelemetry } from '../telemetry/run-telemetry.js';
-import type { FlowReplayResult, ReticleVerificationRun, RunId } from '@reticlehq/core';
+import {
+  boundFlowName,
+  RunFlowStatus,
+  VerifyPhase,
+  type FlowReplayResult,
+  type ReticleVerificationRun,
+  type RunId,
+  type VerifyProgressEvent,
+} from '@reticlehq/core';
 import { buildVerificationRun, type VerificationRunInput } from './build-verification-run.js';
 import { mapReplayToFlowResult } from './replay-mapping.js';
 import { buildRepairPackets } from './repair-prompt.js';
@@ -34,6 +42,15 @@ export interface RunnerPort {
   newRunId(): RunId;
 }
 
+/**
+ * Narration for a run in flight. Optional, and never load-bearing.
+ *
+ * A verification is silent for its whole duration, so anything watching from outside cannot tell a
+ * run that is working from one that has died. This is the seam that makes the difference visible.
+ * It reports what is HAPPENING; the artifact remains the only record of what was PROVED.
+ */
+export type VerifyProgressListener = (event: VerifyProgressEvent) => void;
+
 /** Run metadata the caller supplies; flows + verdict are produced by verify. */
 export interface VerifyOptions {
   names?: string[];
@@ -45,6 +62,11 @@ export interface VerifyOptions {
   changedFiles?: ChangedFileInput[];
   /** Which touched surfaces block the verdict (require human confirmation). */
   policy?: RiskPolicy;
+  /**
+   * Called as each flow starts and finishes. Best-effort by contract: a listener that throws is
+   * swallowed, because a REPORTER must never be able to fail the thing it is reporting on.
+   */
+  onProgress?: VerifyProgressListener;
 }
 
 export class ReticleRunner {
@@ -61,14 +83,50 @@ export class ReticleRunner {
    */
   async verify(opts: VerifyOptions): Promise<ReticleVerificationRun> {
     const names = opts.names ?? (await this.#port.listFlows());
+    /*
+     * Emitting NEVER throws into the run. A dashboard, a log or an editor is watching, and none of
+     * them is worth failing a verification for — so a listener that blows up is dropped here rather
+     * than unwinding a suite somebody is waiting on.
+     */
+    const emit = (event: VerifyProgressEvent): void => {
+      try {
+        opts.onProgress?.(event);
+      } catch {
+        /* a reporter cannot fail the thing it reports on */
+      }
+    };
+    const total = names.length;
+    // Announced BEFORE the loop: "step 3" without "of 12" does not answer the only question a
+    // person watching is actually asking, which is whether to keep waiting.
+    emit({ phase: VerifyPhase.FLOWS_FOUND, total, at: this.#port.now() });
+
     const replays = [];
     const flows = [];
-    for (const name of names) {
+    for (const [index, name] of names.entries()) {
       const start = this.#port.now();
+      emit({
+        phase: VerifyPhase.FLOW_STARTED,
+        index,
+        total,
+        name: boundFlowName(name),
+        at: start,
+      });
       const replay = await this.#port.replayFlow(name);
       replays.push(replay);
-      flows.push(mapReplayToFlowResult(replay, this.#port.now() - start));
+      const mapped = mapReplayToFlowResult(replay, this.#port.now() - start);
+      flows.push(mapped);
+      emit({
+        phase: VerifyPhase.FLOW_FINISHED,
+        index,
+        total,
+        name: boundFlowName(name),
+        // A convenience for colouring a row while the run is live. The VERDICT is computed from the
+        // graded artifact below and never from this.
+        ok: mapped.status === RunFlowStatus.PASS,
+        at: this.#port.now(),
+      });
     }
+    emit({ phase: VerifyPhase.GRADING, total, at: this.#port.now() });
 
     const changedFiles = classifyChangedFiles(opts.changedFiles ?? []);
     const risks = buildRisks(changedFiles, opts.policy);

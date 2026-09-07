@@ -50,7 +50,7 @@ import { decideVerified } from '../honesty/verified.js';
 import { honestyForVerdict } from '../honesty/honesty.js';
 import { declaredExpectations, declaresBodyIndependentChannel } from '../events/declared.js';
 import { readsDomState } from '../honesty/already-true.js';
-import { describeWaitTarget } from '../honesty/unsettled.js';
+import { describeWaitTarget, namedNetIsInFlight } from '../honesty/unsettled.js';
 import { saveFailedAssertCapsule } from './act-capsule.js';
 import { buildDivergenceCapsule } from '../capsule/capsule.js';
 import { predicateToExpectedLinks } from '../capsule/predicate-to-links.js';
@@ -150,7 +150,7 @@ export async function actCommand(
  */
 const ACTION_TYPE_VALUES = Object.values(ActionType);
 const ACTION_TYPE_LIST = ACTION_TYPE_VALUES.join(' | ');
-export const actionTypeEnum = z.enum(ACTION_TYPE_VALUES as [string, ...string[]]);
+const actionTypeEnum = z.enum(ACTION_TYPE_VALUES as [string, ...string[]]);
 
 export const ACT_TOOLS: ToolDef[] = [
   {
@@ -728,6 +728,7 @@ export const ACT_TOOLS: ToolDef[] = [
         // this is the only one that has to be interpreted, and now it interprets itself.
         const outcomePending = hasAcceptedWrite(windowEvents);
         const outcomeUnread = unreadWriteLabels(windowEvents);
+        const stillInFlight = inFlightRequestLabels(windowEvents);
         const decision = decideVerified({
           pass: verdict.pass,
           // The caller NAMED the consequence rather than defaulting to "wait for idle". A
@@ -758,10 +759,11 @@ export const ACT_TOOLS: ToolDef[] = [
           // window is already in hand.
           unsettled: {
             waitedFor: describeWaitTarget(until),
-            stillInFlight: inFlightRequestLabels(windowEvents),
+            stillInFlight,
             // The retry loop that leaves nothing outstanding — see repeatedRequestLabels.
             repeated: repeatedRequestLabels(windowEvents),
           },
+          ...(namedNetIsInFlight(until, stillInFlight) ? { namedRequestInFlight: true } : {}),
         });
         // Computed once: the verdict block reports it, and the instrumentation gaps are a second
         // reading of the same evidence rather than a new observation.

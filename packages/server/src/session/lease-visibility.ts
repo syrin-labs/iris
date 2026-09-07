@@ -16,7 +16,7 @@
  */
 
 /** The minimum a session has to expose to be a candidate watcher. Structural, so tests need no SDK. */
-export interface WatcherCandidate {
+interface WatcherCandidate {
   id: string;
   projectId: string | undefined;
 }

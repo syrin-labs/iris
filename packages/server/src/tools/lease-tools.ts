@@ -459,7 +459,7 @@ const LEASE_RELEASE_TOOL: ToolDef = {
  * when both exist the visible one is the better default and the agent should hear that here, where
  * it is choosing, rather than discover it when somebody asks why nothing is happening.
  */
-export const PREFER_EXISTING_NOTE =
+const PREFER_EXISTING_NOTE =
   'a non-leased tab for this app was already connected — that is the one a human can see, and this lease is not. Unless you need an isolated context (a second identity, a clean profile, parallel flows), release this lease and drive that sessionId instead.';
 
 /**

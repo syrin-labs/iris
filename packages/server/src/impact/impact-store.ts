@@ -34,7 +34,7 @@ const WRITE_DEBOUNCE_MS = 800;
 /** The project's cloud binding, written by `reticle link`. Absent for an unlinked project. */
 const CLOUD_LINK_FILE = 'cloud.json';
 
-export interface ImpactPaths {
+interface ImpactPaths {
   project: string;
   global: string;
 }
@@ -58,7 +58,7 @@ function impactPaths(reticleRoot: string): ImpactPaths {
  * best-effort, like every other read in this file: a missing or malformed link file means no link
  * in the HUD, never a failed tool call.
  */
-export function readDashboardUrl(reticleRoot: string): string | undefined {
+function readDashboardUrl(reticleRoot: string): string | undefined {
   try {
     const raw: unknown = JSON.parse(readFileSync(join(reticleRoot, CLOUD_LINK_FILE), 'utf8'));
     if ('object' !== typeof raw || null === raw) return undefined;

@@ -1,0 +1,690 @@
+{
+  "fixtures": [
+    "bench-app"
+  ],
+  "tools_profiled_per_fixture": 30,
+  "matrix": {
+    "bench-app": {
+      "fixtureName": "Vite + React (Bench App)",
+      "tools_profiled": 30,
+      "results": [
+        {
+          "tool": "reticle_sessions",
+          "latency_ms": 99,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 1125,
+          "chars": 1119,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_snapshot",
+          "latency_ms": 20,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 823,
+          "chars": 822,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_query",
+          "latency_ms": 7,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 227,
+          "chars": 227,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_inspect",
+          "latency_ms": 28,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 799,
+          "chars": 799,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_capabilities",
+          "latency_ms": 7,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 1438,
+          "chars": 1438,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_intent",
+          "latency_ms": 4,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 14,
+          "chars": 14,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_context",
+          "latency_ms": 5,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 54,
+          "chars": 54,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_flow_save",
+          "latency_ms": 10,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 1125,
+          "chars": 1117,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_flow_replay",
+          "latency_ms": 31,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 544,
+          "chars": 542,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_screenshot",
+          "latency_ms": 163,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 162,
+          "chars": 162,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_visual_diff",
+          "latency_ms": 2,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 40,
+          "chars": 40,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_network_mock",
+          "latency_ms": 3,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 26,
+          "chars": 26,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_navigate",
+          "latency_ms": 1012,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 111,
+          "chars": 111,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_act",
+          "latency_ms": 56,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 745,
+          "chars": 745,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_act_sequence",
+          "latency_ms": 15,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 159,
+          "chars": 159,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_act_and_wait",
+          "latency_ms": 41,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 1418,
+          "chars": 1416,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_observe",
+          "latency_ms": 14,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 60049,
+          "chars": 60047,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_wait_for",
+          "latency_ms": 4,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 90,
+          "chars": 90,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_assert",
+          "latency_ms": 6,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 416,
+          "chars": 414,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_network",
+          "latency_ms": 6,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 29820,
+          "chars": 29820,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_console",
+          "latency_ms": 4,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 164,
+          "chars": 164,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_clock",
+          "latency_ms": 8,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 16,
+          "chars": 16,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_state",
+          "latency_ms": 8,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 735,
+          "chars": 727,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_storage",
+          "latency_ms": 7,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 124,
+          "chars": 124,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_feedback",
+          "latency_ms": 40,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 399,
+          "chars": 397,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_record",
+          "latency_ms": 1,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 37,
+          "chars": 37,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_session",
+          "latency_ms": 2,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 35,
+          "chars": 35,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_verify",
+          "latency_ms": 31,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 2756,
+          "chars": 2756,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_tools",
+          "latency_ms": 2,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 6853,
+          "chars": 6797,
+          "tokens_o200k": null,
+          "success": true
+        },
+        {
+          "tool": "reticle_run",
+          "latency_ms": 1,
+          "is_error": false,
+          "protocol_error": false,
+          "timed_out": false,
+          "bytes": 394,
+          "chars": 393,
+          "tokens_o200k": null,
+          "success": true
+        }
+      ],
+      "summary": {
+        "total": 30,
+        "passed": 30,
+        "failed": 0,
+        "mean_latency_ms": 55,
+        "failing_tools": []
+      }
+    }
+  },
+  "results": [
+    {
+      "tool": "reticle_sessions",
+      "latency_ms": 99,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 1125,
+      "chars": 1119,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_snapshot",
+      "latency_ms": 20,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 823,
+      "chars": 822,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_query",
+      "latency_ms": 7,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 227,
+      "chars": 227,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_inspect",
+      "latency_ms": 28,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 799,
+      "chars": 799,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_capabilities",
+      "latency_ms": 7,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 1438,
+      "chars": 1438,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_intent",
+      "latency_ms": 4,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 14,
+      "chars": 14,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_context",
+      "latency_ms": 5,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 54,
+      "chars": 54,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_flow_save",
+      "latency_ms": 10,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 1125,
+      "chars": 1117,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_flow_replay",
+      "latency_ms": 31,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 544,
+      "chars": 542,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_screenshot",
+      "latency_ms": 163,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 162,
+      "chars": 162,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_visual_diff",
+      "latency_ms": 2,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 40,
+      "chars": 40,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_network_mock",
+      "latency_ms": 3,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 26,
+      "chars": 26,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_navigate",
+      "latency_ms": 1012,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 111,
+      "chars": 111,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_act",
+      "latency_ms": 56,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 745,
+      "chars": 745,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_act_sequence",
+      "latency_ms": 15,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 159,
+      "chars": 159,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_act_and_wait",
+      "latency_ms": 41,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 1418,
+      "chars": 1416,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_observe",
+      "latency_ms": 14,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 60049,
+      "chars": 60047,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_wait_for",
+      "latency_ms": 4,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 90,
+      "chars": 90,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_assert",
+      "latency_ms": 6,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 416,
+      "chars": 414,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_network",
+      "latency_ms": 6,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 29820,
+      "chars": 29820,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_console",
+      "latency_ms": 4,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 164,
+      "chars": 164,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_clock",
+      "latency_ms": 8,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 16,
+      "chars": 16,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_state",
+      "latency_ms": 8,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 735,
+      "chars": 727,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_storage",
+      "latency_ms": 7,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 124,
+      "chars": 124,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_feedback",
+      "latency_ms": 40,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 399,
+      "chars": 397,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_record",
+      "latency_ms": 1,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 37,
+      "chars": 37,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_session",
+      "latency_ms": 2,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 35,
+      "chars": 35,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_verify",
+      "latency_ms": 31,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 2756,
+      "chars": 2756,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_tools",
+      "latency_ms": 2,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 6853,
+      "chars": 6797,
+      "tokens_o200k": null,
+      "success": true
+    },
+    {
+      "tool": "reticle_run",
+      "latency_ms": 1,
+      "is_error": false,
+      "protocol_error": false,
+      "timed_out": false,
+      "bytes": 394,
+      "chars": 393,
+      "tokens_o200k": null,
+      "success": true
+    }
+  ],
+  "summary": {
+    "total": 30,
+    "passed": 30,
+    "failed": 0,
+    "mean_latency_ms": 55,
+    "failing_tools": []
+  }
+}

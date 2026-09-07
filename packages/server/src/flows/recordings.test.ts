@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { ActionType, DANGEROUS_ACTION_CONFIRM_ARG, QueryBy } from '@reticlehq/core';
 import { RecordingStore, type RecordedStep, type CompiledProgram } from './recordings.js';
-import { compileActStep, compileSequenceStep } from './replay.js';
+import { captureAct, compileActStep, compileSequenceStep } from './replay.js';
 
 const step = (tool: string, stable = true): RecordedStep => ({ tool, stable, args: {} });
 
@@ -129,6 +129,23 @@ describe('RecordingStore', () => {
     const act = compileActStep({ ref: 'e9', action: ActionType.CLICK, args: {} }, { effect: {} });
     expect(act.stable).toBe(false);
     expect(act.args['ref']).toBe('e9');
+  });
+
+  it('keeps a recorded until that locates by role and name', () => {
+    const store = new RecordingStore();
+    store.start('trip', 0);
+    captureAct(
+      store,
+      {
+        ref: 'e1',
+        action: ActionType.CLICK,
+        until: { kind: 'element', query: { role: 'button', name: '0 Clicks' } },
+      },
+      { testid: 'counter' },
+    );
+    expect(store.stop('trip')?.steps[0]?.expect).toEqual({
+      element: { role: 'button', name: '0 Clicks' },
+    });
   });
 });
 

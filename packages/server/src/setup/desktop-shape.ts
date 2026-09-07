@@ -27,7 +27,7 @@ export type AppShape = (typeof AppShape)[keyof typeof AppShape];
 export const isDesktop = (shape: AppShape): boolean => AppShape.WEB !== shape;
 
 /** Files and dependencies that name the shell, read through an injected reader. */
-export interface ShapeEvidence {
+interface ShapeEvidence {
   /** `src-tauri/tauri.conf.json` exists. */
   readonly hasTauriConf: boolean;
   /** `electron` is a dependency or devDependency. */
@@ -59,7 +59,7 @@ export function isDesktopOrigin(url: string): boolean {
  * Returned as data rather than branched at each call site, so the differences are visible in one
  * place and testable without a desktop runtime.
  */
-export interface ShapePolicy {
+interface ShapePolicy {
   /** Open a browser at the url. False for desktop: the app window is already the client. */
   readonly openBrowser: boolean;
   /** Require an HTTP response before looking for a session. */

@@ -11,7 +11,7 @@
  * more than one route does the first without the second.
  */
 
-export interface ProjectWiringFacts {
+interface ProjectWiringFacts {
   /** The id from `.reticle.json`, or undefined when there is no config here. */
   projectId: string | undefined;
   /** Has an app for this project ever connected on this port? Durable across daemon restarts. */

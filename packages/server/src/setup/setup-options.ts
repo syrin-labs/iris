@@ -31,7 +31,7 @@ export const DEFAULT_PHASE_TIMEOUT_MS = 120_000;
 /** What the drive may spend before it is stopped. */
 export const DEFAULT_DRIVE_BUDGET_USD = 3;
 
-export interface SetupOptions {
+interface SetupOptions {
   // ── what only an agent can know ────────────────────────────────────────────────────────────────
   /** The journey to drive, in the caller's own words. */
   readonly flow?: string | undefined;

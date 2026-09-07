@@ -27,7 +27,7 @@ export const LicenseWrite = {
 } as const;
 export type LicenseWrite = (typeof LicenseWrite)[keyof typeof LicenseWrite];
 
-export interface LicenseResult {
+interface LicenseResult {
   readonly action: LicenseWrite;
   /** True when `.gitignore` had to be changed so the key cannot be committed. */
   readonly gitignoreUpdated: boolean;

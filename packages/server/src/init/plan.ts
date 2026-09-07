@@ -39,20 +39,14 @@ import {
   RETICLE_MD_PATH,
   CURSOR_RULE_PATH,
 } from './agent-rules.js';
-import {
-  viteSteps,
-  nextSteps,
-  craSteps,
-  svelteKitSteps,
-  nuxtSteps,
-  astroSteps,
-  cspStep,
-  VITE_PLUGIN_DETAIL,
-} from './plan-framework.js';
+import { cspStep, frameworkSteps } from './plan-framework.js';
 import { join } from 'node:path';
-import { htmlManual, reticleConfigContent, unverifiedUiLibraryNote } from './snippets.js';
+import { reticleConfigContent, unverifiedUiLibraryNote } from './snippets.js';
 import { configWithInstallSource, declaredInstallSource } from '../telemetry/install-source.js';
-import { devServerPortWarning, isLikelyDevServerPort } from '../cli/cli-port.js';
+import { existingConfigProblem, projectIdOf, RETICLE_CONFIG_FILE } from './existing-config.js';
+
+// Re-exported: it moved to the module that reads it, and every existing importer says `plan.js`.
+export { RETICLE_CONFIG_FILE };
 
 // An app dev installs exactly the audience-scoped browser-side dependencies — never the retired
 // `@reticlehq/core` umbrella (which dragged the Node MCP server + ws into every app). The kit is the
@@ -113,7 +107,10 @@ export function frameworkPackages(
     case Framework.NEXT:
       // Next is React by construction, so the detection cannot disagree in a way worth honouring.
       return [RETICLE_REACT_KIT, RETICLE_NEXT_PLUGIN];
+    // React Router framework mode is a Vite app that renders React, so the kit and the plugin are
+    // both right for it too — only the connect INJECTION differs, and that is the plan's business.
     case Framework.VITE:
+    case Framework.REACT_ROUTER:
     case Framework.SVELTEKIT:
       // SvelteKit builds on Vite; until a dedicated Svelte kit exists it uses the Vite build plugin.
       // The build plugin stamps `data-reticle-source` regardless of UI library, so a Vue or Svelte
@@ -143,7 +140,6 @@ export const MCP_TARGET = 'global (claude user scope)';
 
 /** The step that runs the package manager — the other thing that commonly fails on a user's machine. */
 export const DEPS_TARGET = 'package.json';
-export const RETICLE_CONFIG_FILE = '.reticle.json';
 
 export const StepStatus = {
   APPLY: 'apply',
@@ -281,6 +277,8 @@ export interface PlanInput {
   viteDevModuleExists?: boolean | undefined;
   /** Whether src/hooks.client.ts already exists (SvelteKit idempotency). */
   svelteKitHooksExists?: boolean;
+  /** Whether app/entry.client.tsx already exists — it decides which React Router recipe to print. */
+  reactRouterEntryExists?: boolean;
   /** CRA's bundled entry (src/index.tsx or .js) — where the connect import has to go. */
   craEntry?: { path: string; source: string } | null;
   /** Existing .env.development.local, so an unrelated variable in it survives. */
@@ -787,36 +785,6 @@ function installStep(input: PlanInput): Step {
   };
 }
 
-/**
- * What is wrong with the config that is already there, if anything.
- *
- * Reported from the field (#317): a project carried `"port": 3000` — its own dev-server port, which
- * is the confusion SKILL.md names as the top setup failure — and `init` printed `.reticle.json
- * already exists` on every re-run without reading a single field of it, so the file could never be
- * repaired by the command that wrote it. It stayed invisible because a daemon on `127.0.0.1:3000`
- * and Vite on `[::1]:3000` split the port by address family and neither reported a conflict.
- *
- * Narrower than the issue asked for on purpose: `init`'s IO surface is synchronous, so this cannot
- * probe what is LISTENING right now. `isLikelyDevServerPort` covers the framework defaults, which is
- * where the mistake is actually made.
- */
-function existingConfigProblem(source: string | null | undefined): string | undefined {
-  if (null === source || source === undefined) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(source);
-  } catch {
-    return (
-      `${RETICLE_CONFIG_FILE} is present but is not valid JSON, so nothing reads it — neither the ` +
-      'daemon nor the SDK. Delete it and re-run `reticle init`.'
-    );
-  }
-  if ('object' !== typeof parsed || null === parsed) return undefined;
-  const port = (parsed as Record<string, unknown>)['port'];
-  if ('number' !== typeof port || !isLikelyDevServerPort(port)) return undefined;
-  return `${devServerPortWarning(port)} Fix it by removing the "port" field from ${RETICLE_CONFIG_FILE}.`;
-}
-
 const RETICLE_CONFIG_TITLE = 'Reticle config';
 const AGENT_ROOT_CONFIG_TITLE = 'Reticle config (agent root)';
 
@@ -834,10 +802,44 @@ const AGENT_ROOT_CONFIG_TITLE = 'Reticle config (agent root)';
  * and the two files are byte-identical, so neither can disagree with the other about the port or the
  * project identity.
  */
+
 function agentRootConfigStep(input: PlanInput, content: string): Step[] {
   const root = input.agentFileRoot;
   if (root === undefined || 0 === root.length) return [];
   const path = agentFile(input, RETICLE_CONFIG_FILE);
+  const existingProject = projectIdOf(input.agentRootConfigSource);
+  const wantedProject = projectIdOf(content);
+  /**
+   * A monorepo has more than one app and the root can only point at one of them.
+   *
+   * ABSENT and CONFLICTING used to share this branch, so the second got the first's treatment and
+   * its reassuring wording. Reported from the field: two instrumented apps, a root config naming
+   * the first, and `init --app <the second>` repointed the root with no warning -- after which an
+   * agent started at the root reads one project's config and drives another. That is the
+   * silent-wrong-target failure this product exists to prevent, shipped by its own installer.
+   *
+   * Neither answer is ours to pick. Overwriting discards the other app's identity; skipping quietly
+   * leaves the agent aimed away from the app just wired. So the conflict is NAMED and nothing is
+   * written -- the app's own config is still correct either way, so the app is fully instrumented
+   * and only the root pointer is left for a human to decide.
+   */
+  if (
+    existingProject !== undefined &&
+    wantedProject !== undefined &&
+    existingProject !== wantedProject
+  ) {
+    return [
+      {
+        title: AGENT_ROOT_CONFIG_TITLE,
+        target: path,
+        status: StepStatus.NOTICE,
+        detail:
+          `left alone: it names project "${existingProject}", not "${wantedProject}". An agent ` +
+          'started here would read that project and drive this one. Point it at whichever app ' +
+          'this agent should verify, or run the agent from the app directory.',
+      },
+    ];
+  }
   if (input.agentRootConfigSource === content) {
     return [
       {
@@ -960,29 +962,6 @@ export function buildPlan(input: PlanInput): Plan {
     installStep(input),
     ...reticleConfigSteps(input),
   ];
-  if (input.detection.framework === Framework.VITE) {
-    steps.push(...viteSteps(input));
-  } else if (input.detection.framework === Framework.NEXT) {
-    steps.push(...nextSteps(input));
-  } else if (input.detection.framework === Framework.ASTRO) {
-    steps.push(...astroSteps(input));
-  } else if (input.detection.framework === Framework.CRA) {
-    steps.push(...craSteps(input));
-  } else if (input.detection.framework === Framework.NUXT) {
-    steps.push(...nuxtSteps(input));
-  } else if (input.detection.framework === Framework.SVELTEKIT) {
-    steps.push(...svelteKitSteps(input));
-    // The Vite plugin as well as the client hook. `init` already INSTALLS @reticlehq/vite-plugin for
-    // SvelteKit and then never wired it into the config, so it sat in package.json doing nothing —
-    // which is why a SvelteKit app connected fine and every verdict came back with no file:line.
-    steps.push(...viteSteps(input, VITE_PLUGIN_DETAIL.SVELTEKIT));
-  } else {
-    steps.push({
-      title: 'Connect snippet',
-      target: 'index.html',
-      status: StepStatus.MANUAL,
-      detail: htmlManual(input.options.port, input.options.projectId, input.pairingToken),
-    });
-  }
+  steps.push(...frameworkSteps(input));
   return { framework: input.detection.framework, uiLibrary: input.detection.uiLibrary, steps };
 }

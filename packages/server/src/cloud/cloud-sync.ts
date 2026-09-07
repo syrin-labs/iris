@@ -9,7 +9,13 @@
  * cloud copy is an enhancement, so a push error is logged and swallowed.
  */
 import { z } from 'zod';
-import type { FlowFile, ReticleVerificationRun, RunRecord } from '@reticlehq/core';
+import {
+  VERIFY_PROGRESS_MAX_EVENTS,
+  type FlowFile,
+  type ReticleVerificationRun,
+  type RunRecord,
+  type VerifyProgressEvent,
+} from '@reticlehq/core';
 
 /** Env var names — the presence of BOTH is what "logged in" means for cloud sync. */
 export const CloudEnv = {
@@ -23,6 +29,7 @@ const CLOUD_RUNS_PATH = '/v1/runs';
 const CLOUD_PROJECT_RUNS_PATH = '/v1/project/runs';
 const CLOUD_PROJECT_REGRESSION_PATH = '/v1/project/regression';
 const CLOUD_VERIFICATIONS_PATH = '/v1/verifications';
+const CLOUD_PROGRESS_PATH = '/v1/connect/progress';
 
 export interface CloudConfig {
   url: string;
@@ -298,4 +305,130 @@ export async function submitServerVerification(
   } catch {
     return null;
   }
+}
+
+/**
+ * Narrate a run in flight to the dashboard.
+ *
+ * ## Why this exists
+ *
+ * Everything else here syncs a FINISHED artifact. That is the right shape for evidence and the wrong
+ * shape for the minutes a verification is actually running: a browser launches, flows replay one at
+ * a time, and until the run ends the dashboard has nothing to show but a spinner. A run that is
+ * working and a run that has died are indistinguishable for the whole of its duration, and somebody
+ * watching sat on exactly that ambiguity for fifteen minutes.
+ *
+ * ## Why it is batched
+ *
+ * One request per flow is one request per flow. A fifty-flow suite would open a hundred connections
+ * to say things that are only interesting in aggregate, so events accumulate and go out on a timer.
+ * Two seconds is well under the time a person waits before deciding a page is broken, and well over
+ * the time a fast flow takes — so a burst of quick replays becomes one request, not twenty.
+ *
+ * ## Why it can never matter
+ *
+ * Opt-in like every other cloud call (no credentials → no-op, nothing leaves the machine), and
+ * best-effort at every layer: a failed flush is dropped, never retried and never surfaced. This is
+ * narration. The run artifact is the record, it syncs separately, and nothing here is graded or
+ * allowed to influence a verdict or an exit code.
+ */
+export async function syncProgressToCloud(
+  runId: string,
+  events: readonly VerifyProgressEvent[],
+  config: CloudConfig | null,
+  fetchImpl: FetchLike,
+): Promise<SyncResult> {
+  if (null === config) return { outcome: SyncOutcome.SKIPPED };
+  if (0 === events.length) return { outcome: SyncOutcome.SKIPPED };
+  try {
+    const res = await fetchImpl(`${config.url}${CLOUD_PROGRESS_PATH}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.apiKey}`,
+      },
+      // Bounded on the way OUT as well as in the schema: a receiver that rejects an oversized batch
+      // would drop the whole window, and the newest events are the ones somebody is waiting on.
+      body: JSON.stringify({ runId, events: events.slice(-VERIFY_PROGRESS_MAX_EVENTS) }),
+    });
+    return res.ok
+      ? { outcome: SyncOutcome.SYNCED, status: res.status }
+      : { outcome: SyncOutcome.FAILED, status: res.status };
+  } catch (err) {
+    return { outcome: SyncOutcome.FAILED, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** How long events accumulate before a flush. See the batching note above. */
+export const PROGRESS_FLUSH_MS = 2_000;
+
+/**
+ * A listener that buffers progress and ships it on a timer.
+ *
+ * Returned with its own `flush` and `stop` so the caller can push the last events out when the run
+ * ends — otherwise the most interesting event of all, the one saying it finished, waits for a timer
+ * that is about to be cleared.
+ *
+ * The timer is `unref`'d where the runtime supports it: a narration timer must never be the reason a
+ * CLI process stays alive after its work is done.
+ */
+export function createProgressReporter(
+  runId: string,
+  config: CloudConfig | null,
+  fetchImpl: FetchLike,
+  flushMs: number = PROGRESS_FLUSH_MS,
+): {
+  onProgress: (event: VerifyProgressEvent) => void;
+  flush: () => Promise<void>;
+  stop: () => void;
+} {
+  /*
+   * The WHOLE window, re-sent each flush — not the events since the last one.
+   *
+   * The receiver REPLACES the row it keeps for a project rather than appending, because one row per
+   * project is what stops narration accumulating into a second, ungraded history of the run. A
+   * client that sent deltas against that would destroy its own story: each flush would overwrite the
+   * row with only the handful of events since the previous one, and a finished run would be
+   * represented by whatever its last two seconds happened to contain.
+   *
+   * Found by running a real verification and watching the dashboard freeze on flow 2 of 3.
+   *
+   * Re-sending is cheap and idempotent: the window is bounded, the events are tiny, and a replace is
+   * the same operation however many times it arrives. `dirty` keeps an unchanged window off the
+   * wire, so a run that has gone quiet stops posting rather than resending forever.
+   */
+  /* Named `accumulated`, not `window`: this is Node, and shadowing the global reads badly. */
+  const accumulated: VerifyProgressEvent[] = [];
+  let dirty = false;
+  let timer: ReturnType<typeof setInterval> | null = null;
+
+  const flush = async (): Promise<void> => {
+    if (!dirty || 0 === accumulated.length) return;
+    // Cleared BEFORE the await so a slow flush does not let the next tick send the same window
+    // again; a genuinely new event during the send re-sets it and the next tick picks it up.
+    dirty = false;
+    await syncProgressToCloud(runId, [...accumulated], config, fetchImpl).catch(() => undefined);
+  };
+
+  const start = (): void => {
+    if (null !== timer || null === config) return;
+    timer = setInterval(() => void flush(), flushMs);
+    timer.unref?.();
+  };
+
+  return {
+    onProgress: (event: VerifyProgressEvent): void => {
+      if (null === config) return; // not logged in: nothing is buffered and nothing is sent
+      // Bounded, keeping the NEWEST: they are the ones somebody is waiting on.
+      if (accumulated.length >= VERIFY_PROGRESS_MAX_EVENTS) accumulated.shift();
+      accumulated.push(event);
+      dirty = true;
+      start();
+    },
+    flush,
+    stop: (): void => {
+      if (null !== timer) clearInterval(timer);
+      timer = null;
+    },
+  };
 }

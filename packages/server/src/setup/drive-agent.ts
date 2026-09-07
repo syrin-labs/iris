@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { ASSERTED, readAssertionsGrade, type DriverSpec } from './drive-plan.js';
 
 /** Ten minutes. Long, because the drive is a model working, and bounded, because it can wedge. */
-export const DRIVE_TIMEOUT_MS = 10 * 60_000;
+const DRIVE_TIMEOUT_MS = 10 * 60_000;
 /** Only the Reticle surface, unless the capabilities file has to be finished first. */
 const RETICLE_TOOLS = 'mcp__reticle';
 const CAPABILITY_TOOLS = 'mcp__reticle,Read,Edit,Write';
@@ -32,7 +32,7 @@ export interface DriveRequest {
   readonly model?: string | undefined;
 }
 
-export interface DriveReport {
+interface DriveReport {
   /** The agent's own account, kept verbatim and never treated as a pass on its own. */
   readonly text: string;
   readonly grade?: string | undefined;

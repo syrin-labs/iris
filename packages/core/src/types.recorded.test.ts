@@ -84,6 +84,79 @@ describe('FlowFileSchema', () => {
     // back-compat: a flow with no projectId (legacy/global) still parses
     expect(FlowFileSchema.safeParse(base).success).toBe(true);
   });
+
+  it('accepts a step expect combining several currently-documented fields (no regression)', () => {
+    const flow = {
+      version: FLOW_FILE_VERSION,
+      name: 'checkout',
+      createdAt: 1234,
+      steps: [
+        {
+          tool: 'reticle_act',
+          anchor: { kind: AnchorKind.TESTID, value: 'submit' },
+          action: ActionType.CLICK,
+          args: {},
+          expect: {
+            signal: 'order:placed',
+            net: { method: 'POST', urlContains: '/orders', status: 201, count: 1 },
+            console: { absent: true },
+            element: { testid: 'order-confirmation' },
+            state: { store: 'cart', path: 'items.length', equals: 0 },
+          },
+        },
+      ],
+    };
+    expect(FlowFileSchema.safeParse(flow).success).toBe(true);
+  });
+
+  it("rejects a step expect with an unrecognized key (e.g. a predicate kind this schema doesn't model)", () => {
+    const flow = {
+      version: FLOW_FILE_VERSION,
+      name: 'checkout',
+      createdAt: 1234,
+      steps: [
+        {
+          tool: 'reticle_act',
+          anchor: { kind: AnchorKind.TESTID, value: 'submit' },
+          action: ActionType.CLICK,
+          args: {},
+          expect: { signal: 'order:placed', allOf: [{ signal: 'a' }, { signal: 'b' }] },
+        },
+      ],
+    };
+    // Previously silently dropped `allOf` and parsed as a bare `{ signal: 'order:placed' }` —
+    // a strictly weaker assertion than the one the author wrote. Must now fail to parse.
+    expect(FlowFileSchema.safeParse(flow).success).toBe(false);
+  });
+
+  it('rejects an unrecognized key nested under `expect.net` (strictness applies at every level)', () => {
+    const flow = {
+      version: FLOW_FILE_VERSION,
+      name: 'checkout',
+      createdAt: 1234,
+      steps: [
+        {
+          tool: 'reticle_act',
+          anchor: { kind: AnchorKind.TESTID, value: 'submit' },
+          action: ActionType.CLICK,
+          args: {},
+          expect: { net: { method: 'POST', bogusField: 1 } },
+        },
+      ],
+    };
+    expect(FlowFileSchema.safeParse(flow).success).toBe(false);
+  });
+
+  it('rejects a flow-level `success` with an unrecognized key', () => {
+    const flow = {
+      version: FLOW_FILE_VERSION,
+      name: 'checkout',
+      createdAt: 1234,
+      steps: [{ tool: 'reticle_act', anchor: { kind: AnchorKind.TESTID, value: 'submit' } }],
+      success: { signal: 'order:placed', bogusField: true },
+    };
+    expect(FlowFileSchema.safeParse(flow).success).toBe(false);
+  });
 });
 
 describe('RecordedFlowSchema (in-page recording payload)', () => {

@@ -34,7 +34,7 @@ const RETICLE_KEY = 'reticle';
 const CONTINUE_YAML =
   'mcpServers:\n  - name: reticle\n    type: stdio\n    command: npx\n    args: ["@reticlehq/server", "mcp"]\n';
 
-export interface AgentWriteResult {
+interface AgentWriteResult {
   readonly id: string;
   readonly name: string;
   readonly file: string;
@@ -123,7 +123,7 @@ The cheapest path that answers the question:
 - "does this new behaviour work?" -> \`reticle_act_sequence\` for the setup, then ONE \`reticle_act_and_wait\`
 `;
 
-export interface SkillWriteResult {
+interface SkillWriteResult {
   readonly id: string;
   readonly file: string;
 }

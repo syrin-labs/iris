@@ -19,7 +19,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { SessionState, type CommandResult, type ReticleEvent } from '@reticlehq/core';
+import { type CommandResult, type ReticleEvent } from '@reticlehq/core';
 import { LastAct } from '../session/last-act.js';
 import { TOOLS, type ToolDef, type ToolDeps } from './tools.js';
 import { ReticleTool } from './tool-names.js';
@@ -30,6 +30,7 @@ import { FlowStore } from '../flows/flows.js';
 import { ProjectStore } from '../project/project-store.js';
 import { AnnotationStore } from '../flows/annotation-store.js';
 import type { Session, SessionManager } from '../session/session.js';
+import { createFakeSession } from '../session/fake-session.js';
 
 const ACTED_SOURCE = 'app/page.tsx:22';
 const NAV_SOURCE = 'ui/global-nav.tsx:54';
@@ -59,29 +60,23 @@ function fakeSession(
       ok: true,
       result: { matched: elements.length > 0, count: elements.length, elements },
     });
-  const stub: Partial<Session> = {
-    id: 'demo',
-    url: 'http://localhost:3000/',
-    lastAct,
-    command,
-    recordAction: (_tool: string, _args: Record<string, unknown>, effect?: unknown): string => {
-      recorded.effect = effect;
-      return 'a1';
+  const stub = createFakeSession(
+    {
+      lastAct,
+      command,
+      recordAction: (_tool: string, _args: Record<string, unknown>, effect?: unknown): string => {
+        recorded.effect = effect;
+        return 'a1';
+      },
+      bufferHealth: () => ({ total: 5, dropped: 0 }),
+      eventsSince: () => noEvents,
+      queryEvents: () => Promise.resolve(noEvents),
+      elapsed: () => 1000,
+      health: () => ({ lastSeenMs: 5, throttled: false, focused: true }),
     },
-    bufferHealth: () => ({ total: 5, dropped: 0 }),
-    lostSince: () => false,
-    blindSpots: () => ({}),
-    eventsSince: () => noEvents,
-    queryEvents: () => Promise.resolve(noEvents),
-    elapsed: () => 1000,
-    health: () => ({ lastSeenMs: 5, throttled: false, focused: true }),
-    // The starved-wait note asks the session directly, not through `health()`. Stubbed here
-    // because this file's subject is source attribution, not throttling.
-    throttled: () => false,
-    getState: () => SessionState.ACTIVE,
-    drainInbox: () => [],
-  };
-  const session = stub as Session;
+    { url: 'http://localhost:3000/' },
+  );
+  const session = stub;
   const sessions: Partial<SessionManager> = { resolve: () => session };
   return { session, deps: { sessions: sessions as SessionManager } as unknown as ToolDeps };
 }
@@ -190,30 +185,21 @@ describe('act_and_wait still reports the element it drove', () => {
           effect: { domMutatedWithin: 1 },
         },
       });
-    const stub: Partial<Session> = {
-      id: 'demo',
-      url: 'http://localhost:3000/',
-      lastAct: new LastAct(),
-      command,
-      beginAction: () => 'a1',
-      finishAction: (effect?: unknown): void => {
-        recorded.effect = effect;
+    const stub = createFakeSession(
+      {
+        command,
+        finishAction: (effect?: unknown): void => {
+          recorded.effect = effect;
+        },
+        queryEvents: () => Promise.resolve(noEvents),
+        eventsSince: () => noEvents,
+        bufferHealth: () => ({ total: 10, dropped: 0 }),
+        health: () => ({ lastSeenMs: 0, throttled: false, focused: true }),
+        elapsed: () => 1000,
       },
-      queryEvents: () => Promise.resolve(noEvents),
-      eventsSince: () => noEvents,
-      bufferHealth: () => ({ total: 10, dropped: 0 }),
-      lostSince: () => false,
-      blindSpots: () => ({}),
-      health: () => ({ lastSeenMs: 0, throttled: false, focused: true }),
-      throttled: () => false,
-      getState: () => SessionState.ACTIVE,
-      drainInbox: () => [],
-      inboxSize: () => 0,
-      onEvent: () => () => undefined,
-      ambientCounts: () => ({}),
-      elapsed: () => 1000,
-    };
-    const sessions: Partial<SessionManager> = { resolve: () => stub as Session };
+      { url: 'http://localhost:3000/' },
+    );
+    const sessions: Partial<SessionManager> = { resolve: () => stub };
     return {
       sessions,
       baselines: new BaselineStore(),

@@ -88,7 +88,7 @@ function withNudgeState(summary: SessionSummary): SessionSummary {
 }
 
 /** Stops the timers this installed. Called from the daemon's shutdown path. */
-export interface DaemonTelemetry {
+interface DaemonTelemetry {
   /**
    * Emit the final, rich session summary and stop flushing. Safe to call more than once.
    *

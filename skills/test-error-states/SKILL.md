@@ -14,11 +14,11 @@ Every app has a `catch` block nobody has executed and an empty state nobody has 
 
 **Reticle** can force those conditions in the running app. Not installed? `RETICLE_INSTALL_SOURCE=npx_skill npx @reticlehq/server@latest init`, then the [`install-and-verify`](https://github.com/reticlehq/reticle/blob/main/skills/install-and-verify/SKILL.md) skill.
 
-## Read this before you start: network mocking needs a driven browser
+## Read this before you start: network mocking needs a driven or leased browser
 
-`reticle_network_mock` applies mocks through CDP, and **the always-on SDK cannot do it.** A pooled lease is not enough either: `reticle_lease` returns `{ ok: false, reason: "no-cdp-provider" }`.
+`reticle_network_mock` intercepts requests in a browser Reticle owns, and **the always-on SDK cannot do it.** A connected tab with neither `reticle drive` nor a lease still returns `{ ok: false, reason: "no-cdp-provider" }`.
 
-Your route is `RETICLE_CDP_URL` pointed at a Chrome started with remote debugging:
+Your route is a leased Playwright tab (`reticle_lease acquire`) or `RETICLE_CDP_URL` pointed at a Chrome started with remote debugging:
 
 ```bash
 # macOS — the user runs this once, in their own Chrome
@@ -27,7 +27,7 @@ Your route is `RETICLE_CDP_URL` pointed at a Chrome started with remote debuggin
 RETICLE_CDP_URL=http://localhost:9222 npx @reticlehq/server@latest mcp
 ```
 
-If that is not set up, **say so in one line and offer the clock half of this skill anyway**: `reticle_clock` needs none of it. What you may not do is drive the happy path, watch it pass, and report that error handling works.
+If you have neither a lease nor a driven browser, **say so in one line and offer the clock half of this skill anyway**: `reticle_clock` needs none of it. What you may not do is drive the happy path, watch it pass, and report that error handling works.
 
 ## Force a failure
 

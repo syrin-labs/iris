@@ -89,14 +89,15 @@ describe('statusNextAction', () => {
  * server.
  */
 describe('status can say that init was never run here', () => {
-  it('names init when the project is not initialized and no daemon is up', () => {
+  it('reports the unavailable daemon before making any instrumentation claim', () => {
     const next = statusNextAction({
       running: false,
       sessionCount: 0,
       previouslyConnected: false,
       initialized: false,
     });
-    expect(next).toMatch(/init/);
+    expect(next).toMatch(/no daemon is running/);
+    expect(next).not.toMatch(/not instrumented|run `npx @reticlehq\/server init`/);
   });
 
   it('names init when the daemon IS up and nothing has connected', () => {

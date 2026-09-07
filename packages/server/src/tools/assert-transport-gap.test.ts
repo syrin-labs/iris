@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { EventType, SessionState, Verified, VerifiedReason } from '@reticlehq/core';
-import { LastAct } from '../session/last-act.js';
+import { EventType, Verified, VerifiedReason } from '@reticlehq/core';
 import { TOOLS, type ToolDef, type ToolDeps } from './tools.js';
 import { ReticleTool } from './tool-names.js';
-import type { Session, SessionManager } from '../session/session.js';
+import type { SessionManager } from '../session/session.js';
 import type { ReticleEvent } from '@reticlehq/core';
+import { createFakeSession } from '../session/fake-session.js';
 
 /**
  * A window the browser dropped events in must not grade `proved`.
@@ -20,21 +20,14 @@ import type { ReticleEvent } from '@reticlehq/core';
  * rule that decides whether a green can be trusted.
  */
 function depsWith(events: ReticleEvent[]): ToolDeps {
-  const session: Partial<Session> = {
-    id: 'demo',
-    recordAction: () => 'a1',
-    lastAct: new LastAct(),
+  const session = createFakeSession({
     bufferHealth: () => ({ total: 12, dropped: 0 }),
-    lostSince: () => false,
-    blindSpots: () => ({}),
     eventsSince: () => events,
     queryEvents: () => Promise.resolve(events),
     elapsed: () => 1000,
     health: () => ({ lastSeenMs: 5, throttled: false, focused: true, hidden: false }),
-    getState: () => SessionState.ACTIVE,
-    drainInbox: () => [],
-  };
-  const sessions: Partial<SessionManager> = { resolve: () => session as Session };
+  });
+  const sessions: Partial<SessionManager> = { resolve: () => session };
   return { sessions: sessions as SessionManager } as unknown as ToolDeps;
 }
 

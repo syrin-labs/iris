@@ -702,6 +702,35 @@ describe('runInit — a failed install must not leave the app half-wired', () =>
     );
     runInit({ ...OPTS, install: true }, io);
     expect(io.written['next.config.mjs']).toBeUndefined();
+    // The install step itself is still correctly reported as failed here — only some of the
+    // packages resolved, so this is the genuine failure the guard exists to catch (#683).
+    const report = io.lines.join('\n');
+    expect(report).toContain('[⚠] Install dependencies');
+    expect(report).toContain('step failed');
+  });
+
+  /**
+   * Reported alongside #683: a pnpm checkout whose node_modules is symlinked into another
+   * checkout's `.pnpm` store (a git worktree, or an A/B harness) makes `pnpm add` exit non-zero
+   * with ERR_PNPM_UNEXPECTED_VIRTUAL_STORE even though the packages resolve. The wiring guard
+   * above already protects the FILES it writes from this false failure — but the install step's
+   * own printed status did not, so a correct install still read as `[⚠] Install dependencies —
+   * step failed`, and a second `init` run repeated the false failure forever because nothing
+   * about a re-run makes the exec command succeed.
+   */
+  it('reports the install step as done, not failed, when the packages already resolve', () => {
+    const io = memoryIo(
+      {
+        ...NEXT_FILES,
+        'node_modules/@reticlehq/react/package.json': '{"name":"@reticlehq/react"}',
+        'node_modules/@reticlehq/next/package.json': '{"name":"@reticlehq/next"}',
+      },
+      { execOk: false, mcpExists: true },
+    );
+    runInit({ ...OPTS, install: true }, io);
+    const report = io.lines.join('\n');
+    expect(report).toContain('[✓] Install dependencies');
+    expect(report).not.toContain('step failed');
   });
 
   it('config that does not import anything is still written — it has no dependency to miss', () => {
@@ -824,6 +853,44 @@ describe('runInit — an app outside the directory names anyone guessed', () => 
     expect(written).toContain('src/admin/.reticle.json');
     // The same identity in both, or the daemon scopes sessions to a project the app never claims.
     expect(io.written['/app/.reticle.json']).toBe(io.written['src/admin/.reticle.json']);
+  });
+
+  /**
+   * A monorepo has more than one app, and the root can only point at one of them.
+   *
+   * Reported from the field: two instrumented Next apps, each with its own correct config, and a
+   * root config committed pointing at the first. `init --app <the second>` rewrote the ROOT
+   * projectId to the second app's and said nothing — the printed line was the reassuring
+   * "the same config where the agent runs". An agent started at the root then drives a different
+   * project than the one whose config it is reading, which is the silent-wrong-target failure this
+   * product exists to prevent, arriving from our own installer.
+   *
+   * Absent and CONFLICTING are different situations and had the same branch. Absent is still
+   * written, because that is the case the root config was added for. Conflicting is not ours to
+   * resolve: overwriting loses the other app, refusing silently leaves the agent pointed away from
+   * the app just wired. So it is named, and the human picks.
+   */
+  it('refuses to silently repoint a root config that names a DIFFERENT project', () => {
+    const io = memoryIo(
+      {
+        ...NESTED,
+        '/app/.reticle.json': JSON.stringify({ projectId: 'the-other-app', port: 4400 }),
+      },
+      { mcpExists: true },
+    );
+    runInit(OPTS, io);
+    // The other app's identity survives.
+    expect(io.written['/app/.reticle.json']).toBeUndefined();
+    const printed = io.lines.join('\n');
+    expect(printed).toContain('the-other-app');
+  });
+
+  it('still writes a root config that is merely ABSENT — the case it was added for', () => {
+    const io = memoryIo(NESTED, { mcpExists: true });
+    runInit(OPTS, io);
+    expect(Object.keys(io.written).map((p) => p.replace(/\\/g, '/'))).toContain(
+      '/app/.reticle.json',
+    );
   });
 
   it('and the agent rule with it — CLAUDE.md is read at the repo root, not in the app', () => {

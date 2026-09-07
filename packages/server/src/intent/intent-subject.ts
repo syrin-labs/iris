@@ -30,7 +30,7 @@ export const UNSORTED_SUBJECT = 'unsorted';
 const MAX_SUBJECT = 40;
 
 /** Shape enough of an intent to derive a subject, without importing the whole record. */
-export interface SubjectEvidence {
+interface SubjectEvidence {
   subject?: string | undefined;
   surface?:
     | { route?: string | undefined; flow?: string | undefined; files?: string[] | undefined }

@@ -29,7 +29,7 @@ import { LicenseActivation } from '@reticlehq/core';
 import { describeLicense, LICENSE_KEY_ENV } from '../license/license.js';
 
 /** The activation facts that ride the wire. All absent on a build with no issuer key baked. */
-export interface LicenseFacts {
+interface LicenseFacts {
   licenseId?: string;
   licenseStatus?: LicenseActivation;
   /**

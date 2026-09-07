@@ -40,7 +40,7 @@ export function queryRefs(result: CommandResult): string[] {
  * `RETICLE_SECRET_AUTH_PASSWORD`. A scheme requiring a lookup table would mean the flow says a
  * value is missing and cannot say what to set.
  */
-export const secretEnvKey = (field: string): string =>
+const secretEnvKey = (field: string): string =>
   `RETICLE_SECRET_${field.replace(/[^a-zA-Z0-9]+/g, '_').toUpperCase()}`;
 
 /**

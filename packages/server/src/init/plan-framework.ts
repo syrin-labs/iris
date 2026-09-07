@@ -39,8 +39,14 @@ import {
   astroManual,
   nuxtManual,
   NUXT_PLUGIN_PATH,
+  webpack4TranspileNote,
+  WEBPACK4_REACT_SCRIPTS_MAJOR,
+  reactRouterManual,
+  REACT_ROUTER_ENTRY_PATH,
+  htmlManual,
 } from './snippets.js';
 import { StepStatus, type PlanInput, type Step } from './plan.js';
+import { Framework } from './detect.js';
 import { RETICLE_DEFAULT_PORT } from '@reticlehq/core';
 import { CSP_STEP_TITLE } from './csp-check.js';
 import { diagnoseWebCsp } from './csp-doctor.js';
@@ -56,6 +62,13 @@ export const VITE_PLUGIN_DETAIL = {
    * comes back with no file:line at all.
    */
   SVELTEKIT: 'add reticle() to plugins (stamps data-reticle-source in .svelte components)',
+  /**
+   * React Router framework mode renders through its own request handler, so the plugin's HTML
+   * injection never fires and connect() comes from the client entry instead. The plugin is still
+   * required for the same reason it is under SvelteKit: without it every verdict on the app comes
+   * back with no file:line at all.
+   */
+  REACT_ROUTER: 'add reticle() to plugins (stamps data-reticle-source in .tsx components)',
 } as const;
 
 const CAPABILITIES_TITLE = 'Capabilities + store';
@@ -400,6 +413,31 @@ export function nextSteps(input: PlanInput): Step[] {
  * Silently emitting it reads as a support claim, which is the thing this project exists to not do.
  */
 /**
+ * The one failure `init` cannot otherwise see: the bundler will not parse our SDK.
+ *
+ * Every check in this report passes on a react-scripts 4 app -- the package installs, the entry
+ * import is written, the token is inlined -- and then `npm start` dies with a syntax error inside
+ * `@reticlehq/browser/dist/index.js`, a file the user did not write, naming nothing about Reticle
+ * (#680). A green report over a build that cannot compile is the same class of lie as a green report
+ * over an app that cannot connect.
+ *
+ * FIRST in the CRA step list, deliberately: it decides whether any of the steps below it can run at
+ * all.
+ */
+function webpack4Step(input: PlanInput): Step[] {
+  const major = input.detection.reactScriptsMajor;
+  if (major === undefined || major >= WEBPACK4_REACT_SCRIPTS_MAJOR) return [];
+  return [
+    {
+      title: `react-scripts ${String(major)} cannot parse the SDK`,
+      target: 'package.json',
+      status: StepStatus.NOTICE,
+      detail: webpack4TranspileNote(major),
+    },
+  ];
+}
+
+/**
  * Create React App: the connect goes in `src/index.tsx`, the token in `.env.development.local`.
  *
  * The previous plan pointed at `index.html`, which cannot work — CRA's is a static template the
@@ -410,6 +448,7 @@ export function craSteps(input: PlanInput): Step[] {
   // Match the project language the same way Next does (#675): a JS CRA app cannot resolve `.ts`.
   const modulePath = craDevModulePath(input.detection.typescript);
   const steps: Step[] = [
+    ...webpack4Step(input),
     {
       title: 'Reticle connect module',
       target: modulePath,
@@ -510,6 +549,28 @@ export function nuxtSteps(input: PlanInput): Step[] {
       target: NUXT_PLUGIN_PATH,
       status: StepStatus.MANUAL,
       detail: nuxtManual(input.options.port, input.options.projectId),
+    },
+  ];
+}
+
+/**
+ * React Router framework mode: the client-entry connect, printed rather than written.
+ *
+ * `app/entry.client.tsx` is an override of a default React Router supplies, so writing one
+ * containing our import and nothing else would replace that default with a file that never
+ * hydrates. See `reactRouterManual`.
+ */
+export function reactRouterSteps(input: PlanInput): Step[] {
+  return [
+    {
+      title: 'Connect snippet (React Router)',
+      target: REACT_ROUTER_ENTRY_PATH,
+      status: StepStatus.MANUAL,
+      detail: reactRouterManual(
+        input.options.port,
+        input.options.projectId,
+        true === input.reactRouterEntryExists,
+      ),
     },
   ];
 }
@@ -676,4 +737,48 @@ export function cspStep(input: PlanInput): Step[] {
       detail: first.problem,
     },
   ];
+}
+
+/**
+ * The per-framework half of the plan, dispatched on the detected framework.
+ *
+ * Lives here rather than in `buildPlan` because every branch of it calls a function defined in this
+ * file: the dispatch and the steps it dispatches to grow together, and keeping them apart put a
+ * list that is entirely per-framework detail in the file that owns the plan's SHAPE. The 1000-line
+ * backstop makes that cost concrete — two independent framework additions each grew `plan.ts`, and
+ * together they crossed the cap while neither did alone.
+ */
+export function frameworkSteps(input: PlanInput): Step[] {
+  const steps: Step[] = [];
+  if (input.detection.framework === Framework.VITE) {
+    steps.push(...viteSteps(input));
+  } else if (input.detection.framework === Framework.NEXT) {
+    steps.push(...nextSteps(input));
+  } else if (input.detection.framework === Framework.ASTRO) {
+    steps.push(...astroSteps(input));
+  } else if (input.detection.framework === Framework.CRA) {
+    steps.push(...craSteps(input));
+  } else if (input.detection.framework === Framework.NUXT) {
+    steps.push(...nuxtSteps(input));
+  } else if (input.detection.framework === Framework.REACT_ROUTER) {
+    steps.push(...reactRouterSteps(input));
+    // The Vite plugin too, for the reason SvelteKit gets it: React Router framework mode IS a Vite
+    // app, and the plugin is what stamps data-reticle-source. Without it the app connects and every
+    // verdict comes back with no file:line.
+    steps.push(...viteSteps(input, VITE_PLUGIN_DETAIL.REACT_ROUTER));
+  } else if (input.detection.framework === Framework.SVELTEKIT) {
+    steps.push(...svelteKitSteps(input));
+    // The Vite plugin as well as the client hook. `init` already INSTALLS @reticlehq/vite-plugin for
+    // SvelteKit and then never wired it into the config, so it sat in package.json doing nothing —
+    // which is why a SvelteKit app connected fine and every verdict came back with no file:line.
+    steps.push(...viteSteps(input, VITE_PLUGIN_DETAIL.SVELTEKIT));
+  } else {
+    steps.push({
+      title: 'Connect snippet',
+      target: 'index.html',
+      status: StepStatus.MANUAL,
+      detail: htmlManual(input.options.port, input.options.projectId, input.pairingToken),
+    });
+  }
+  return steps;
 }

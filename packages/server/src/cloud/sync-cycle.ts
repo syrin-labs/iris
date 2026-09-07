@@ -44,13 +44,13 @@ const SYNC_PULL_PATH = '/v1/sync/pull';
  * A list rather than three hand-written blocks so adding a fourth is one line and cannot be
  * half-done — the bundle, the hashing and the reporting all walk this.
  */
-export const DERIVED_RECORDS = [
+const DERIVED_RECORDS = [
   { kind: 'impact', file: ReticleDir.IMPACT_FILE },
   { kind: 'flake', file: ReticleDir.FLAKE_FILE },
   { kind: 'intent', file: ReticleDir.INTENT_FILE },
 ] as const;
 
-export type DerivedKind = (typeof DERIVED_RECORDS)[number]['kind'];
+type DerivedKind = (typeof DERIVED_RECORDS)[number]['kind'];
 
 /** What the machine reads from disk. Injected so a cycle is testable with no filesystem at all. */
 export interface SyncSource {
@@ -71,7 +71,7 @@ export interface SyncSink {
 }
 
 /** A decision a human made on the dashboard, as the machine stores it. */
-export interface PulledIssue {
+interface PulledIssue {
   status: string;
   flowName: string | null;
   title: string;
@@ -119,7 +119,7 @@ export interface SyncReport {
   error?: string;
 }
 
-export interface SyncDeps {
+interface SyncDeps {
   config: { url: string; apiKey: string };
   source: SyncSource;
   sink: SyncSink;

@@ -33,7 +33,7 @@ import {
  * processes that can be killed mid-write, and one bad file must not make a machine's daemons
  * undiscoverable. Validated through core's schema so a shape change cannot silently pass here.
  */
-export function readDaemonRegistry(home: string): DaemonRegistryEntry[] {
+function readDaemonRegistry(home: string): DaemonRegistryEntry[] {
   let files: string[];
   try {
     files = readdirSync(home);

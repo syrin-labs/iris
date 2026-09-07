@@ -57,7 +57,7 @@ export const ArtifactRootReason = {
 } as const;
 export type ArtifactRootReason = (typeof ArtifactRootReason)[keyof typeof ArtifactRootReason];
 
-export interface ArtifactRootQuery {
+interface ArtifactRootQuery {
   /** The connected session's HELLO projectId, when it sent one. */
   projectId: string | undefined;
   /** Every project this machine knows about. Supplied, not gathered here — this stays pure. */

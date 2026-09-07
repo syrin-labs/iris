@@ -274,16 +274,19 @@ export const RAW_TOOLS: ToolDef[] = [
         mode,
       }).then((raw) =>
         withSizeCost(
-          noteEmptyLeanTree(
-            applySnapshotDelta(
-              raw,
-              {
-                sessionId: resolved.id,
-                scope: asString(args['scope']) ?? '',
-                mode,
-                diff: true === args['diff'],
-              },
-              SNAPSHOT_CACHE,
+          noteHiddenPage(
+            noteEmptyLeanTree(
+              applySnapshotDelta(
+                raw,
+                {
+                  sessionId: resolved.id,
+                  scope: asString(args['scope']) ?? '',
+                  mode,
+                  diff: true === args['diff'],
+                },
+                SNAPSHOT_CACHE,
+              ),
+              mode,
             ),
             mode,
           ),
@@ -722,6 +725,40 @@ function noteEmptyLeanTree(result: unknown, mode: string): unknown {
       `${String(skipped)} element(s) were passed over for leanness and this is NOT an empty page. ` +
       `Take reticle_snapshot { mode: "full" } instead; the controls here are addressed by text or ` +
       `by testid rather than by role.`,
+  };
+}
+
+/**
+ * An empty tree on a page full of elements is the same claim, from the other cause.
+ *
+ * `noteEmptyLeanTree` covers leanness and returns early for every other mode, so a `full` snapshot
+ * that comes back `{ tree: "", nodes: 0 }` says nothing at all — and that is the shape #672 was
+ * reported as: 44 buttons and 12 textboxes on the page, every one computing hidden, both modes
+ * empty. The reporter spent about six tool calls and a large console dump establishing the page was
+ * fine and the snapshot was wrong, then drove the flow off `reticle_query` refs, which is a
+ * workaround no tool description mentions.
+ *
+ * So the note names the count, says plainly that this is not an empty page, and hands over the path
+ * that does work. It does NOT diagnose why the page is hidden: the walk knows what it skipped and
+ * cannot know why, and a note that guessed would be the same kind of overconfident answer as the
+ * empty tree it replaces.
+ */
+function noteHiddenPage(result: unknown, mode: string): unknown {
+  if (SnapshotMode.STATUS === mode) return result;
+  const row = asRecord(result);
+  if (0 !== asNumber(row['nodes'])) return result;
+  // A note already there is the more specific one (leanness), and two explanations for one empty
+  // tree is worse than the better of them alone.
+  if (row['note'] !== undefined) return result;
+  const skipped = asNumber(row['hiddenSkipped']) ?? 0;
+  if (0 === skipped) return result;
+  return {
+    ...row,
+    note:
+      `this is NOT an empty page: ${String(skipped)} subtree(s) were skipped because their root ` +
+      `computed hidden (aria-hidden, the hidden attribute, or display:none), which is what left the ` +
+      `tree empty. If the page is plainly rendered, the visibility computation is the thing that is ` +
+      `wrong rather than the app — drive it by reticle_query refs, which do not depend on this walk.`,
   };
 }
 

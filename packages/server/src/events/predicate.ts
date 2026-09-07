@@ -250,7 +250,7 @@ async function evalElement(
   // A text miss where the string is on the page but split across children reads exactly like an
   // element that never rendered. Naming the container is the difference between a retry and a bug
   // report against working code. See split-text-miss.ts.
-  const splitText = describeSplitTextMiss(match.hint?.splitText);
+  const splitText = describeSplitTextMiss(match.hint?.splitText, query.text);
   const clause = splitText ?? (alsoHere === undefined || '' === alsoHere ? undefined : alsoHere);
   const suffix = clause === undefined ? '' : ` — ${clause}`;
   return {
@@ -622,7 +622,11 @@ async function evaluatePredicateRaw(
         // with only `text` filled in, so scoping it needs the field, not a second code path.
         undefined === predicate.scope
           ? { text: predicate.contains }
-          : { text: predicate.contains, scope: predicate.scope },
+          : {
+              text: predicate.contains,
+              scope: predicate.scope,
+              ...(true === predicate.self ? { self: true } : {}),
+            },
         true === predicate.visible ? ElementState.VISIBLE : undefined,
         predicate.absent ?? false,
         diagnose,
@@ -742,7 +746,15 @@ function assertsExactCount(predicate: Predicate): boolean {
     return predicate.predicates.some(assertsExactCount);
   }
   if (PredicateKind.NOT === predicate.kind) return assertsExactCount(predicate.predicate);
-  return PredicateKind.NET === predicate.kind && predicate.count !== undefined;
+  // `signal` carries `count` for the same reason `net` does, and for the same defect: its schema
+  // calls the double-fire "the defect no state-only oracle can see", because a handler wired twice
+  // leaves the store in the right shape and a presence check green on both. Reading `net` alone
+  // meant a signal count resolved on its first match, so `count: 1` silently meant "at least 1" on
+  // the one channel able to see the bug. `evalSignal` counts correctly; the wait stopped early.
+  return (
+    (PredicateKind.NET === predicate.kind || PredicateKind.SIGNAL === predicate.kind) &&
+    predicate.count !== undefined
+  );
 }
 
 /**

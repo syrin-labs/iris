@@ -47,7 +47,7 @@ export interface Clock {
 }
 
 /** What a caller supplies to write an intent. Everything optional is genuinely optional. */
-export interface IntentInput {
+interface IntentInput {
   id: string;
   statement: string;
   subject?: string | undefined;

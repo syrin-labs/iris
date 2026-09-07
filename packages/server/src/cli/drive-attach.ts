@@ -57,7 +57,7 @@ export function decideDriveMode(presence: PortPresence): DriveMode {
 }
 
 /** A driveable session the daemon opened on our behalf. */
-export interface DriveSession {
+interface DriveSession {
   sessionId: string;
   /** Whether the tab's SDK actually registered — false ⇒ the app may not embed @reticlehq/core. */
   ready: boolean;
@@ -67,10 +67,10 @@ export interface DriveSession {
   hint?: string;
 }
 
-export type DriveAttachResult = { ok: true; session: DriveSession } | { ok: false; reason: string };
+type DriveAttachResult = { ok: true; session: DriveSession } | { ok: false; reason: string };
 
 /** POST the drive request. Injected so the decision logic is tested without a socket. */
-export type DrivePost = (
+type DrivePost = (
   port: number,
   path: string,
   body: string,

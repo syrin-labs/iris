@@ -35,7 +35,7 @@ export async function allSessionIntents(
 }
 
 /** What the ledger still owes once this verdict's own intent is discharged, and how old it is. */
-export interface IntentDebt {
+interface IntentDebt {
   openIntentCount: number;
   /**
    * Age of the OLDEST open intent, in ms. Absent when nothing is open.

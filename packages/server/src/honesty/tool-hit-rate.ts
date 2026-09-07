@@ -56,13 +56,13 @@ export function tierOfTool(tool: string): ToolTier {
 }
 
 /** How many tools fell in each tier on one side of the called/never-called split. */
-export interface TierCounts {
+interface TierCounts {
   default: number;
   extended: number;
   runOnly: number;
 }
 
-export interface ToolHitRate {
+interface ToolHitRate {
   /** False when this session carries no ledger — "not watched", never "nothing was called". */
   observed: boolean;
   /** The four-plus-two cells: every tier, called and never-called. Omitted when not observed. */

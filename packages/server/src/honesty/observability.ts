@@ -21,7 +21,7 @@ import type { InstrumentationGap } from '@reticlehq/core';
  * agent cannot act on. Those gaps are reported alongside, not divided into.
  */
 
-export interface Observability {
+interface Observability {
   /** Distinct controls driven this session. */
   driven: number;
   /** How many of them Reticle could fully observe. */
@@ -64,7 +64,7 @@ export function observabilityOf(
 /** Below this, a run is too small for its ratio to mean anything. */
 const MIN_DRIVEN_TO_COMPARE = 3;
 
-export interface CoverageRegression {
+interface CoverageRegression {
   was: number;
   now: number;
 }

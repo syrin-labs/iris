@@ -23,12 +23,12 @@ import { mergeMarkedInstruction, AgentRuleStatus, hasManagedBlock } from './agen
 /** The instruction files the managed block lives in. Cursor's rule file is regenerated whole. */
 export const RULE_FILES = ['CLAUDE.md', 'AGENTS.md'] as const;
 
-export interface RuleFileIo {
+interface RuleFileIo {
   read: (path: string) => string | null;
   write: (path: string, content: string) => void;
 }
 
-export interface RefreshResult {
+interface RefreshResult {
   /** Files whose managed block was replaced with the current one. */
   updated: string[];
   /** Files that were already current, or that carry no Reticle block to update. */

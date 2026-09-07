@@ -13,6 +13,7 @@ export * from './constants.js'; // EventType, ActionType, wire constants, TRANSP
 export * from './source-constants.js'; // DATA_RETICLE_SOURCE_ATTR, RETICLE_ROOT_GLOBAL
 export * from './event-classification.js'; // CHURN_TYPES — shared eviction priority for buffer/queue
 export * from './verified-constants.js'; // Verified — the one field an agent gates on
+export * from './verify-progress.js'; // VerifyPhase — what a run is doing while it is still doing it
 export * from './session-constants.js';
 export * from './document-identity.js'; // which document an observation belongs to
 export * from './edit-epoch.js'; // which round of source edits an observation belongs to

@@ -22,7 +22,7 @@ import { readProjectId } from '../cli/cli-port.js';
  * counted so the vocabulary stays stable as tools are added, renamed, or merged into action-dispatched
  * families — a count would silently change meaning the next time the tool surface is reorganized.
  */
-export const FeatureFamily = {
+const FeatureFamily = {
   DETERMINISTIC_REPLAY: 'deterministic_replay',
   VISUAL_BASELINE: 'visual_baseline',
   TEXT_BASELINE: 'text_baseline',

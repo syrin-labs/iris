@@ -25,6 +25,7 @@ import { IntentStore } from '../intent/intent-store.js';
 import type { CompiledProgram, RecordedStep } from './recordings.js';
 import type { FileSystemPort } from '../project/fs-port.js';
 import { flowDir, flowPath, reticleDirPaths, isValidFlowName } from '../project/reticle-dir.js';
+import { describeFlowZodFailure, parseFlowFileText } from './flow-expect-grammar.js';
 
 /**
  * A projectId only scopes storage when it's a safe single path segment (it's stamped from the
@@ -40,7 +41,8 @@ export interface Clock {
 }
 
 /** Discriminated result so callers never branch on free strings. */
-export type FlowResult<T> = { ok: true; value: T } | { ok: false; code: FlowErrorCode };
+export type FlowResult<T> =
+  { ok: true; value: T } | { ok: false; code: FlowErrorCode; detail?: string };
 
 /**
  * The anchor for a DEGRADED step (no resolvable testid). A volatile eXX ref is NEVER persisted —
@@ -773,7 +775,15 @@ export class FlowStore {
     // per-project subdir. Both come from the same `pid`, so on-disk location and content always agree.
     const stamped = pid === undefined ? flow : { ...flow, projectId: pid };
     const parsed = FlowFileSchema.safeParse(stamped);
-    if (!parsed.success) return { ok: false, code: FlowErrorCode.PARSE_FAILED };
+    if (!parsed.success) {
+      // Named, not bare: the load path already says which step and key it choked on, and a save
+      // that refuses in silence sends the caller to the file to guess at what a load would tell it.
+      return {
+        ok: false,
+        code: FlowErrorCode.PARSE_FAILED,
+        detail: describeFlowZodFailure(parsed.error),
+      };
+    }
     const valid = await this.#linkIntent(parsed.data);
     await this.#fs.mkdir(flowDir(this.#root, pid));
     await this.#fs.writeFile(
@@ -911,15 +921,7 @@ export class FlowStore {
       };
     }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return { ok: false, code: FlowErrorCode.PARSE_FAILED };
-    }
-    const result = FlowFileSchema.safeParse(parsed);
-    if (!result.success) return { ok: false, code: FlowErrorCode.PARSE_FAILED };
-    return { ok: true, value: result.data };
+    return parseFlowFileText(text);
   }
 
   /**

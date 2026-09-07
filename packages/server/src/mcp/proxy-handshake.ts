@@ -155,7 +155,7 @@ ${healthy}`;
  */
 export const MAX_STDIN_LINE_BYTES = 16 * 1024 * 1024;
 
-export interface DrainedLines {
+interface DrainedLines {
   /** Complete lines, in order. Empty when the chunk carried no newline. */
   lines: string[];
   /** The trailing partial line, carried into the next chunk. */

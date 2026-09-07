@@ -60,6 +60,8 @@ Add `"absent": true` to assert something is **gone**. The predicate for a remova
 
 `contains` is the field the published schema declares. `value` and `text` are accepted as aliases and rewritten to it. `absent: true` asserts the text is not present, and `visible: true` requires it to be on screen rather than merely in the DOM.
 
+Use `scope` to restrict the search to a CSS selector or element ref. If Reticle reports that the text is split across the scope's children, retry its generated predicate with `"self": true`; that checks the scope root's combined subtree text while still enforcing `contains`.
+
 ### net
 
 ```json

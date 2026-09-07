@@ -12,7 +12,7 @@
  */
 
 /** Whose defect. Ordered by which fix it implies. */
-export const ErrorClass = {
+const ErrorClass = {
   /** Missing/unknown parameter, wrong type, unparseable predicate. **Our schema is unclear.** */
   SCHEMA: 'schema',
   /** No session, stale ref, disconnected. The world moved under the agent; not a schema problem. */
@@ -22,7 +22,7 @@ export const ErrorClass = {
   /** Unrecognised. The bucket to watch: a large one is a blind spot, not a long tail. */
   OTHER: 'other',
 } as const;
-export type ErrorClass = (typeof ErrorClass)[keyof typeof ErrorClass];
+type ErrorClass = (typeof ErrorClass)[keyof typeof ErrorClass];
 
 /**
  * Patterns, most specific first.

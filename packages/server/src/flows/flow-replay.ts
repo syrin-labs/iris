@@ -1,5 +1,5 @@
 import { span } from '../trace.js';
-import { routePathOf } from '../events/predicate-route.js';
+import { routeOfEvent } from '../events/predicate-route.js';
 import {
   AnchorKind,
   DriftReason,
@@ -12,6 +12,7 @@ import {
   type FlowFile,
   type FlowStep,
   type FlowStepResult,
+  type FlowExpect,
   type ReticleEvent,
   type QueryEmptyHint,
   PredicateKind,
@@ -201,6 +202,27 @@ export function testidDrift(value: string, hint: QueryEmptyHint | undefined): Dr
 }
 
 /**
+ * Build the drift for a step whose `expect.element` testid was absent after the action ran.
+ *
+ * Deliberately not `testidDrift`: that one means "this step's anchor is gone", and reusing it here
+ * put the assertion's target in the result's `anchor` field — the field documented as the value the
+ * step is bound to. A caller then reads `testid_not_found` naming something that was never the
+ * step's locator and goes hunting for a rename, while the truth is the step ran and its
+ * consequence did not hold.
+ */
+export function expectElementDrift(value: string, hint: QueryEmptyHint | undefined): Drift {
+  const present = hint?.presentTestids ?? [];
+  const drift: Drift = {
+    reasonKind: DriftReason.EXPECT_ELEMENT_NOT_FOUND,
+    reason: `expect.element testid "${value}" not present after the action`,
+    anchor: value,
+    nearest: nearestTestid(value, present),
+  };
+  if (nearestIsAmbiguous(value, present)) drift.ambiguous = true;
+  return drift;
+}
+
+/**
  * Re-resolve any QUERY against the live DOM, tolerating an in-flight render: QUERY, and while it
  * returns zero refs, sleep and retry up to ANCHOR_SETTLE_ATTEMPTS. Returns as soon as refs appear,
  * so a present anchor costs one query; a genuinely missing one costs the full (bounded) settle and
@@ -274,14 +296,12 @@ function currentRoute(session: FlowReplaySession): string | undefined {
   const routes = session.eventsSince(0).filter((e) => e.type === EventType.ROUTE_CHANGE);
   const last = routes.at(-1);
   if (last === undefined) return undefined;
-  const data = last.data ?? {};
   // The ROUTER's path. This field answers "which page did this step run on", and the document
   // pathname is `/` on every page of a hash-routed app — so a whole desktop replay reported `/` for
-  // every step. Sixth place the same reading was wrong; see routePathOf.
-  const pathname = asString(data['pathname']) ?? asString(data['to']);
-  if (pathname === undefined || 0 === pathname.length) return undefined;
-  const routed = routePathOf(pathname, asString(data['hash']) ?? '');
-  return routed.length > 0 ? routed : undefined;
+  // every step. Sixth place the same reading was wrong; see routeOfEvent.
+  const parts = routeOfEvent(last);
+  if (parts === undefined || 0 === parts.docPath.length) return undefined;
+  return parts.routePath.length > 0 ? parts.routePath : undefined;
 }
 
 /** Pathname only (drop origin + query) so a net URL stays terse in the journey. */
@@ -302,9 +322,8 @@ function summarizeConsequence(events: ReticleEvent[]): string | undefined {
   const parts: string[] = [];
   const lastRoute = events.filter((e) => e.type === EventType.ROUTE_CHANGE).at(-1);
   if (lastRoute !== undefined) {
-    const data = lastRoute.data ?? {};
-    const to = asString(data['pathname']) ?? asString(data['to']);
-    if (to !== undefined && to.length > 0) parts.push(`→ ${to}`);
+    const routed = routeOfEvent(lastRoute);
+    if (routed !== undefined && routed.routePath.length > 0) parts.push(`→ ${routed.routePath}`);
   }
   const signals = new Set<string>();
   for (const e of events) {
@@ -408,9 +427,12 @@ async function runTestidStep(
       return {
         step: index,
         tool: step.tool,
-        anchor: expectTestid,
+        // The step's OWN anchor, not the expectation's target. Replay stops at the first drift, so
+        // this result is the only thing the caller sees about why the run ended — naming the
+        // assertion here reads as "step N's locator drifted" and hides that the action did run.
+        anchor: value,
         ok: false,
-        drift: testidDrift(expectTestid, expectRefs.hint),
+        drift: expectElementDrift(expectTestid, expectRefs.hint),
       };
     }
   }
@@ -439,10 +461,13 @@ async function assertStepExpect(
   timeoutMs: number,
   since: number,
 ): Promise<Drift | undefined> {
-  // `element` is deliberately dropped: the step runner already asserts expect.element.testid against
-  // the live DOM before we get here, and re-asserting it through the predicate engine would be a
-  // second round trip for the same fact.
-  const { element: _element, ...consequences } = expect;
+  // A testid is already asserted against the live DOM by the step runner. A role/name locator is
+  // not that path — stripping every element made a recorded `until` by button name a no-op, so a
+  // flow that proved the control at capture time could not go red when it was gone.
+  const consequences: FlowExpect = { ...expect };
+  if (undefined !== consequences.element?.testid) {
+    delete consequences.element;
+  }
   const predicate = successToPredicate(consequences, dynamic);
   if (predicate === undefined) return undefined;
   const verdict = await waitForSignal(session, predicate, timeoutMs, since);
@@ -464,6 +489,9 @@ function expectLabel(expect: NonNullable<FlowStep['expect']>): string {
   if (expect.net !== undefined) return `net:${expect.net.urlContains ?? expect.net.method ?? '*'}`;
   if (expect.state !== undefined) return `state:${expect.state.path}`;
   if (expect.console !== undefined) return `console:${expect.console.level ?? '*'}`;
+  if (undefined !== expect.element) {
+    return expect.element.testid ?? expect.element.name ?? expect.element.role ?? 'element';
+  }
   return 'expect';
 }
 

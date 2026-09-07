@@ -50,7 +50,8 @@ export const ElementQuerySchema = z
     /** CSS selector or ref to scope the search. */
     scope: z.string().optional(),
     /**
-     * Return the `scope` element ITSELF rather than searching inside it.
+     * Return the `scope` element ITSELF rather than searching inside it. When `text` is also given,
+     * the scope root must contain that text across its full subtree.
      *
      * Every other path excludes the scope root by construction, so a layout container with no role,
      * name, testid or text of its own was unreachable — and that is routinely the element carrying the
