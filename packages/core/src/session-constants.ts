@@ -144,5 +144,13 @@ export const NoSessionAction = {
   OPEN_APP: 'open_app',
   /** A session was here and went away: reopen the tab, or take a lease. */
   REOPEN_APP: 'reopen_app',
+  /**
+   * The app IS connected — to another daemon on this machine. Nothing to open, nothing to install.
+   *
+   * Its own kind because every other action here is wrong for it: the app is running, wired and
+   * live, so `open_app`, `run_init` and `start_dev_server` all send the agent to fix something that
+   * is not broken, and `reopen_app` points it at a tab that is already open.
+   */
+  DAEMON_SPLIT: 'daemon_split',
 } as const;
 export type NoSessionAction = (typeof NoSessionAction)[keyof typeof NoSessionAction];

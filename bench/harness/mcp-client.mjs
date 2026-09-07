@@ -26,14 +26,19 @@ export class McpStdioClient {
     this.proc = spawn(this.command, this.args, {
       env: { ...process.env, ...this.env },
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: 'win32' === process.platform,
+      shell: this.command !== 'node' && 'win32' === process.platform,
     });
     this.proc.stdout.setEncoding('utf8');
     this.proc.stdout.on('data', (chunk) => this._onData(chunk));
     this.proc.stderr.setEncoding('utf8');
     this.proc.stderr.on('data', (d) => this.stderr.push(d));
     this.proc.on('exit', (code) => {
-      for (const [, p] of this.pending) p.reject(new Error(`mcp process exited code=${code}`));
+      for (const [, p] of this.pending)
+        p.reject(
+          new Error(
+            `mcp process exited code=${code}${this.stderr.length ? ' — ' + this.stderr.join('') : ''}`,
+          ),
+        );
       this.pending.clear();
     });
     // MCP initialize handshake.

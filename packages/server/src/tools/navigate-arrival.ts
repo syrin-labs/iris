@@ -16,7 +16,7 @@ import type { SessionManager } from '../session/session-manager.js';
 import type { NavigateArrival } from './navigate-result.js';
 
 /** Long enough for a dev server to serve a page and the SDK to dial back; short enough to not hang. */
-export const ARRIVAL_TIMEOUT_MS = 5_000;
+const ARRIVAL_TIMEOUT_MS = 5_000;
 const POLL_MS = 100;
 
 /**

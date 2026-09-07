@@ -8,6 +8,7 @@
  * lighter per-flow RunRecord that feeds regression memory is synced separately in flow-replay-run.ts.
  * Both are best-effort + opt-in: no creds → the artifact still lands on disk, nothing leaves the machine.
  */
+import { mcpClientIdentity } from '../mcp/client-identity.js';
 import {
   RunAgentKind,
   RunFramework,
@@ -27,6 +28,9 @@ import { log } from '../log.js';
 import type { ToolDeps } from '../tools/tools.js';
 
 /** A replay plus the wall-clock time it took — the shape the verify handler already collects. */
+/** The author of record when no MCP peer introduced itself — a CLI run, or a client that skipped the handshake. */
+const RETICLE_MCP_AGENT_ID = 'reticle-mcp';
+
 export interface TimedReplay {
   replay: FlowReplayResult;
   durationMs: number;
@@ -44,7 +48,20 @@ function assembleRun(
     durationMs: flows.reduce((sum, f) => sum + f.durationMs, 0),
     profile: RunProfile.DEV,
     project: { name: projectId ?? 'reticle', framework: RunFramework.OTHER },
-    agent: { id: 'reticle-mcp', kind: RunAgentKind.CODING_AGENT },
+    /*
+     * WHICH agent drove this, not merely THAT one did.
+     *
+     * This was hardcoded to 'reticle-mcp', so every run in every workspace claimed the same author.
+     * A dashboard built on it could say "an agent verified this" and never "Claude Code verified
+     * this, Cursor broke it" — which is the question a team actually has once more than one agent
+     * touches the repo. The name is the client's own claim from the MCP handshake; a plain CLI run
+     * with no MCP peer keeps the old id, because inventing a vendor there would be worse than
+     * admitting we do not know.
+     */
+    agent: {
+      id: mcpClientIdentity().name ?? RETICLE_MCP_AGENT_ID,
+      kind: RunAgentKind.CODING_AGENT,
+    },
     trigger: { kind: RunTrigger.MANUAL },
     changedFiles: [],
     flows,
@@ -83,5 +100,9 @@ export async function persistAndSyncVerificationRun(
   if (result.outcome !== SyncOutcome.SYNCED) {
     log('cloud-run-sync-failed', { runId: run.runId, status: result.status, error: result.error });
   }
+  // The run is up; its CONTEXT is not. Nudged rather than pushed inline, so the counters and flows
+  // ride the ordinary cycle (with its cursor and its overlap guard) instead of growing a second,
+  // subtly different upload path here.
+  deps.onRunPersisted?.();
   return run.runId;
 }

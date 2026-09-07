@@ -50,6 +50,34 @@ describe('summarizeStatus', () => {
   });
 });
 
+/**
+ * The parsed shape of `init` with nothing passed.
+ *
+ * Spelled out rather than loosened: these assertions exist so a field added to the init arm cannot
+ * appear without somebody noticing, and they have caught exactly that twice.
+ */
+const INIT_DEFAULTS = {
+  kind: 'init' as const,
+  port: undefined,
+  mcp: true,
+  dryRun: false,
+  install: true,
+  app: undefined,
+  flow: undefined,
+  env: [] as string[],
+  filesOnly: false,
+  captureBodies: false,
+  json: false,
+  drive: true,
+  open: true,
+  relaunch: false,
+  agents: true,
+  url: undefined,
+  timeoutSeconds: undefined,
+  driveModel: undefined,
+  licenseKey: undefined,
+};
+
 describe('parseCliArgs', () => {
   it('no args defaults to serve on the default port', () => {
     expect(parseCliArgs([], PORT)).toEqual({
@@ -186,6 +214,7 @@ describe('parseCliArgs', () => {
       kind: 'verify',
       url: URL,
       headless: true,
+      port: PORT,
     });
   });
 
@@ -195,6 +224,28 @@ describe('parseCliArgs', () => {
       url: URL,
       headless: false,
       timeoutMs: 5000,
+      port: PORT,
+    });
+  });
+
+  it('verify keeps the resolved default port (RETICLE_PORT / .reticle.json)', () => {
+    // cli.ts already folds env + .reticle.json into parseCliArgs's defaultPort. Dropping port
+    // from the verify result made handleVerify fall back to 4400 anyway, so a project on any
+    // other port got MSG_NO_SESSION and a docstring that claimed the opposite.
+    expect(parseCliArgs(['verify', URL], 4410)).toEqual({
+      kind: 'verify',
+      url: URL,
+      headless: true,
+      port: 4410,
+    });
+  });
+
+  it('verify --port overrides the resolved default', () => {
+    expect(parseCliArgs(['verify', URL, '--port', '4411'], 4400)).toEqual({
+      kind: 'verify',
+      url: URL,
+      headless: true,
+      port: 4411,
     });
   });
 
@@ -211,6 +262,7 @@ describe('parseCliArgs', () => {
       url: URL,
       headless: true,
       storageState: 'auth.json',
+      port: PORT,
     });
   });
 
@@ -221,36 +273,91 @@ describe('parseCliArgs', () => {
     });
   });
 
-  it('init with no flags defaults to mcp + install on, no dry run, no port', () => {
-    expect(parseCliArgs(['init'], PORT)).toEqual({
-      kind: 'init',
-      port: undefined,
-      mcp: true,
-      dryRun: false,
-      install: true,
+  // The ambiguity error `sessions.resolve` throws when several tabs are connected reads "pass
+  // sessionId to target one" — and the verify parser used to reject every flag that could carry
+  // one, so the only action the message prescribed was one the CLI could not perform. The
+  // workaround was closing tabs until the ambiguity went away.
+  it('verify <url> --session-id targets one of several connected tabs', () => {
+    expect(parseCliArgs(['verify', URL, '--session-id', 's-42'], PORT)).toEqual({
+      kind: 'verify',
+      url: URL,
+      headless: true,
+      sessionId: 's-42',
+      port: PORT,
     });
+  });
+
+  it('verify --session-id with no id names the flag', () => {
+    expect(parseCliArgs(['verify', URL, '--session-id'], PORT)).toEqual({
+      kind: 'error',
+      message: '--session-id needs a value',
+    });
+  });
+
+  it('verify carries --session-id alongside the other flags', () => {
+    expect(
+      parseCliArgs(
+        ['verify', URL, '--session-id', 's-42', '--headed', '--port', '4411', '--timeout', '9000'],
+        PORT,
+      ),
+    ).toEqual({
+      kind: 'verify',
+      url: URL,
+      headless: false,
+      sessionId: 's-42',
+      timeoutMs: 9000,
+      port: 4411,
+    });
+  });
+
+  it('init with no flags defaults to mcp + install on, no dry run, no port', () => {
+    expect(parseCliArgs(['init'], PORT)).toEqual(INIT_DEFAULTS);
   });
 
   it('init --dry-run --no-mcp --no-install --port sets each flag', () => {
     expect(
       parseCliArgs(['init', '--dry-run', '--no-mcp', '--no-install', '--port', '4500'], PORT),
-    ).toEqual({
-      kind: 'init',
-      port: 4500,
-      mcp: false,
-      dryRun: true,
-      install: false,
-    });
+    ).toEqual({ ...INIT_DEFAULTS, port: 4500, mcp: false, dryRun: true, install: false });
   });
 
   it('init --yes is accepted', () => {
-    expect(parseCliArgs(['init', '--yes'], PORT)).toEqual({
-      kind: 'init',
-      port: undefined,
-      mcp: true,
-      dryRun: false,
-      install: true,
+    expect(parseCliArgs(['init', '--yes'], PORT)).toEqual(INIT_DEFAULTS);
+  });
+
+  /**
+   * What only the caller can know arrives as arguments, not as steps somebody walks through.
+   *
+   * `--env` is repeatable rather than comma-separated because a value can contain commas, spaces
+   * and equals signs — a connection string, a base64 token — and inventing a quoting rule for them
+   * is how a variable arrives truncated and the app fails for a reason nobody can see.
+   */
+  it('takes the answers only an agent has: the flow, the app env, and files-only', () => {
+    expect(
+      parseCliArgs(
+        [
+          'init',
+          '--flow',
+          'add to cart and check the badge',
+          '--env',
+          'API=http://x',
+          '--env',
+          'TOKEN=a=b',
+          '--files-only',
+        ],
+        PORT,
+      ),
+    ).toEqual({
+      ...INIT_DEFAULTS,
+      flow: 'add to cart and check the badge',
+      env: ['API=http://x', 'TOKEN=a=b'],
+      filesOnly: true,
+      captureBodies: false,
     });
+  });
+
+  it('refuses a flag that names no value, rather than swallowing the next one', () => {
+    expect(parseCliArgs(['init', '--flow'], PORT)).toMatchObject({ kind: 'error' });
+    expect(parseCliArgs(['init', '--env'], PORT)).toMatchObject({ kind: 'error' });
   });
 
   /**
@@ -455,6 +562,24 @@ describe('parseCliArgs', () => {
       headless: false,
       http: false,
     });
+  });
+
+  it('serve --http-port without --http is rejected, not silently ignored', () => {
+    expect(parseCliArgs(['serve', '--http-port', '4401'], PORT)).toEqual({
+      kind: 'error',
+      message: '--http-port requires --http — it configures the verify endpoint --http starts',
+    });
+  });
+
+  it('serve --http-token without --http is rejected the same way', () => {
+    expect(parseCliArgs(['serve', '--http-token', 'sek'], PORT)).toEqual({
+      kind: 'error',
+      message: '--http-token requires --http — it configures the verify endpoint --http starts',
+    });
+  });
+
+  it('mcp --http-port without --http is rejected too — same parser, same contract', () => {
+    expect(parseCliArgs(['mcp', '--http-port', '9100'], PORT).kind).toBe('error');
   });
 
   it('mcp --http forwards the HTTP-verify flags (previously dropped)', () => {

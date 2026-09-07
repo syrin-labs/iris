@@ -7,8 +7,7 @@ import { TOOLS } from './tools.js';
 import { ReticleTool } from './tool-names.js';
 import { TOOL_SURFACE, filterTools } from './tool-surface.js';
 import { buildErrorPayload, FEEDBACK_ASK, RECOVERY } from './error-recovery.js';
-import { resetFeedbackPrompt, takeFeedbackPrompt, VERIFICATION_TOOLS } from './feedback-tools.js';
-
+import { resetFeedbackPrompt, takeFeedbackPrompt, VERDICT_TOOLS } from './feedback-tools.js';
 describe('reticle_feedback', () => {
   const tool = TOOLS.find((t) => t.name === ReticleTool.FEEDBACK);
 
@@ -83,11 +82,11 @@ describe('the one-shot human prompt', () => {
   });
 
   it('covers the tools that actually end a verification', () => {
-    expect(VERIFICATION_TOOLS.has(ReticleTool.ASSERT)).toBe(true);
+    expect(VERDICT_TOOLS.has(ReticleTool.ASSERT)).toBe(true);
     // Whole-suite replay and change verification are actions on the merged tool now, so the NAME
     // that has to be covered is the merged one — the members are never dispatched by their own name.
-    expect(VERIFICATION_TOOLS.has(ReticleTool.VERIFY)).toBe(true);
-    expect(VERIFICATION_TOOLS.has(ReticleTool.ACT_AND_WAIT)).toBe(true);
+    expect(VERDICT_TOOLS.has(ReticleTool.VERIFY)).toBe(true);
+    expect(VERDICT_TOOLS.has(ReticleTool.ACT_AND_WAIT)).toBe(true);
   });
 });
 

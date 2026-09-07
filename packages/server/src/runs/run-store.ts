@@ -30,6 +30,16 @@ export type ReadRunResult =
 interface RunStoreOptions {
   retention?: number;
   slack?: number;
+  /**
+   * Called after a run artifact is safely on disk. Used to wake cloud sync so a finished
+   * verification reaches the dashboard promptly instead of waiting for the next timer tick.
+   *
+   * A callback rather than a dependency on the sync daemon: the store's job is durability, and a
+   * store that imported the cloud would make "write a run" fail whenever the cloud did. It is
+   * invoked AFTER the rename, so nothing can observe a run that is not yet readable, and it must
+   * never throw — see the call site.
+   */
+  onWrote?: () => void;
 }
 
 export class RunStore {
@@ -37,12 +47,14 @@ export class RunStore {
   readonly #root: string;
   readonly #retention: number;
   readonly #slack: number;
+  readonly #onWrote: (() => void) | undefined;
 
   constructor(fs: FileSystemPort, root: string, opts: RunStoreOptions = {}) {
     this.#fs = fs;
     this.#root = root;
     this.#retention = opts.retention ?? RUN_RETENTION;
     this.#slack = opts.slack ?? RUN_RETENTION_SLACK;
+    this.#onWrote = opts.onWrote;
   }
 
   /**
@@ -61,6 +73,13 @@ export class RunStore {
     const tmp = `${path}${TMP_EXT}`;
     await this.#fs.writeFile(tmp, `${JSON.stringify(run, null, JSON_INDENT)}\n`);
     await this.#fs.rename(tmp, path);
+    // AFTER the rename: a listener that reads the run back must find it there. Swallowed, because
+    // this is a notification — a sync that cannot be woken must never fail the write it followed.
+    try {
+      this.#onWrote?.();
+    } catch {
+      // Not this store's problem, and not worth failing a durable write over.
+    }
     await this.#pruneOld();
   }
 

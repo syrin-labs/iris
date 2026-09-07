@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ProjectReadError, RunKind, RunStatus } from '@reticlehq/core';
 import { TOOLS, type ToolDeps } from '../tools/tools.js';
-import { PROJECT_TOOLS } from './project-tools.js';
 import { ReticleTool } from '../tools/tool-names.js';
 import { BaselineStore } from './baselines.js';
 import { RecordingStore } from '../flows/recordings.js';
@@ -42,9 +41,7 @@ function fakeDeps(fs: FileSystemPort, root: string): ToolDeps {
 }
 
 function tool(name: string): (typeof TOOLS)[number] {
-  // run_record was retired from the advertised surface but its handler is still defined and
-  // exercised here — fall back to the module's own defs so the behavior stays under test.
-  const t = TOOLS.find((x) => x.name === name) ?? PROJECT_TOOLS.find((x) => x.name === name);
+  const t = TOOLS.find((x) => x.name === name);
   if (t === undefined) throw new Error(`no tool ${name}`);
   return t;
 }
@@ -75,18 +72,6 @@ describe('project tools — temp dir, never touches the repo', () => {
 
   afterEach(async () => {
     await removeTempDir(dir);
-  });
-
-  it('1: reticle_run_record appends a run, defaulting kind to manual', async () => {
-    const res = (await tool(ReticleTool.RUN_RECORD).handler(deps, {
-      name: 'checkout',
-      status: RunStatus.PASS,
-    })) as { recorded: boolean; runName: string };
-    expect(res.recorded).toBe(true);
-    const last = await deps.project.lastRun('checkout');
-    expect(last?.kind).toBe(RunKind.MANUAL);
-    expect(last?.status).toBe(RunStatus.PASS);
-    expect(last?.at).toBe(1234);
   });
 
   it('2: reticle_project on empty history returns a structured MISSING error', async () => {

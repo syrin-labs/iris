@@ -11,7 +11,7 @@ const FlakeRecordSchema = z.object({
   runs: z.number().int().min(0),
   fails: z.number().int().min(0),
 });
-export type FlakeRecord = z.infer<typeof FlakeRecordSchema>;
+type FlakeRecord = z.infer<typeof FlakeRecordSchema>;
 
 /** Per-flow map (flow name → record). */
 export type FlakeLedger = Record<string, FlakeRecord>;
@@ -22,7 +22,7 @@ export const FlakeFileSchema = z.object({
 });
 
 /** Minimum unchanged-code replays before flakiness can be judged (too few = noise). */
-export const DEFAULT_MIN_FLAKE_RUNS = 5;
+const DEFAULT_MIN_FLAKE_RUNS = 5;
 
 export function emptyRecord(): FlakeRecord {
   return { runs: 0, fails: 0 };

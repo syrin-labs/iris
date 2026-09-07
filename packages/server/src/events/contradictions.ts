@@ -4,7 +4,9 @@ import {
   MUTATING_METHODS,
   isDevToolingUrl,
   isSameDocument,
+  isThirdPartyUrl,
   isSameEditEpoch,
+  urlForMatch,
   type ReticleEvent,
 } from '@reticlehq/core';
 import { describeSuperseded } from './observed-in-window.js';
@@ -65,6 +67,8 @@ export type OwnContradiction = Contradiction & { kind: ContradictionKind };
 interface NetCall {
   method: string;
   url: string;
+  /** Grader haystack — the raw request when redaction rewrote `url`. */
+  matchUrl: string;
   status: number | undefined;
   /**
    * `undefined` means NO VERDICT — not failure.
@@ -83,6 +87,7 @@ function netCall(e: ReticleEvent): NetCall {
   return {
     method: (asString(e.data['method']) ?? '').toUpperCase(),
     url: asString(e.data['url']) ?? '',
+    matchUrl: urlForMatch(e.data),
     status,
     // `ok` is authoritative when present (IPC sets it explicitly); status is the HTTP fallback.
     // Neither present = no verdict was ever reported, which stays undefined all the way through.
@@ -313,6 +318,24 @@ export interface ContradictionOptions {
    * treats absence as current on both sides.
    */
   currentEditEpoch?: number | undefined;
+  /**
+   * The page under test, as the session last recorded it — the app's own origin, in URL form.
+   *
+   * The first-party/third-party axis. Every rule below asks "did the app disagree with itself", and
+   * a failed analytics beacon is not the app: reported independently from several apps, any
+   * analytics package installed was enough to grade a correct drive `contradicted`, and on one app
+   * EVERY assertion came back that way forever, because it fires a branding call on page load. A
+   * verdict field that answers "no" to everything has stopped being a verdict field.
+   *
+   * Third-party traffic is dropped here rather than reported at a lower severity, for the reason the
+   * dev-tooling split is: the rules below would each have to learn to say it. The exclusion is never
+   * silent — the URLs ride out in the same disclosure line the toolchain's do — and the calls
+   * themselves are untouched in `reticle_network` and the event timeline.
+   *
+   * Undefined disables the axis, exactly as an undefined `currentDocumentId` disables the document
+   * one: a caller that cannot say which page is under test gets the behaviour it had before this.
+   */
+  appOrigin?: string | undefined;
 }
 
 /** Net-shaped events — the only ones that carry a URL a dev-tooling channel could occupy. */
@@ -321,6 +344,42 @@ const NET_TYPES: ReadonlySet<EventType> = new Set([
   EventType.NET_REQUEST,
   EventType.NET_STREAM,
 ]);
+
+/**
+ * Hash-router paths put the route in the fragment (`#/settings`, `#!/home`). An in-page skip link
+ * does not (`#main-content`, `#`, empty). The blank-destination rule must still see the former.
+ */
+function isInPageFragment(hash: string): boolean {
+  if ('' === hash || '#' === hash) return true;
+  const body = hash.startsWith('#') ? hash.slice(1) : hash;
+  return !body.startsWith('/') && !body.startsWith('!');
+}
+
+function hrefAsUrl(value: string | undefined): URL | undefined {
+  if (value === undefined || '' === value) return undefined;
+  try {
+    return new URL(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Same origin + pathname + search, different in-page fragment — a skip link, not a new view.
+ *
+ * Returns false when `from`/`to` are missing, so older events without hrefs keep the existing rule.
+ */
+function isSameDocumentHashAnchor(event: ReticleEvent): boolean {
+  if (event.type !== EventType.ROUTE_CHANGE) return false;
+  const from = hrefAsUrl(asString(event.data['from']));
+  const to = hrefAsUrl(asString(event.data['to']));
+  if (from === undefined || to === undefined) return false;
+  if (from.origin !== to.origin || from.pathname !== to.pathname || from.search !== to.search) {
+    return false;
+  }
+  if (from.hash === to.hash) return false;
+  return isInPageFragment(to.hash);
+}
 
 /**
  * Split the window into the app's traffic and the dev toolchain's own (see `DevToolingChannel`).
@@ -332,7 +391,10 @@ const NET_TYPES: ReadonlySet<EventType> = new Set([
  * every action. The overlay's own 404s and duplicate fetches are the same story on other checks,
  * which is why the split happens ONCE here rather than in the one check that reported it.
  */
-function splitDevTooling(events: readonly ReticleEvent[]): {
+function splitForeignTraffic(
+  events: readonly ReticleEvent[],
+  appOrigin: string | undefined,
+): {
   app: readonly ReticleEvent[];
   ignored: string[];
 } {
@@ -340,7 +402,9 @@ function splitDevTooling(events: readonly ReticleEvent[]): {
   const app = events.filter((e) => {
     if (!NET_TYPES.has(e.type)) return true;
     const url = asString(e.data['url']);
-    if (!isDevToolingUrl(url)) return true;
+    // Somebody else's code, twice over: the toolchain's own channel, and any site that is not the
+    // app under test. Neither can answer the question every rule below asks.
+    if (!isDevToolingUrl(url) && !isThirdPartyUrl(url, appOrigin)) return true;
     if (url !== undefined && !ignored.includes(url)) ignored.push(url);
     return false;
   });
@@ -363,6 +427,42 @@ function splitDevTooling(events: readonly ReticleEvent[]): {
  * observation in the window predates the edit. One post-edit observation and the agent is already
  * looking at the code it wrote, so the label would be noise.
  */
+/**
+ * Below this, repeated writes are a BURST, whatever their spacing.
+ *
+ * A double submit is two clicks, or one click and a re-render: milliseconds apart. Nothing a human
+ * or a StrictMode remount does lands on a quarter-second grid, so this is the floor under which
+ * regularity means nothing.
+ */
+const POLL_MIN_INTERVAL_MS = 250;
+
+/**
+ * How far a gap may sit from the median and still count as the same cadence.
+ *
+ * Loose on purpose: a real poll drifts under load, and a `setInterval` competing with a busy main
+ * thread is not metronomic. Tight enough that a burst followed by a late retry — the shape a double
+ * submit plus a user's second attempt makes — is not read as a rhythm.
+ */
+const POLL_JITTER_RATIO = 0.4;
+
+/**
+ * Is this the same write on a steady interval, rather than the same write twice?
+ *
+ * THREE samples minimum, and that is the load-bearing part: two writes give one gap, and a single
+ * gap cannot distinguish a cadence from a coincidence. Two writes stay a duplicate however far
+ * apart they are, which is the classic double submit and every case this rule was written for.
+ */
+function isSteadyCadence(times: readonly number[]): boolean {
+  if (times.length < 3) return false;
+  const ordered = [...times].sort((a, b) => a - b);
+  const gaps: number[] = [];
+  for (let i = 1; i < ordered.length; i += 1) gaps.push((ordered[i] ?? 0) - (ordered[i - 1] ?? 0));
+  const sorted = [...gaps].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+  if (median < POLL_MIN_INTERVAL_MS) return false;
+  return gaps.every((gap) => Math.abs(gap - median) <= median * POLL_JITTER_RATIO);
+}
+
 export function findContradictions(
   allEvents: readonly ReticleEvent[],
   options: ContradictionOptions = {},
@@ -391,20 +491,23 @@ function findWindowContradictions(
   options: ContradictionOptions,
 ): Contradiction[] {
   const found: OwnContradiction[] = [];
-  const { app: allApp, ignored: ignoredDevTooling } = splitDevTooling(allEvents);
+  const { app: allApp, ignored: ignoredForeign } = splitForeignTraffic(
+    allEvents,
+    options.appOrigin,
+  );
 
   // ── Evidence belonging to a document that has since been replaced ───────────────────────────
   // Scoped ONCE, here, for the same reason the dev-tooling split is: every rule below asks "what
   // else was in this window", and answering that with a dead page's traffic is a defect in all of
   // them rather than in whichever one reported it. Applied after the dev-tooling split so the count
   // reported below is the app's own evidence and not the toolchain's noise.
-  const events = allApp.filter((e) => isSameDocument(e.documentId, options.currentDocumentId));
-  const superseded = allApp.length - events.length;
+  const scoped = allApp.filter((e) => isSameDocument(e.documentId, options.currentDocumentId));
+  const superseded = allApp.length - scoped.length;
   // An empty window was always allowed to mean "nothing happened"; that reading is only unsafe once
   // supersession is what emptied it. Reported ALONE and before every rule below, because a window
   // with nothing left in it is exactly the shape `action-had-no-effect` fires on — so without this
   // the fix would have swapped a wrong citation for a wrong accusation.
-  if (superseded > 0 && 0 === events.length) {
+  if (superseded > 0 && 0 === scoped.length) {
     return [
       {
         kind: ContradictionKind.EVIDENCE_SUPERSEDED,
@@ -415,6 +518,19 @@ function findWindowContradictions(
       },
     ];
   }
+
+  // ── Evidence that predates the action ───────────────────────────────────────────────────────
+  // The attribution floor, and it is scoped ONCE here for the same reason the two filters above are:
+  // a rule that reads "what else was in this window" and gets handed traffic from before the caller
+  // acted is not refining its answer, it is answering about somebody else's action. Three rules
+  // (`duplicate-request`, `signal-without-consequence`, `consequence-elsewhere`) each checked this
+  // for themselves and the other six swept the whole window — which is how an assert with no `since`
+  // came to be judged against everything that had ever happened in the tab.
+  //
+  // Undefined means nothing attributed the window to an action at all; the floor then does nothing,
+  // and the consequence rules below decline to speak instead. See `advanced`.
+  const floor = options.actionSince;
+  const events = floor === undefined ? scoped : scoped.filter((e) => e.t >= floor);
 
   const settled = events.filter((e) => e.type === EventType.NET_REQUEST).map(netCall);
 
@@ -455,7 +571,22 @@ function findWindowContradictions(
   const unexpected = failed.filter(
     (c) => !matchesDeclaredFailure(c, options.expectedFailures ?? []),
   );
-  const advanced = uiAdvanced(events);
+  /**
+   * Did the UI move — and is anybody entitled to say so?
+   *
+   * `undefined` is the third answer and the point of the tri-state: "the UI moved forward while a
+   * request failed" is a claim about CAUSATION, and over a window nothing attributed to an action
+   * the two halves merely co-occurred. A passive `reticle_assert` performs nothing, so ambient
+   * traffic — a poll, a page-load bootstrap, a branding call — is not its consequence and must not
+   * decide its verdict.
+   *
+   * Typed rather than gated with a boolean so it cannot be skipped: every rule that reasons from UI
+   * movement has to answer `undefined` explicitly, including one added later. The rules that read
+   * the app's OWN claims (a success signal over a failed call) or its payloads (a 2xx whose body
+   * says it failed, a field echoed back wrong) are untouched — those are things the app said, not
+   * consequences anybody inferred, and they are true whoever caused them.
+   */
+  const advanced: boolean | undefined = floor === undefined ? undefined : uiAdvanced(events);
   const signals = events
     .filter((e) => e.type === EventType.SIGNAL)
     .map((e) => asString(e.data['name']) ?? 'signal');
@@ -464,7 +595,13 @@ function findWindowContradictions(
   // A navigation that neither fetches nor renders arrived nowhere. Distinct from a dead control:
   // the control worked, the DESTINATION is empty — which is why every "did the click do something"
   // heuristic passes it, a route change being unambiguously something.
-  const routed = events.some((e) => e.type === EventType.ROUTE_CHANGE);
+  const routeEvents = events.filter((e) => e.type === EventType.ROUTE_CHANGE);
+  const routed = routeEvents.length > 0;
+  // A skip link (`href="#main-content"`) is a same-document hash change. The observable
+  // consequences are location.hash, focus, and scroll — not a DOM mutation. Treating it as a
+  // blank destination made "did my skip link work" unanswerable. Hash-router paths (`#/invoices`)
+  // still go through the rule: those ARE a new view.
+  const hashAnchorOnly = routed && routeEvents.every(isSameDocumentHashAnchor);
   // `dom.text` counts as rendered, and it has to: React reconciles a destination IN PLACE far more
   // often than it adds nodes. Measured on three ordinary sidebar navigations of the bench app — every
   // one emitted { dom.attr:2, dom.text:2, render.commit, state.change } and ZERO dom.added/removed,
@@ -484,7 +621,7 @@ function findWindowContradictions(
   const fetched = events.some(
     (e) => e.type === EventType.NET_REQUEST || e.type === EventType.NET_PENDING,
   );
-  if (routed && !rendered && !fetched && true !== options.renderProved) {
+  if (routed && !hashAnchorOnly && !rendered && !fetched && true !== options.renderProved) {
     found.push({
       kind: ContradictionKind.ROUTE_RENDERED_NOTHING,
       claim: 'the app navigated to a new route',
@@ -538,35 +675,115 @@ function findWindowContradictions(
   // Ordering cannot decide this: an optimistic UI legitimately fires its success signal BEFORE the
   // response, so "the claim must follow the failure" would miss the real defect. What separates them
   // is not when the app spoke, it is whether it took it back.
-  if (failed.length > 0 && successSignals.length > 0 && !failureAcknowledged(events)) {
+  // WHAT failed decides this, not whether an action was attributed.
+  //
+  // The claim is a thing the app said, so the attribution floor does not apply to it — the flagship
+  // false green is an app asserting success on a PASSIVE assert while its own write failed, and
+  // requiring an action would lose exactly that. But the COUNTER was any failure in the window, and
+  // that is the same window statement scoped out of every other rule here. Measured: two of the
+  // three false positives surviving the first scoping pass were this rule.
+  //
+  // A success signal claims a CHANGE was made. A failed mutation is evidence against that claim; a
+  // failed read is not. Background polls, prefetches and telemetry GETs fail constantly in healthy
+  // apps and say nothing about whether a write landed. Structural, not a timing heuristic, and the
+  // distinction was already encoded next door in `isMutating`.
+  const failedWrites = failed.filter(isMutating);
+  // The same scoping, for the same reason, one branch down. "The UI moved forward" is also a claim
+  // that something CHANGED, and it was still reading ANY failure — so a first-party poll failing
+  // during an action contradicted a verdict the action had genuinely earned. Measured on the
+  // observation benchmark: one of two false positives across 47 cells, and the argument for it is
+  // the paragraph above, which had simply not been carried down here.
+  const unexpectedWrites = unexpected.filter(isMutating);
+  if (failedWrites.length > 0 && successSignals.length > 0 && !failureAcknowledged(events)) {
     found.push({
       kind: ContradictionKind.SIGNAL_CONTRADICTED,
       claim: `the app fired ${successSignals.map((s) => `"${s}"`).join(', ')}`,
-      counter: `${String(failed.length)} request(s) in the same window failed`,
-      detail: failed.map(describe).join('; '),
+      counter: `${String(failedWrites.length)} write(s) in the same window failed`,
+      detail: failedWrites.map(describe).join('; '),
     });
-  } else if (unexpected.length > 0 && advanced && !misattributed && !failureAcknowledged(events)) {
+  } else if (
+    unexpectedWrites.length > 0 &&
+    true === advanced &&
+    !misattributed &&
+    !failureAcknowledged(events)
+  ) {
     found.push({
       kind: ContradictionKind.UI_ADVANCED_REQUEST_FAILED,
       claim: 'the UI moved forward (DOM/store/route changed)',
-      counter: `${String(unexpected.length)} request(s) in the same window failed`,
-      detail: unexpected.map(describe).join('; '),
+      counter: `${String(unexpectedWrites.length)} request(s) in the same window failed`,
+      detail: unexpectedWrites.map(describe).join('; '),
     });
   }
 
   // ── A write succeeded and nothing on the client moved ───────────────────────────────────────
   // Writes only: a GET that changes nothing is a prefetch; a POST that changes nothing is a lost
   // write, a response parsed into the void, or a render that never happened.
-  if (!advanced) {
+  if (false === advanced) {
     const ignoredWrites = settled.filter((c) => true === c.ok && isMutating(c));
     if (ignoredWrites.length > 0) {
-      found.push({
-        kind: ContradictionKind.RESPONSE_IGNORED,
-        claim: `${String(ignoredWrites.length)} write(s) succeeded on the server`,
-        counter: 'nothing on the client changed — no DOM, store or route movement',
-        detail: ignoredWrites.map(describe).join('; '),
-      });
+      // ...unless THIS document handed the consequence to another browsing context. An OAuth sign-in
+      // posts, succeeds, and continues in a popup the in-page SDK cannot follow (#508): the original
+      // tab legitimately never changes, and response-ignored would accuse it of ignoring a response
+      // it handed off. The opened-context event flips the reading from "the client did nothing" to
+      // "the client went where we cannot look". Scoped like every rule here to the attribution floor
+      // (`options.actionSince`; the local below is declared later, for the window rules).
+      const contextFloor = options.actionSince;
+      const openedContext = events.some(
+        (e) =>
+          e.type === EventType.CONTEXT_OPENED && contextFloor !== undefined && e.t >= contextFloor,
+      );
+      found.push(
+        openedContext
+          ? {
+              kind: ContradictionKind.CONSEQUENCE_ELSEWHERE,
+              claim: `${String(ignoredWrites.length)} write(s) succeeded on the server`,
+              counter:
+                'this document never changed because the page opened another browsing context during this window (e.g. an OAuth popup), where the in-page SDK cannot observe the result',
+              detail: ignoredWrites.map(describe).join('; '),
+            }
+          : {
+              kind: ContradictionKind.RESPONSE_IGNORED,
+              claim: `${String(ignoredWrites.length)} write(s) succeeded on the server`,
+              counter: 'nothing on the client changed — no DOM, store or route movement',
+              detail: ignoredWrites.map(describe).join('; '),
+            },
+      );
     }
+  }
+
+  // ── The app announced a consequence and nothing else moved ─────────────────────────────────
+  // Scoped as tightly as the evidence allows, because this rule fires on the ABSENCE of everything
+  // else and that is the easiest way to build a false positive.
+  //
+  // Only when the window is otherwise EMPTY: no DOM, no store, no route (`!advanced`) and no request
+  // at all. A request means the app reached for something, and whether it settled, failed or was
+  // ignored belongs to three other rules — firing here too would report one fact twice.
+  //
+  // `successSignals` reuses the failure-shaped filter above: an app that announced `deploy:failed`
+  // is correctly reporting that nothing happened, and accusing it inverts the meaning of the one app
+  // doing this right.
+  //
+  // And only for a window attributed to an ACTION. `reticle_assert` OBSERVES — there is no click
+  // whose consequence should have corroborated anything, so an assert over a quiet window carrying
+  // one signal is an ordinary read, not a claim nothing backs. Without this the rule reddened eight
+  // existing tests that assert exactly that, which is the false-positive class this scoping exists
+  // to prevent.
+  if (
+    options.actionSince !== undefined &&
+    false === advanced &&
+    0 === settled.length &&
+    successSignals.length > 0
+  ) {
+    found.push({
+      kind: ContradictionKind.SIGNAL_WITHOUT_CONSEQUENCE,
+      claim: `the app fired ${successSignals.map((s) => `"${s}"`).join(', ')}`,
+      counter:
+        'nothing else in the window moved — no DOM, no store, no route, no request — so the only ' +
+        'evidence that anything happened is the app saying so',
+      detail:
+        'a signal emitted from the value the app was ASKED for, rather than the one it committed, ' +
+        'reads identically to one that worked',
+    });
   }
 
   // ── The same write fired more than once, inside ONE action's window ─────────────────────────
@@ -583,25 +800,47 @@ function findWindowContradictions(
   // compares nothing rather than guess.
   const actionSince = options.actionSince;
   if (actionSince !== undefined) {
-    const writeCounts = new Map<string, { label: string; count: number }>();
+    /**
+     * When the window navigated, and therefore when a write stops belonging to the user's action.
+     *
+     * React StrictMode double-invokes a mount effect in development, so clicking a nav link lands
+     * two identical writes inside the action's own window. Nothing scoped them out and they read as
+     * a double submit — measured on the observation benchmark as one of two false positives.
+     *
+     * The route change is the structural tell, not a heuristic: the claim this rule makes is "one
+     * user action was performed", and writes that follow a navigation belong to the mount of the
+     * view navigated TO. A real double submit fires from the view it is already on, with nothing in
+     * between — and one that navigates AFTER submitting is still counted, because the order is what
+     * distinguishes them.
+     */
+    const navigatedAt = events.find(
+      (e) => EventType.ROUTE_CHANGE === e.type && e.t >= actionSince,
+    )?.t;
+    const writeTimes = new Map<string, { label: string; times: number[] }>();
     for (const event of events) {
       if (event.type !== EventType.NET_REQUEST || event.t < actionSince) continue;
+      if (navigatedAt !== undefined && event.t >= navigatedAt) continue;
       const call = netCall(event);
       if (!isMutating(call)) continue;
       const label = `${call.method} ${call.url}`;
       const body = asString(event.data['requestBody']);
       const key = body === undefined || 0 === body.length ? label : `${label} ${body}`;
-      const entry = writeCounts.get(key) ?? { label, count: 0 };
-      entry.count += 1;
-      writeCounts.set(key, entry);
+      const entry = writeTimes.get(key) ?? { label, times: [] };
+      entry.times.push(event.t);
+      writeTimes.set(key, entry);
     }
-    for (const [, { label, count }] of writeCounts) {
-      if (count < 2) continue;
+    for (const [, { label, times }] of writeTimes) {
+      if (times.length < 2) continue;
+      // A steady cadence is a POLL, and a poll is not a double submit. An app that polls could not
+      // produce a verdict at all: a camera scan loop POSTing until it acquires a lock had every
+      // assertion that had already seen its consequence come back `unknown` behind writes that
+      // were the app working correctly (#673).
+      if (isSteadyCadence(times)) continue;
       found.push({
         kind: ContradictionKind.DUPLICATE_REQUEST,
         claim: 'one user action was performed',
-        counter: `the same write fired ${String(count)} times`,
-        detail: `${label} ×${String(count)}`,
+        counter: `the same write fired ${String(times.length)} times`,
+        detail: `${label} ×${String(times.length)}`,
       });
     }
   }
@@ -610,7 +849,7 @@ function findWindowContradictions(
   // Gated on the UI having moved: an in-flight request while the app is still visibly waiting is
   // just a slow request, not a contradiction. It becomes one when the app proceeded regardless —
   // which is also what makes a later `{ kind: "settled" }` assertion a false green.
-  if (advanced) {
+  if (true === advanced) {
     const settledIds = new Set(
       events
         .filter((e) => e.type === EventType.NET_REQUEST)
@@ -630,9 +869,9 @@ function findWindowContradictions(
         // the finding says which URLs, so an agent reading it can see what Reticle chose to ignore.
         detail: [
           inFlight.map((p) => describe(p.call)).join('; '),
-          ...(0 === ignoredDevTooling.length
+          ...(0 === ignoredForeign.length
             ? []
-            : [`ignored as dev tooling: ${ignoredDevTooling.join(', ')}`]),
+            : [`ignored as dev tooling or third-party: ${ignoredForeign.join(', ')}`]),
         ].join(' — '),
       });
     }

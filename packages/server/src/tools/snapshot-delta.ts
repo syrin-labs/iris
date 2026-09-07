@@ -196,7 +196,7 @@ interface SnapshotDelta {
 }
 
 /** Where focus moved, when it moved. Absent fields mean nothing held focus on that side. */
-export interface FocusChange {
+interface FocusChange {
   from?: string;
   to?: string;
 }

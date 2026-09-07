@@ -1,10 +1,10 @@
 /**
  * What to say when an agent calls a real Reticle tool that this profile does not advertise.
  *
- * The default surface advertises 18 of 48 tools, and the extended one 30. That is deliberate — every
- * advertised tool's schema is re-sent on every turn, and editors budget MCP tools as a COUNT shared
- * across every connected server — and everything omitted stays fully callable through `reticle_run`,
- * which `surface-reachability.test.ts` guards.
+ * The default surface is the verify loop plus the two meta-tools; the extended one is larger but
+ * still capped. Counts live in `surface-sizes.test.ts` — restating them here is how they drift.
+ * Everything omitted stays fully callable through `reticle_run`, which `surface-reachability.test.ts`
+ * guards.
  *
  * The gap was in the ERROR. The MCP SDK answers `Tool <name> not found`, which is indistinguishable
  * from "this tool does not exist", so an agent that trusts it stops trying. Reported from a real

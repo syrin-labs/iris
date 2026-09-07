@@ -41,8 +41,20 @@ export class FakeBrowser {
   queryResolves = true;
   /** Records every command the bridge sent (for replay assertions). */
   readonly received: { name: string; args: Record<string, unknown> }[] = [];
-  /** The snapshot tree to return. Mutable so tests can vary the page between calls. */
-  snapshotResult: { tree: string; status: Record<string, unknown> } = {
+  /**
+   * The snapshot tree to return. Mutable so tests can vary the page between calls.
+   *
+   * The counters are optional because the fields they stand for are: the browser omits `nodes`-
+   * adjacent diagnostics on a page that has nothing to report, and a test asserting on one has to be
+   * able to send a payload shaped like the real thing.
+   */
+  snapshotResult: {
+    tree: string;
+    status: Record<string, unknown>;
+    nodes?: number;
+    hiddenSkipped?: number;
+    leanSkipped?: number;
+  } = {
     tree: '- button "Pay" (ref=e7)\n- dialog "Order confirmed" (ref=e12)',
     status: { route: '/checkout' },
   };

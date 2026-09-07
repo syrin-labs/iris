@@ -21,9 +21,9 @@
 /** The event name a beat carries. One `grep` separates liveness from everything else in the file. */
 export const DAEMON_HEARTBEAT_EVENT = 'reticle_daemon_alive';
 /** Written by installExitTrace when the process exits through Node. */
-export const DAEMON_EXIT_EVENT = 'reticle_daemon_exiting';
+const DAEMON_EXIT_EVENT = 'reticle_daemon_exiting';
 /** Written by installExitTrace when a signal arrives, which is a CAUSE the exit line does not carry. */
-export const DAEMON_SIGNAL_EVENT = 'reticle_daemon_signalled';
+const DAEMON_SIGNAL_EVENT = 'reticle_daemon_signalled';
 
 /**
  * How often a live daemon says so.

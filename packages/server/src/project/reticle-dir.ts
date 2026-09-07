@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import type { FlowName, SessionId } from '@reticlehq/core';
+import { AppRuntime } from '@reticlehq/core';
 import {
   CONTRACT_FILE_VERSION,
   ContractFileSchema,
@@ -104,13 +105,30 @@ export function isValidRunId(runId: string): runId is RunId {
 }
 
 /** The PNG baseline path for `name`.reticle/visual/<name>.png). */
-export function visualPath(root: string, name: string): string {
-  return join(root, ReticleDir.VISUAL_SUBDIR, `${name}.png`);
+export function visualPath(root: string, name: string, runtime?: string): string {
+  return join(visualDir(root, runtime), `${name}.png`);
+}
+
+/**
+ * The directory a visual artifact belongs in, scoped by the runtime that produced it.
+ *
+ * An Electron window, a Tauri webview and a browser tab render the same url differently — different
+ * chrome, different fonts, a different device pixel ratio, a webview that is not the browser at all.
+ * One shared baseline makes every cross-runtime diff wrong, and the quiet direction is the dangerous
+ * one: a baseline overwritten from another runtime turns a later real regression into a pass.
+ *
+ * Scoped the way flows already are. A DESKTOP runtime gets a subdir; web, an unknown runtime, and
+ * everything captured before this existed stay on the flat path — the SDK has no screenshotter, so
+ * every pre-existing baseline came from a driven browser, and moving them would orphan them.
+ */
+export function visualDir(root: string, runtime?: string): string {
+  const visual = join(root, ReticleDir.VISUAL_SUBDIR);
+  return runtime === undefined || AppRuntime.WEB === runtime ? visual : join(visual, runtime);
 }
 
 /** The overlay-diff PNG path for `name`.reticle/visual/<name>.diff.png). */
-export function visualDiffPath(root: string, name: string): string {
-  return join(root, ReticleDir.VISUAL_SUBDIR, `${name}.diff.png`);
+export function visualDiffPath(root: string, name: string, runtime?: string): string {
+  return join(visualDir(root, runtime), `${name}.diff.png`);
 }
 
 /**

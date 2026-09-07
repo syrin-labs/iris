@@ -96,4 +96,33 @@ describe('a ref spent in a tab it was not taken from', () => {
     expect(r.error).toBeUndefined();
     expect(r.ok).toBe(true);
   });
+
+  /**
+   * Sequence steps carry the refs, not a top-level `ref`. The same loop — snapshot one tab, drive
+   * without a sessionId — used to skip the wrong-tab rule entirely and fail as a stale ref on
+   * whichever tab auto-selection preferred.
+   */
+  it('refuses a sequence the same way, even though the refs live on the steps', async () => {
+    await runTool(tool(ReticleTool.SNAPSHOT, { ok: true }), deps(tabB, [tabA]), {
+      sessionId: 'sA',
+    });
+    const r = (await runTool(tool(ReticleTool.ACT_SEQUENCE, { ok: true }), deps(tabB, [tabA]), {
+      steps: [{ ref: 'e120005', action: 'fill', args: { value: 'a' } }],
+    })) as { error?: string };
+    expect(r.error).toContain('sA');
+    expect(r.error).toContain('sessionId');
+    expect(r.error).not.toMatch(/stale/i);
+  });
+
+  it('a sequence that names the minting tab is driven, not refused', async () => {
+    await runTool(tool(ReticleTool.SNAPSHOT, { ok: true }), deps(tabB, [tabA]), {
+      sessionId: 'sA',
+    });
+    const r = (await runTool(tool(ReticleTool.ACT_SEQUENCE, { ok: true }), deps(tabB, [tabA]), {
+      sessionId: 'sA',
+      steps: [{ ref: 'e120005', action: 'fill', args: { value: 'a' } }],
+    })) as { error?: string; ok?: boolean };
+    expect(r.error).toBeUndefined();
+    expect(r.ok).toBe(true);
+  });
 });

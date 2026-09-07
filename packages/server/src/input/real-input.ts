@@ -10,6 +10,7 @@
  * pay for it; the type-only import is elided by `tsc`, so the build stays green without it.
  */
 import type { Browser, Page } from 'playwright';
+import { chromiumLaunchOptions } from '../chromium-launch-options.js';
 import { gotoOptions } from '../pool/playwright-launcher.js';
 import { BrowserLaunchKind } from '@reticlehq/core';
 import { getSessionMetrics } from '../telemetry/session-metrics.js';
@@ -386,7 +387,7 @@ export interface LaunchedProviderOptions {
 const INJECT_CONNECT_WAIT_MS = 8_000;
 
 /** The only place the dynamic value import of Playwright lives for the launched (drive) path. */
-const launchedChromium: LaunchFn = async (headless) => {
+export const launchedChromium: LaunchFn = async (headless) => {
   let mod: typeof import('playwright');
   try {
     mod = await import('playwright');
@@ -395,7 +396,7 @@ const launchedChromium: LaunchFn = async (headless) => {
   }
   const settle = getSessionMetrics().recordConnectAttempt(BrowserLaunchKind.LAUNCHED);
   try {
-    const browser = await mod.chromium.launch({ headless });
+    const browser = await mod.chromium.launch(chromiumLaunchOptions(headless));
     settle();
     return browser;
   } catch (e) {
@@ -471,8 +472,28 @@ export class LaunchedRealInputProvider implements OwnedRealInputProvider {
     }
   }
 
-  isAvailableFor(sessionUrl: string): Promise<boolean> {
+  /**
+   * The page we own, or undefined once it is gone.
+   *
+   * The handle is cached for the life of the provider and Playwright keeps answering `url()` after
+   * the page has closed, so a closed window read as AVAILABLE and every method below threw
+   * "Target page, context or browser has been closed" — the raw Playwright message, surfaced to the
+   * agent as a tool error, on every call for the rest of the run. A dead page is the same fact as no
+   * page, and every caller already handles that. Only an EXPLICIT `true` drops it, matching
+   * `CdpRealInputProvider`'s `isConnected` check: a test fake without the method is assumed live.
+   */
+  #livePage(): Page | undefined {
     const page = this.#page;
+    if (page === undefined) return undefined;
+    if (true === page.isClosed?.()) {
+      this.#page = undefined; // never ask a corpse twice
+      return undefined;
+    }
+    return page;
+  }
+
+  isAvailableFor(sessionUrl: string): Promise<boolean> {
+    const page = this.#livePage();
     if (page === undefined) return Promise.resolve(false);
     if (page.url() === sessionUrl) return Promise.resolve(true);
     return Promise.resolve(stripVolatile(page.url()) === stripVolatile(sessionUrl));
@@ -484,14 +505,14 @@ export class LaunchedRealInputProvider implements OwnedRealInputProvider {
     box: ElementBox,
     args: RealInputArgs,
   ): Promise<RealInputResult> {
-    const page = this.#page;
+    const page = this.#livePage();
     if (page === undefined) return Promise.resolve({ performed: false, center: boxCenter(box) });
     return performGesture(page, action, box, args, this.#sleep);
   }
 
   /** PNG of the owned page, or undefined before navigate / after dispose. */
   screenshot(_sessionUrl: string, opts: ScreenshotOpts): Promise<Uint8Array | undefined> {
-    const page = this.#page;
+    const page = this.#livePage();
     if (page === undefined) return Promise.resolve(undefined);
     return capturePage(page, opts);
   }
@@ -508,7 +529,7 @@ export class LaunchedRealInputProvider implements OwnedRealInputProvider {
     _sessionUrl: string,
     size: { width: number; height: number },
   ): Promise<boolean> {
-    const page = this.#page;
+    const page = this.#livePage();
     if (page === undefined) return false;
     await page.setViewportSize({ width: size.width, height: size.height });
     return true;
@@ -516,7 +537,7 @@ export class LaunchedRealInputProvider implements OwnedRealInputProvider {
 
   /** Apply network-mock rules to the owned page; false before navigate / after dispose. */
   async setMocks(_sessionUrl: string, rules: MockRule[]): Promise<boolean> {
-    const page = this.#page;
+    const page = this.#livePage();
     if (page === undefined) return false;
     await installNetworkMocks(page, rules);
     return true;

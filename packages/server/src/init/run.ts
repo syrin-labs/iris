@@ -5,19 +5,23 @@
  */
 
 import { dirname, join } from 'node:path';
+import { CSP_FILES } from './csp-doctor.js';
+import { preflightRefusal } from './preflight.js';
 import { noPackageJsonMessage } from './non-js-project.js';
+import { devCommandFrom } from './dev-script.js';
+import { restartHint, FEEDBACK_HINT } from './closing-hint.js';
 import { spanSync } from '../trace.js';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { projectIdOf, rememberProjectOnDisk } from '../project/remember-project.js';
 import { detect, Framework, namesAPackageManager, type DetectInput, UiLibrary } from './detect.js';
 import { wasMcpRegistered } from './mcp-registered.js';
 import { pickAstroHost } from './astro-host.js';
-import { workspaceParents } from './workspace-apps.js';
-import { chooseWorkspaceApp } from './app-choice.js';
+import { NEXT_CONFIG_CANDIDATES, PACKAGE_JSON, VITE_CONFIG_CANDIDATES } from './workspace-apps.js';
+import { redirectToWorkspaceApp } from './workspace-redirect.js';
 import { isConnectStep } from './connect-steps.js';
-import { CLI, CURSOR_RULE_PATH, RETICLE_MD_PATH } from './agent-rules.js';
+import { CURSOR_RULE_PATH, RETICLE_MD_PATH } from './agent-rules.js';
 import { CRA_ENV_PATH } from './cra.js';
+import { defaultPairingTokenDir, readOrCreatePairingTokenSync } from '../bridge/pairing-token.js';
+import { formatGeneratedSource } from './format-generated.js';
 
 /** CRA's bundled entry, in the order create-react-app itself generates them. */
 const CRA_ENTRY_CANDIDATES = ['src/index.tsx', 'src/index.jsx', 'src/index.ts', 'src/index.js'];
@@ -31,18 +35,14 @@ function craEntryOf(io: InitIo): { path: string; source: string } | null {
 }
 
 /**
- * The daemon's pairing token, for the one stack that cannot read it at build time.
+ * The daemon's pairing token, minted here if nothing has written it yet.
  *
- * Every other framework's snippet reads this file in Node when the dev server starts, so the token
- * is never written into the project. CRA bundles browser code and inlines only REACT_APP_*, so it
- * has to be materialised into .env.development.local — which CRA's own template gitignores.
+ * `init` used to READ the file and return empty when the daemon had never started. The CDN snippet
+ * inlined that empty value permanently, and regenerating the token made the pasted literal stale.
+ * Same mint as the daemon (`readOrCreatePairingToken`), honours `RETICLE_PAIRING_TOKEN_DIR`.
  */
 function readPairingToken(): string {
-  try {
-    return readFileSync(join(homedir(), '.reticle', 'pairing-token'), 'utf8').trim();
-  } catch {
-    return '';
-  }
+  return readOrCreatePairingTokenSync(defaultPairingTokenDir()) ?? '';
 }
 import {
   DEPS_TARGET,
@@ -57,8 +57,13 @@ import {
 import { claudeAvailableProbe, claudeExistsProbe } from './mcp.js';
 import { reticleDevLocation } from './next-patch.js';
 import { scanTestids, storeHints, scanStores } from './capabilities.js';
-import { CURSOR_DIR_RELPATH, CURSOR_MCP_RELPATH } from './cursor.js';
-import { fileBackedClients, clientMarkerRelPath, ConfigScope, McpClient } from './mcp-clients.js';
+import {
+  fileBackedClients,
+  clientMarkerRelPath,
+  ConfigScope,
+  McpClient,
+  CURSOR_PROJECT_MARKER,
+} from './mcp-clients.js';
 import { deriveProjectId, packageName } from './project-id.js';
 import { VITE_DEV_MODULE_PATH, connectArgWithToken, staticPageSnippet } from './snippets.js';
 import { CLAUDE_COMMAND_PATH, CURSOR_COMMAND_PATH } from './slash-command.js';
@@ -111,7 +116,6 @@ export function resolveLockfiles(
   return set;
 }
 
-const PACKAGE_JSON = 'package.json';
 const NODE_MODULES_DIR = 'node_modules';
 /**
  * Root-layout candidates, App Router only. `--src-dir` apps keep theirs under `src/app`, and the
@@ -138,6 +142,7 @@ const NEXT_PAGES_APP_CANDIDATES = [
   'src/pages/_app.js',
 ];
 const SVELTEKIT_HOOKS = 'src/hooks.client.ts';
+const REACT_ROUTER_ENTRY = 'app/entry.client.tsx';
 const SOURCE_FILE = /\.(tsx|jsx|ts|js|svelte|vue|astro)$/;
 /** Files read for the testid scan. A capabilities block is a hint; reading a whole repo for it is not. */
 const MAX_SCANNED_FILES = 200;
@@ -207,12 +212,6 @@ function dependencyNames(pkg: unknown): Set<string> {
     ...Object.keys(p['devDependencies'] ?? {}),
   ]);
 }
-const VITE_CONFIG_CANDIDATES = [
-  'vite.config.ts',
-  'vite.config.js',
-  'vite.config.mjs',
-  'vite.config.mts',
-];
 const ASTRO_CONFIG_CANDIDATES = [
   'astro.config.mjs',
   'astro.config.js',
@@ -223,14 +222,10 @@ const ASTRO_CONFIG_CANDIDATES = [
 const ASTRO_LAYOUTS_DIR = 'src/layouts';
 /** Also searched: an app with no layouts directory renders the document straight from a page. */
 const ASTRO_PAGES_DIR = 'src/pages';
-const NEXT_CONFIG_CANDIDATES = [
-  'next.config.mjs',
-  'next.config.js',
-  'next.config.ts',
-  'next.config.cjs',
-];
 
 export interface InitOptions {
+  /** `--capture-bodies`: write `captureNetworkBodies: true` into the app's config. Off by default (#705). */
+  captureBodies?: boolean | undefined;
   cwd: string;
   port: number | undefined;
   mcp: boolean;
@@ -260,6 +255,13 @@ export interface InitOptions {
    * today's fire-and-forget behaviour, so no path loses its event by forgetting to report.
    */
   deferOutcome?: boolean;
+  /**
+   * Whether the caller carries on into booting the app and driving it.
+   *
+   * Only affects the closing hint, which otherwise tells the reader to restart their dev server and
+   * drive a flow by hand — three lines before this command does both.
+   */
+  continuesToRuntime?: boolean;
 }
 
 export interface InitIo {
@@ -284,13 +286,37 @@ export interface InitIo {
   exec(command: string, args: readonly string[]): boolean;
   /** Runs a subprocess quietly (no stdio) for a yes/no check; returns true on exit code 0. */
   probe(command: string, args: readonly string[]): boolean;
+  /** Can this process write into the project root — see preflight.ts. */
+  canWrite(): boolean;
   print(line: string): void;
+}
+
+/**
+ * What a run established, for a caller that means to continue where init stopped.
+ *
+ * Everything here was already computed and then thrown away. That was fine while init only wrote
+ * files: nobody downstream existed. A caller that goes on to boot the app needs the same answers,
+ * and re-deriving them is how two parts of one command end up disagreeing about which directory
+ * they are in — which is not hypothetical, because a monorepo redirect re-enters `runInit` with a
+ * different cwd and the outer caller never learns that it happened.
+ */
+interface InitContext {
+  /** The directory actually wired, AFTER any monorepo redirect. */
+  readonly appDir: string;
+  readonly framework: string;
+  readonly packageManager: string;
+  /** The project's own dev command, when its scripts name one. Never composed. */
+  readonly devCommand?: string | undefined;
+  /** Set when init redirected into a workspace app, naming the one it chose. */
+  readonly redirectedTo?: string | undefined;
 }
 
 export interface InitResult {
   ok: boolean;
   applied: number;
   manual: number;
+  /** What this run established. Absent only where init exits before establishing anything. */
+  context?: InitContext;
   /**
    * The event body this run would report, handed to the caller instead of emitted, when
    * `deferOutcome` is set. Absent on a dry run and on the exits that report for themselves.
@@ -347,8 +373,7 @@ function agentRootOf(options: InitOptions): string | undefined {
   return root === undefined || root === options.cwd ? undefined : root;
 }
 
-function gatherPlanInput(options: InitOptions, io: InitIo, pkgRaw: string): PlanInput {
-  const pkg: unknown = JSON.parse(pkgRaw);
+function gatherPlanInput(options: InitOptions, io: InitIo, pkg: unknown): PlanInput {
   // Stable identity derived from the app's package.json name + root, so it survives port changes.
   const projectId = deriveProjectId(packageName(pkg), options.cwd);
   const rootFiles = new Set(io.rootFiles());
@@ -376,33 +401,26 @@ function gatherPlanInput(options: InitOptions, io: InitIo, pkgRaw: string): Plan
   const existsProbe = claudeExistsProbe();
   const mcpExists = claudeCli ? io.probe(existsProbe.command, existsProbe.args) : false;
 
-  // join(), not a literal '/': this path is checked and WRITTEN on the user's machine, and a
-  // backslash platform silently misses the config it is meant to find.
-  const cursorDir = join(io.homeDir(), CURSOR_DIR_RELPATH);
-  const cursorConfigPath = join(io.homeDir(), CURSOR_MCP_RELPATH);
-  // Cursor is "present" if its global config directory exists OR the project carries a `.cursor/`.
-  // The directory alone missed a real case: Cursor installed with a FRESH profile has not written
-  // ~/.cursor yet, so a user who had it open got no Cursor step and no message about one. A
-  // project-level .cursor/ is unambiguous evidence somebody uses it here.
-  const cursorPresent = options.mcp && (io.exists(cursorDir) || io.exists(CURSOR_DIR_RELPATH));
-  const cursorConfig = cursorPresent ? io.readFile(cursorConfigPath) : null;
-
-  // Every OTHER MCP client this machine shows evidence of. Conservative and one-directional: we
-  // write into a config a client ALREADY has, and never create ~/.gemini or ~/.codeium for somebody
-  // who does not use them. Cursor and Claude are handled above by their own steps.
+  // Every MCP client this machine shows evidence of. Conservative and one-directional: we write
+  // into a config a client ALREADY has, and never create ~/.gemini or ~/.codeium for somebody who
+  // does not use them.
   const detectedClients = options.mcp
     ? fileBackedClients()
-        .filter((spec) => spec.id !== McpClient.CURSOR)
         .map((spec) => {
           const marker = clientMarkerRelPath(spec);
           const absolute =
             spec.scope === ConfigScope.HOME ? join(io.homeDir(), spec.relPath) : spec.relPath;
           const markerPath = spec.scope === ConfigScope.HOME ? join(io.homeDir(), marker) : marker;
-          if (!io.exists(markerPath)) return null;
+          // A fresh Cursor profile has not written ~/.cursor yet; the project-level .cursor/ is the
+          // fallback that kept that real case working. Same signal, project scope.
+          const projectFallback =
+            spec.id === McpClient.CURSOR && !io.exists(markerPath)
+              ? io.exists(CURSOR_PROJECT_MARKER)
+              : false;
+          if (!io.exists(markerPath) && !projectFallback) return null;
           return {
             id: spec.id,
             configPath: absolute,
-            // io.readFile passes absolute paths through unchanged, so one call covers both scopes.
             existing: io.readFile(absolute),
           };
         })
@@ -442,16 +460,21 @@ function gatherPlanInput(options: InitOptions, io: InitIo, pkgRaw: string): Plan
   const agentFile = (relPath: string): string =>
     agentRoot === undefined ? relPath : join(agentRoot, relPath);
 
+  const cspSources: Record<string, string | undefined> = {};
+  for (const file of CSP_FILES) {
+    const source = io.readFile(file);
+    if (null !== source) cspSources[file] = source;
+  }
+
   return {
     detection,
+    captureBodies: options.captureBodies,
+    cspSources,
     claudeCli,
     mcpExists,
-    cursorPresent,
     platform: process.platform,
     detectedClients,
-    cursorProjectPresent: io.exists(CURSOR_DIR_RELPATH),
-    cursorConfig,
-    cursorConfigPath,
+    cursorProjectPresent: io.exists(CURSOR_PROJECT_MARKER),
     viteConfig,
     astroConfig:
       astroPath !== null && astroSource !== null ? { path: astroPath, source: astroSource } : null,
@@ -459,6 +482,7 @@ function gatherPlanInput(options: InitOptions, io: InitIo, pkgRaw: string): Plan
       layoutRelPath !== null && astroLayoutSource !== null
         ? { path: layoutRelPath, source: astroLayoutSource }
         : null,
+    astroEnvDts: io.readFile('src/env.d.ts'),
     nextConfigFile,
     nextConfigSource: null === nextConfigFile ? null : io.readFile(nextConfigFile),
     nextLayout:
@@ -474,7 +498,9 @@ function gatherPlanInput(options: InitOptions, io: InitIo, pkgRaw: string): Plan
     nextReticleDevPath: devLocation.path,
     nextReticleDevImport: devLocation.importSpecifier,
     nextReticleDevExists: io.exists(devLocation.path),
+    nextReticleDevSource: io.readFile(devLocation.path),
     svelteKitHooksExists: io.exists(SVELTEKIT_HOOKS),
+    reactRouterEntryExists: io.exists(REACT_ROUTER_ENTRY),
     craEntry: craEntryOf(io),
     craEnv: io.readFile(CRA_ENV_PATH),
     pairingToken: readPairingToken(),
@@ -510,147 +536,6 @@ function gatherPlanInput(options: InitOptions, io: InitIo, pkgRaw: string): Plan
 
 /** Where workspace tooling conventionally puts packages. */
 /** pnpm's workspace declaration, read when present — it is authoritative about where packages live. */
-const PNPM_WORKSPACE = 'pnpm-workspace.yaml';
-/** Deps that mark a directory as a runnable web app even when it has no bundler config file. */
-const APP_DEPS = ['next', 'vite'] as const;
-
-function looksLikeApp(dir: string, io: Pick<InitIo, 'exists' | 'readFile'>): boolean {
-  const pkgRaw = io.readFile(`${dir}/${PACKAGE_JSON}`);
-  if (null === pkgRaw) return false;
-  const configs = [...VITE_CONFIG_CANDIDATES, ...NEXT_CONFIG_CANDIDATES];
-  if (configs.some((c) => io.exists(`${dir}/${c}`))) return true;
-  // `next.config` is optional in Next, so the dependency list is the other half of the signal.
-  return APP_DEPS.some((d) => pkgRaw.includes(`"${d}"`));
-}
-
-/**
- * App directories under a workspace root.
- *
- * Running `reticle init` at the repo root is what people actually do, and in a monorepo the app is a
- * directory down — so init detected "no framework", printed a wall of manual HTML instructions, and
- * would have installed the SDK into the ROOT package.json. It already walks UP for the lockfile, so
- * it knows it is in a workspace; this is the matching walk DOWN.
- */
-export function findWorkspaceApps(io: Pick<InitIo, 'exists' | 'readFile' | 'listDirs'>): string[] {
-  const found: string[] = [];
-  // A workspace DECLARES its packages; `['apps','packages']` was a guess that missed a real repo
-  // with three Next apps at web/, admin/ and space/ — and missing them meant init ran against the
-  // root and reported ✓ for a file Next never compiles. See workspace-apps.
-  const pkgRaw = io.readFile(PACKAGE_JSON);
-  let pkgWorkspaces: unknown;
-  try {
-    const parsed: unknown = null === pkgRaw ? undefined : JSON.parse(pkgRaw);
-    pkgWorkspaces =
-      'object' === typeof parsed && parsed !== null
-        ? (parsed as { workspaces?: unknown }).workspaces
-        : undefined;
-  } catch {
-    pkgWorkspaces = undefined;
-  }
-  const parents = workspaceParents({
-    ...(null === io.readFile(PNPM_WORKSPACE)
-      ? {}
-      : { pnpmWorkspace: io.readFile(PNPM_WORKSPACE) ?? '' }),
-    ...(pkgWorkspaces === undefined ? {} : { pkgWorkspaces }),
-    topLevelDirs: io.listDirs('.'),
-  });
-  // A declared parent can itself BE the app (`workspaces: ["web"]`), so check both the directory and
-  // its children rather than assuming one level of nesting.
-  for (const parent of parents) {
-    if (looksLikeApp(parent, io)) found.push(parent);
-    for (const name of io.listDirs(parent)) {
-      const dir = `${parent}/${name}`;
-      if (looksLikeApp(dir, io)) found.push(dir);
-    }
-  }
-  return [...new Set(found)];
-}
-
-/**
- * The standing ask, printed at the end of every `init`.
- *
- * Addressed to the agent as much as the human: whichever of them just ran this command is the one
- * holding the experience, and neither has a Reticle tool surface to file through at this point.
- *
- * Printed by the `runInit` wrapper, NOT by `report()` — see the comment there for why, and for how
- * the workspace redirect is kept from asking twice.
- */
-export const FEEDBACK_HINT =
-  'Anything wrong, missing, or awkward — in this setup or in Reticle itself? Tell us; it is the ' +
-  'one thing that decides what gets fixed:\n' +
-  `  ${CLI} feedback --agent --kind <bug|gap|ambiguity|feature_request|improvement> "what happened"   (agents)\n` +
-  `  ${CLI} feedback "what worked, what didn't"   (humans)`;
-
-function devServerRestart(framework: Framework): string {
-  if (framework === Framework.NEXT) return 'Restart `next dev`';
-  if (framework === Framework.VITE) return 'Restart `vite`';
-  if (framework === Framework.ASTRO) return 'Restart `astro dev`';
-  if (framework === Framework.SVELTEKIT) return 'Restart your dev server (`npm run dev`)';
-  return 'Reload your app on localhost';
-}
-
-/**
- * The last two lines a user reads, and the order matters.
- *
- * This used to say only "Restart <dev server>, then ask your agent: List Reticle sessions" — and
- * asking the agent was the one thing that could not work yet. `init` registers the MCP server, but
- * an agent client reads its tool list when it STARTS and never re-reads it, so the session that
- * just ran `init` has no `reticle_*` tools however clean the install was. The user follows the
- * instruction, the agent answers "unknown tool", and the obvious conclusion is that the install
- * failed.
- *
- * So the reload is named FIRST, before the sentence that depends on it. Omitted entirely when this
- * run did not register MCP (`--no-mcp`), where it would be advice about something we did not do.
- */
-export function restartHint(framework: Framework, mcpStatus: StepStatus | undefined): string {
-  const dev = `${devServerRestart(framework)}.`;
-  // NAME THE COMMAND THAT PROVES IT, not one that merely asks.
-  //
-  // `init` writes files and stops; the install is not finished until an app carrying the SDK has
-  // actually dialled the daemon, and nothing here confirmed that. The field shape is unambiguous:
-  // people complete the agent half, never complete the app half, and keep a daemon running for
-  // weeks with nothing to drive — so this is the last instruction most of them read.
-  //
-  // "Ask your agent: List Reticle sessions" asks a question whose failure is a dead end. `reticle
-  // status` ANSWERS it: as of 2.7.0 it reports the session, or says why there is none — no app
-  // running, an app running that never dialled us, a tab that closed — with the fix for each.
-  const prove =
-    'Then run `npx @reticlehq/server status` — it confirms the app connected, or says exactly why ' +
-    'it has not.';
-  // Nothing registered this run (`--no-mcp`, or a client that needs a manual edit): a restart picks
-  // up nothing, so advice about one would be advice about something we did not do.
-  if (!wasMcpRegistered(mcpStatus)) return `${dev} ${prove}`;
-  // ALREADY: the tools are reachable RIGHT NOW, and this is the branch that used to lie.
-  //
-  // `wasMcpRegistered` is true for both APPLY and ALREADY, which is correct for the funnel field it
-  // was written for and wrong here, because the two cases have opposite answers to "must anybody
-  // restart". Every second project on a machine, and every Claude Code plugin install, took the
-  // APPLY text: "restart your agent — the tools only appear after that". An agent reads this AFTER
-  // whatever its skill file said, and it describes the output in front of it, so it wins. The agent
-  // stops with the project wired and nothing driven, which is the exact failure the install path
-  // exists to prevent, caused by the install path itself.
-  if (mcpStatus === StepStatus.ALREADY) {
-    return (
-      `${dev}\n` +
-      'The Reticle MCP server was already registered on this machine, so there is no restart to do ' +
-      'and the tools are available now.\n' +
-      `${prove}\n` +
-      'Once it shows a session, drive a flow — that is the install finished. Carry straight on; ' +
-      'nothing here is waiting on a human.'
-    );
-  }
-  return (
-    `${dev}\n` +
-    'Then restart your agent so it picks up the new MCP server — restart Claude Code, reload the ' +
-    'window in Cursor, or hit Start in `.vscode/mcp.json` in VS Code.\n' +
-    'The tools only appear after that: your agent read its server list before Reticle existed, ' +
-    'and no slash command re-reads it (`/mcp` manages servers already loaded, so it cannot pick ' +
-    'up a new one). This is once per machine — Reticle is registered globally, so every later ' +
-    'project starts with the tools already there.\n' +
-    `${prove}\n` +
-    'Once it shows a session, ask your agent to drive a flow — that is the install finished.'
-  );
-}
 
 const SKIPPED_DETAIL =
   'skipped — the dependency install above failed, and wiring the app to a package that is not ' +
@@ -665,6 +550,16 @@ function report(
   io: InitIo,
   projectDir: string,
   agentRoot: string | undefined,
+  /** The project's own dev command, so the closing line names what a human would type. */
+  devCommand: string | undefined,
+  /**
+   * Whether this run continues into the phases that boot the app and drive it.
+   *
+   * The closing hint tells the reader to restart their dev server and then drive a flow. When those
+   * are the very next things this command does, printing them is worse than noise: it is an
+   * instruction to do by hand what is about to happen automatically, three lines before it happens.
+   */
+  continuesToRuntime = false,
 ): InitResult {
   io.print(dryRun ? 'reticle init (dry run, no files written)' : 'reticle init');
   // Every path below is printed RELATIVE, and until now nothing said what to. Reported from the
@@ -722,7 +617,11 @@ function report(
     );
     io.print('');
   }
-  io.print(restartHint(plan.framework, resolvedStatus(plan, MCP_TARGET, failed, skipped)));
+  if (!continuesToRuntime) {
+    io.print(
+      restartHint(plan.framework, resolvedStatus(plan, MCP_TARGET, failed, skipped), devCommand),
+    );
+  }
   return { ok: !connectPending, applied, manual };
 }
 
@@ -784,7 +683,10 @@ function applyEffects(
       // is decoration, and this one is the first thing a new user reads. Same shape as #139.
       const wrote = spanSync('init.write', { target: s.target, path: write.path }, () => {
         try {
-          io.writeFile(write.path, write.content);
+          // Format connect modules with the project's Prettier when present (#684) — a clean
+          // install must not fail the project's own lint on a file we just wrote.
+          const content = formatGeneratedSource(write.content, write.path, io.cwd());
+          io.writeFile(write.path, content);
         } catch {
           return false; // a throw is the loud version of the same failure
         }
@@ -824,11 +726,14 @@ function applyEffects(
         degraded.set(s.target, retry.note);
         continue;
       }
+      // Verify, don't re-run: give the install step itself the same sdkPackagesPresent benefit
+      // already given to the wiring it gates below (#683).
+      if (s.target === DEPS_TARGET && sdkPackagesPresent(plan.framework, plan.uiLibrary, io))
+        continue;
       failed.add(s.target);
       // A failed install only blocks the wiring when the packages are genuinely ABSENT. See
       // sdkPackagesPresent: the guard protects "the import resolves", not "our subprocess exited 0".
-      if (s.target === DEPS_TARGET && !sdkPackagesPresent(plan.framework, plan.uiLibrary, io))
-        installFailed = true;
+      if (s.target === DEPS_TARGET) installFailed = true;
     }
   }
   // Where this project lives, remembered for a daemon that will be started somewhere else.
@@ -859,63 +764,6 @@ function classifyInitFailure(failed: ReadonlySet<string>): string {
   return InitFailure.OTHER;
 }
 
-const AMBIGUOUS_HEADER =
-  'Several apps found in this workspace. Re-run `reticle init` inside the one you want:';
-
-/**
- * When the current directory is a workspace root with no app of its own, wire the app instead of the
- * root. One candidate is wired silently (there is nothing to ask about); several are listed, because
- * guessing which app someone meant is worse than one line of output.
- * Returns null when there is nothing to redirect to — the caller then proceeds here as before.
- */
-function redirectToWorkspaceApp(
-  options: InitOptions,
-  io: InitIo,
-  pkgRaw: string,
-): InitResult | null {
-  if (true === options.redirected) return null;
-  const pkg: unknown = JSON.parse(pkgRaw);
-  const rootFiles = new Set(io.rootFiles());
-  const here = detect({
-    pkg: 'object' === typeof pkg && pkg !== null ? pkg : {},
-    configFiles: rootFiles,
-    lockfiles: new Set(),
-  });
-  if (here.framework !== Framework.HTML) return null; // this directory IS the app
-
-  const apps = findWorkspaceApps(io);
-  // An explicitly named app answers the ambiguity. Refusing to guess is right, but "re-run inside the
-  // one you want" is not something a script, a CI step, or an agent that cannot change directory can
-  // act on — so the refusal was a dead end for exactly the callers most likely to hit it.
-  const chosen = chooseWorkspaceApp(options.app, apps);
-  if (!chosen.ok) {
-    io.print(chosen.message);
-    return { ok: false, applied: 0, manual: 1 };
-  }
-  const target = chosen.app ?? (1 === apps.length ? apps[0] : undefined);
-  if (target === undefined) {
-    if (0 === apps.length) return null; // not a workspace — fall through to the normal HTML plan
-    io.print(AMBIGUOUS_HEADER);
-    for (const a of apps) io.print(`  ${a}`);
-    io.print('');
-    io.print(`Or name one without changing directory:  reticle init --app ${apps[0] ?? '<dir>'}`);
-    return { ok: false, applied: 0, manual: apps.length };
-  }
-  io.print(`No app in this directory — wiring ${target} instead.`);
-  io.print('');
-  return runInit(
-    {
-      ...options,
-      cwd: join(options.cwd, target),
-      redirected: true,
-      // Where the human is STANDING, kept across the redirect: their agent session runs here, so
-      // this is the only place a `/reticle` command file can be found by it.
-      agentRoot: options.agentRoot ?? options.cwd,
-    },
-    io.scoped(target),
-  );
-}
-
 export function runInit(options: InitOptions, io: InitIo): InitResult {
   const result = runInitSteps(options, io);
   // The ask goes here, not in report(): report() is only the success-shaped path, and the exits that
@@ -932,8 +780,43 @@ export function runInit(options: InitOptions, io: InitIo): InitResult {
   return result;
 }
 
+/**
+ * The manifest, parsed once, or the reason it could not be.
+ *
+ * It used to be parsed in three places from the same raw string, and two of them were unguarded —
+ * so `reticle init` on a `package.json` with a trailing comma died with a raw `SyntaxError` and a
+ * stack through `redirectToWorkspaceApp`. A stack trace in front of a user is a bug whatever caused
+ * it, and this one lands on the very first thing the command does, before it has said anything.
+ *
+ * `setup/reticle.mjs` has always got this right ("… is not valid JSON (…). Fix it and re-run"). The
+ * shipped CLI did not, which is the shape of every divergence between the two: the prototype refuses
+ * politely, `init` throws. Parsing once at the single point the file enters means no later caller
+ * CAN reintroduce it — a guard per call site would have been three guards and a fourth one waiting.
+ */
+function readManifest(io: InitIo): { pkg: unknown } | { error: string } {
+  const raw = io.readFile(PACKAGE_JSON);
+  if (null === raw) return { pkg: null };
+  try {
+    return { pkg: JSON.parse(raw) };
+  } catch (err) {
+    // First line only: JSON.parse's message carries the offending position, and the rest is noise.
+    const detail = String(err instanceof Error ? err.message : err).split('\n')[0] ?? 'unparseable';
+    return { error: detail };
+  }
+}
+
 function runInitSteps(options: InitOptions, io: InitIo): InitResult {
-  const pkgRaw = io.readFile(PACKAGE_JSON);
+  const manifest = readManifest(io);
+  if ('error' in manifest) {
+    io.print(
+      `${PACKAGE_JSON} is not valid JSON (${manifest.error}). Fix it and re-run — init reads the ` +
+        'framework, the dev script and the package manager from it, and will not guess at any of ' +
+        'them from a file it cannot read.',
+    );
+    reportInitOutcome({ ok: false, reason: InitFailure.MALFORMED_PACKAGE_JSON });
+    return { ok: false, applied: 0, manual: 0 };
+  }
+  const pkgRaw = manifest.pkg;
   // Look for the app BEFORE concluding there isn't one.
   //
   // A root with no package.json is not a dead end — it is the ordinary shape of a repo whose app
@@ -946,7 +829,7 @@ function runInitSteps(options: InitOptions, io: InitIo): InitResult {
   //
   // `'{}'` because the redirect only needs the manifest to ask "is THIS directory the app", and a
   // directory with no package.json is definitively not.
-  const redirectedEarly = redirectToWorkspaceApp(options, io, pkgRaw ?? '{}');
+  const redirectedEarly = redirectToWorkspaceApp(options, io, pkgRaw ?? {}, runInit);
   if (redirectedEarly !== null) return redirectedEarly;
   if (null === pkgRaw) {
     io.print(
@@ -970,11 +853,32 @@ function runInitSteps(options: InitOptions, io: InitIo): InitResult {
   // Init is the flow a user experiences the wait of personally, and the fixture gate measures it at
   // 1–6s per app with no explanation of the spread. These three spans split that number into detect
   // (filesystem probing), plan (pure), and apply (writes + package-manager and CLI subprocesses).
-  const plan = spanSync('init.plan', {}, () => buildPlan(gatherPlanInput(options, io, pkgRaw)));
+  const planInput = gatherPlanInput(options, io, pkgRaw);
+
+  // Before anything is written, and AFTER detection — the package manager to check is the one init
+  // RESOLVED, not a raw lockfile read. An inherited pnpm-lock.yaml at a monorepo root does not mean
+  // the app in frontend/ uses pnpm, and checking the file refused a scaffold the install gate proves
+  // must succeed. Both conditions make every later phase fail, and each arrives far from its cause
+  // when it is not checked here. See preflight.ts.
+  const refusal = preflightRefusal(
+    {
+      cwd: () => io.cwd(),
+      canWrite: () => io.canWrite(),
+      probe: (command, args) => io.probe(command, args),
+    },
+    planInput.detection.packageManager,
+  );
+  if (refusal !== undefined) {
+    io.print(refusal);
+    return { ok: false, applied: 0, manual: 1 };
+  }
+  const plan = spanSync('init.plan', {}, () => buildPlan(planInput));
   const effects = options.dryRun
     ? { failed: new Set<string>(), skipped: new Set<string>(), degraded: new Map<string, string>() }
     : spanSync('init.apply', { steps: plan.steps.length }, () => applyEffects(plan, io));
   const { failed, skipped, degraded } = effects;
+  // The project's own dev command, so the closing line names what a human would actually type.
+  const devCommand = devCommandFrom(pkgRaw, planInput.detection.packageManager);
   const result = report(
     plan,
     options.dryRun,
@@ -984,6 +888,8 @@ function runInitSteps(options: InitOptions, io: InitIo): InitResult {
     io,
     options.cwd,
     agentRootOf(options),
+    devCommand,
+    true === options.continuesToRuntime,
   );
   // A dry run is a preview, not an outcome — reporting it would inflate both success and failure.
   if (options.dryRun) return result;
@@ -994,7 +900,14 @@ function runInitSteps(options: InitOptions, io: InitIo): InitResult {
     // The step's REAL final status, not the absence of a failure — see mcp-registered.
     mcpRegistered: wasMcpRegistered(resolvedStatus(plan, MCP_TARGET, failed, skipped)),
   };
-  if (true === options.deferOutcome) return { ...result, outcome };
+  const context: InitContext = {
+    appDir: options.cwd,
+    framework: plan.framework,
+    packageManager: planInput.detection.packageManager,
+    ...(undefined === devCommand ? {} : { devCommand }),
+    ...(true === options.redirected ? { redirectedTo: options.cwd } : {}),
+  };
+  if (true === options.deferOutcome) return { ...result, context, outcome };
   reportInitOutcome(outcome);
-  return result;
+  return { ...result, context };
 }

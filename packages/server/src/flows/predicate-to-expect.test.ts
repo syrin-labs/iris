@@ -72,6 +72,12 @@ describe('predicateToExpect', () => {
     });
   });
 
+  it('carries an element assertion by role and name', () => {
+    expect(
+      predicateToExpect({ kind: 'element', query: { role: 'button', name: '0 Clicks' } }),
+    ).toEqual({ element: { role: 'button', name: '0 Clicks' } });
+  });
+
   it('carries a state assertion', () => {
     expect(predicateToExpect({ kind: 'state', path: 'cart.total', equals: 42 })).toEqual({
       state: { path: 'cart.total', equals: 42 },
@@ -137,18 +143,59 @@ describe('enforcedOnReplay', () => {
     });
   });
 
-  it('DROPS net and signal — graded as consequences, never evaluated on replay', () => {
-    expect(enforcedOnReplay({ net: { urlContains: '/api/save' } })).toBeUndefined();
-    expect(enforcedOnReplay({ signal: 'saved' })).toBeUndefined();
+  it('KEEPS net and signal — replay evaluates every kind of expect now', () => {
+    // These used to be dropped, correctly, because replay only checked element+state. It now
+    // compiles every remaining kind through successToPredicate, so discarding them made an
+    // agent-recorded flow assertion-free BY CONSTRUCTION — `until` is the agent saying what
+    // success means, and `net` is overwhelmingly what it says.
+    expect(enforcedOnReplay({ net: { urlContains: '/api/save' } })).toEqual({
+      net: { urlContains: '/api/save' },
+    });
+    expect(enforcedOnReplay({ signal: 'saved' })).toEqual({ signal: 'saved' });
+    expect(enforcedOnReplay({ console: { level: 'error', absent: true } })).toEqual({
+      console: { level: 'error', absent: true },
+    });
   });
 
-  it('keeps the enforced half of a mixed expectation', () => {
+  it('keeps a signal with the payload and count that qualify it', () => {
+    expect(
+      enforcedOnReplay({ signal: 'saved', signalData: { id: 1 }, signalCount: 1 }),
+    ).toStrictEqual({ signal: 'saved', signalData: { id: 1 }, signalCount: 1 });
+  });
+
+  it('keeps every enforceable part of a mixed expectation', () => {
     expect(enforcedOnReplay({ signal: 'saved', element: { testid: 'toast' } })).toEqual({
+      signal: 'saved',
       element: { testid: 'toast' },
     });
   });
 
-  it('drops an element expectation with no testid — replay resolves by testid alone', () => {
-    expect(enforcedOnReplay({ element: { role: 'dialog' } })).toBeUndefined();
+  it('still drops what successToPredicate cannot compile — the rule never changed', () => {
+    // The filter exists so a flow never claims an assertion nothing evaluates. Only its SET moved.
+    expect(enforcedOnReplay({})).toBeUndefined();
+  });
+
+  it('keeps an element expectation located by role and name — replay compiles those', () => {
+    // Dropping this was the hole that made a recorded `until: { kind:"element", query:{ role, name } }`
+    // vanish: successToPredicate has always compiled role/name, but this filter still required a
+    // testid, so the saved flow was assertion-free while the agent had already proved the control.
+    expect(enforcedOnReplay({ element: { role: 'button', name: '0 Clicks' } })).toEqual({
+      element: { role: 'button', name: '0 Clicks' },
+    });
+    expect(enforcedOnReplay({ element: { role: 'dialog' } })).toEqual({
+      element: { role: 'dialog' },
+    });
+  });
+
+  it('keeps a mixed net + role/name expectation, which is the recorded allOf shape', () => {
+    expect(
+      enforcedOnReplay({
+        net: { method: 'GET', urlContains: '/context', status: 200 },
+        element: { role: 'button', name: '0 Clicks' },
+      }),
+    ).toEqual({
+      net: { method: 'GET', urlContains: '/context', status: 200 },
+      element: { role: 'button', name: '0 Clicks' },
+    });
   });
 });

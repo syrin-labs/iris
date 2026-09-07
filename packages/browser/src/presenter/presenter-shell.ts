@@ -11,7 +11,6 @@ import {
   DOCK_ATTR,
   FAB_ATTR,
   MIN_ATTR,
-  HUD_DRAGGED_ATTR,
   SETTINGS_ATTR,
   SETTINGS_BTN_ATTR,
 } from './presenter-config.js';
@@ -43,7 +42,7 @@ const REPORT_LABEL = 'Impact';
 const SETTINGS_LABEL = 'Settings';
 const EXIT_LABEL = 'Exit';
 
-export interface HudShellCallbacks {
+interface HudShellCallbacks {
   onChatOpen?: () => void;
   onChatClose?: () => void;
   onExpand?: () => void;
@@ -133,7 +132,6 @@ export class HudShell {
         <button type="button" ${CHAT_MIN_ATTR} class="reticle-chat-min" title="${CHAT_MIN_LABEL}" aria-label="${CHAT_MIN_LABEL}">${hiIconHtml(PresenterIcon.CARET_DOWN, PRESENTER_ICON_SIZE.TOOLBAR)}</button>
         ${actStripHtml}
         <span class="reticle-tally" data-reticle-tally hidden></span>
-        <span class="reticle-chip" data-reticle-chip></span>
         ${bannerHtml}
         <div class="${HUD_LOG_WELL_CLASS}"><div ${logAttr}></div></div>
         ${flowsHtml}
@@ -471,8 +469,4 @@ export class HudShell {
       this.collapse();
     }
   };
-}
-/** Whether the dock has been dragged off the default bottom-right position. */
-export function isDockDragged(dock: HTMLElement): boolean {
-  return '1' === dock.getAttribute(HUD_DRAGGED_ATTR);
 }

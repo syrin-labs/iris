@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { EventType, type ReticleEvent } from '@reticlehq/core';
-import { BlindSpotKind, buildCoverageStatement, blindSpotsFromEvents } from './blind-spots.js';
+import { AppRuntime, EventType, type ReticleEvent } from '@reticlehq/core';
+import {
+  BlindSpotKind,
+  buildCoverageStatement,
+  blindSpotsFromEvents,
+  spotsForRuntime,
+  absenceBlindSpotNote,
+} from './blind-spots.js';
 
 function ev(type: EventType, data: Record<string, unknown>, t = 1): ReticleEvent {
   return { t, type, sessionId: 's', data };
@@ -42,6 +48,45 @@ describe('buildCoverageStatement', () => {
     );
   });
 
+  /**
+   * A Vite + React tab at localhost:5173 was reported as an Electron renderer with unobserved
+   * ipcRenderer.invoke coverage, while reticle_sessions correctly showed a web session. The
+   * desktop kinds live in the same vocabulary as "no store registered", so presence of the
+   * kind is not evidence the page is a desktop app — the session already reports the runtime.
+   */
+  it('drops Electron IPC rows on a web session, even when that kind is in the spots', () => {
+    const spots = [
+      { kind: BlindSpotKind.UNOBSERVED_IPC, count: 1 },
+      { kind: BlindSpotKind.UNWATCHED_STATE, count: 1 },
+    ];
+    const statement = buildCoverageStatement(spotsForRuntime(spots, AppRuntime.WEB));
+    expect(statement.note).toContain('no subscribable store');
+    expect(statement.note).not.toContain('Electron');
+    expect(statement.note).not.toContain('ipcRenderer');
+  });
+
+  it('drops a one-way IPC send row on Tauri — that kind is Electron preload, not invoke', () => {
+    const statement = buildCoverageStatement(
+      spotsForRuntime([{ kind: BlindSpotKind.VERDICTLESS_SEND, count: 1 }], AppRuntime.TAURI),
+    );
+    expect(statement.coverage).toBe('full');
+  });
+
+  it('keeps the missing-preload warning on an actual Electron renderer', () => {
+    const statement = buildCoverageStatement(
+      spotsForRuntime([{ kind: BlindSpotKind.UNOBSERVED_IPC, count: 1 }], AppRuntime.ELECTRON),
+    );
+    expect(statement.coverage).toBe('partial');
+    expect(statement.note).toContain('@reticlehq/electron/preload');
+  });
+
+  it('keeps desktop rows when the runtime is unknown, so an older SDK still warns', () => {
+    const statement = buildCoverageStatement(
+      spotsForRuntime([{ kind: BlindSpotKind.UNOBSERVED_IPC, count: 1 }], undefined),
+    );
+    expect(statement.note).toContain('Electron');
+  });
+
   it('drops zero-count spots from the note', () => {
     const statement = buildCoverageStatement([
       { kind: BlindSpotKind.CROSS_ORIGIN_IFRAME, count: 0 },
@@ -66,5 +111,66 @@ describe('blindSpotsFromEvents', () => {
     const spots = blindSpotsFromEvents([ev(EventType.NET_REQUEST, {})]);
     expect(spots).toEqual([]);
     expect(buildCoverageStatement(spots).coverage).toBe('full');
+  });
+});
+
+describe('absenceBlindSpotNote', () => {
+  type AbsencePred = Parameters<typeof absenceBlindSpotNote>[0];
+  const virtualizedSpot = [{ kind: BlindSpotKind.VIRTUALIZED_UNMOUNTED, count: 5 }];
+  const crossOriginSpot = [{ kind: BlindSpotKind.CROSS_ORIGIN_IFRAME, count: 1 }];
+
+  it('returns a note for a direct element absence with a hiding blind spot', () => {
+    const pred: AbsencePred = { kind: 'element', absent: true };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toContain('cannot prove absence');
+  });
+
+  it('returns undefined for a non-absence element predicate', () => {
+    const pred: AbsencePred = { kind: 'element' };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('unwraps a not-wrapped element and still detects the blind spot', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'element' } };
+    const note = absenceBlindSpotNote(pred, virtualizedSpot);
+    expect(note).toContain('cannot prove absence');
+  });
+
+  it('returns undefined for a not-wrapped non-element predicate', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'signal' } };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('returns undefined when no relevant blind spot is present', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'element' } };
+    expect(absenceBlindSpotNote(pred, [])).toBeUndefined();
+  });
+
+  it('not(element { absent: true }) is a double negative — presence — no note', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'element', absent: true } };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('scoped cross-origin check works through not-unwrap', () => {
+    const pred: AbsencePred = {
+      kind: 'not',
+      predicate: { kind: 'element', query: { scope: '#iframe-region' } },
+    };
+    expect(absenceBlindSpotNote(pred, crossOriginSpot)).toContain('cannot prove absence');
+  });
+
+  // Suggested by Chirag6722 in #815 — pins the recursion-depth decision so the next reader does
+  // not re-open the question #774 raised about how deep to recurse.
+  it('not(not(element)) is itself a presence claim — silence is correct, not a gap', () => {
+    const pred: AbsencePred = { kind: 'not', predicate: { kind: 'not' } };
+    expect(absenceBlindSpotNote(pred, virtualizedSpot)).toBeUndefined();
+  });
+
+  it('both spellings produce the identical note, not merely a non-empty one', () => {
+    const direct: AbsencePred = { kind: 'element', absent: true };
+    const wrapped: AbsencePred = { kind: 'not', predicate: { kind: 'element' } };
+    const directNote = absenceBlindSpotNote(direct, virtualizedSpot);
+    const wrappedNote = absenceBlindSpotNote(wrapped, virtualizedSpot);
+    expect(directNote).toBeDefined();
+    expect(wrappedNote).toBe(directNote);
   });
 });

@@ -6,6 +6,8 @@
  * verification state, and none of them touch daemon lifecycle, which is what the rest of cli.ts does.
  */
 
+import { GateExit } from './gate-exit.js';
+import { gateHookMessage, GATE_SKIP_ENV } from './gate-hook-message.js';
 import { readProjectId } from './cli-port.js';
 import { changedFilesSince } from '../flows/git-changed.js';
 import { join } from 'node:path';
@@ -160,7 +162,12 @@ export async function handleCapsules(): Promise<void> {
  * changed files. Flaky flows are quarantined (surfaced, not blocking). The environment-side enforcement
  * that makes verification unavoidable. Never throws; a fault fails closed (exit 1).
  */
-export async function handleGate(files: string[], since: string | undefined): Promise<void> {
+export async function handleGate(
+  files: string[],
+  since: string | undefined,
+  /** Hook mode: prose for a human, and silence when there was simply nothing to check. */
+  hook = false,
+): Promise<void> {
   try {
     const fs = createNodeFileSystem();
     const reticleRoot = join(process.cwd(), ReticleDir.ROOT);
@@ -216,9 +223,38 @@ export async function handleGate(files: string[], since: string | undefined): Pr
       ...(result.deleted.length > 0 ? { deletedCoverage: result.deleted } : {}),
       coverage: flowCoverage,
     });
-    if (!pass) process.exitCode = 1;
+    // Two non-zero codes, because two callers want opposite things from the same run. CI wants any
+    // problem to fail. A Stop hook wants to block a real regression and NOT block a project that
+    // has simply not recorded a flow yet — which is every project on its first day, and measured
+    // before this change as an exit 1 that would have blocked every stop. See GateExit.
+    if (!pass) {
+      const code =
+        result.pass && flowCoverage.outcome !== undefined
+          ? GateExit.NOTHING_TO_CHECK
+          : GateExit.FAIL;
+      process.exitCode = code;
+      if (hook) {
+        // An honest escape hatch, because the alternative to one is not compliance — it is somebody
+        // deleting the hook, and a deleted gate protects nothing. Recorded either way.
+        if (process.env[GATE_SKIP_ENV] !== undefined) {
+          process.stderr.write(
+            `Reticle: gate skipped via ${GATE_SKIP_ENV}. This change is unverified.\n`,
+          );
+          process.exitCode = GateExit.PASS;
+          return;
+        }
+        const message = gateHookMessage(code, {
+          uncovered: result.uncovered,
+          quarantined: result.quarantined,
+          // A downgrade is reported per flow with its step indices; the hook names the flow.
+          downgraded: result.downgraded.map((d) => d.flow),
+          deleted: result.deleted,
+        });
+        if (message !== undefined) process.stderr.write(`${message}\n`);
+      }
+    }
   } catch (error) {
     log('reticle_gate_failed', { error: error instanceof Error ? error.message : String(error) });
-    process.exitCode = 1;
+    process.exitCode = GateExit.FAIL;
   }
 }

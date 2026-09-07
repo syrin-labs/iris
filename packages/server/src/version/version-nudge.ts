@@ -12,6 +12,7 @@
  * agent learns to skip, and it would cost those tokens on every call for the rest of the session.
  */
 
+import { EnvelopeKey } from '../tools/tool-kit.js';
 import type { SkewPair } from './version-skew.js';
 
 interface VersionSkewNudge {
@@ -41,6 +42,30 @@ export function takeVersionSkew(): VersionSkewNudge | undefined {
     return { pair, action };
   }
   return undefined;
+}
+
+/**
+ * Splice pending skew onto a tool-error payload.
+ *
+ * Successful calls already carry `version_skew` via `runTool`. Thrown errors never reached that
+ * splice — they became a Playwright string plus `FEEDBACK_ASK`, so a caller debugs a CDP timeout
+ * instead of the mismatched pair that caused it (#618). When the error was unrecognized, the
+ * feedback ask is replaced: the skew IS the next move, and inviting a bug report about it is
+ * backwards. A recognized recovery is kept; the envelope still rides along.
+ */
+export function takeVersionSkewOnto(payload: {
+  error: string;
+  recovery?: string;
+  feedback?: string;
+}): Record<string, unknown> {
+  const skew = takeVersionSkew();
+  if (skew === undefined) return payload;
+  const { feedback, ...rest } = payload;
+  return {
+    ...rest,
+    ...(feedback !== undefined && rest.recovery === undefined ? { recovery: skew.action } : {}),
+    [EnvelopeKey.VERSION_SKEW]: skew,
+  };
 }
 
 /** Tests only — drop the module state so each case starts clean. */

@@ -113,3 +113,28 @@ describe('mergeMarkedInstruction — idempotent append into CLAUDE.md/AGENTS.md'
     expect(mergeMarkedInstruction(second.content).content).toBe(first);
   });
 });
+
+describe('the conventions Reticle brings to a project', () => {
+  /**
+   * Verify-as-you-build is the habit that decides whether any of the rest is worth having, and it
+   * is exactly the kind of sentence that gets trimmed when the block runs up against its byte
+   * budget. Pinned so it cannot leave quietly.
+   *
+   * The reasoning it encodes: a red verdict after four builds has four suspects and costs a
+   * re-read of everything; after one build it has none. Reticle is cheap per drive and expensive
+   * per investigation.
+   */
+  it('tells the agent to verify each feature as it lands, not all of them at the end', () => {
+    const body = markedBlock();
+    expect(body).toMatch(/Verify each feature as you finish it/);
+    expect(body).toMatch(/not all of them at the end/);
+  });
+
+  /**
+   * The other half of the same convention: what a change was FOR is knowable only while it is being
+   * made, so the ledger has to be written at build time or not at all.
+   */
+  it('tells the agent to capture intent while building, not afterwards', () => {
+    expect(markedBlock()).toMatch(/while you are building it, not afterwards/);
+  });
+});

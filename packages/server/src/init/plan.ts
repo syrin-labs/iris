@@ -13,15 +13,15 @@ import {
   type Detection,
 } from './detect.js';
 import type { FoundStore } from './capabilities.js';
+import { installFailureHint } from './install-hint.js';
 import { claudeAddCommand, mcpManual, mcpWindowsNote } from './mcp.js';
 import { NodePlatform } from '../platform.js';
-import { mergeCursorConfig, CursorMergeStatus, cursorServerEntry } from './cursor.js';
 import {
   mergeClientConfig,
   ClientMergeStatus,
   clientSnippet,
   clientSpec,
-  type McpClient,
+  McpClient,
 } from './mcp-clients.js';
 import {
   CLAUDE_COMMAND_PATH,
@@ -39,20 +39,14 @@ import {
   RETICLE_MD_PATH,
   CURSOR_RULE_PATH,
 } from './agent-rules.js';
-import {
-  viteSteps,
-  nextSteps,
-  craSteps,
-  svelteKitSteps,
-  nuxtSteps,
-  astroSteps,
-  cspStep,
-  VITE_PLUGIN_DETAIL,
-} from './plan-framework.js';
+import { cspStep, frameworkSteps } from './plan-framework.js';
 import { join } from 'node:path';
-import { htmlManual, reticleConfigContent, unverifiedUiLibraryNote } from './snippets.js';
-import { declaredInstallSource } from '../telemetry/install-source.js';
-import { devServerPortWarning, isLikelyDevServerPort } from '../cli/cli-port.js';
+import { reticleConfigContent, unverifiedUiLibraryNote } from './snippets.js';
+import { configWithInstallSource, declaredInstallSource } from '../telemetry/install-source.js';
+import { existingConfigProblem, projectIdOf, RETICLE_CONFIG_FILE } from './existing-config.js';
+
+// Re-exported: it moved to the module that reads it, and every existing importer says `plan.js`.
+export { RETICLE_CONFIG_FILE };
 
 // An app dev installs exactly the audience-scoped browser-side dependencies — never the retired
 // `@reticlehq/core` umbrella (which dragged the Node MCP server + ws into every app). The kit is the
@@ -73,7 +67,7 @@ const RETICLE_NEXT_PLUGIN = '@reticlehq/next';
  * and nothing on either side names a version. Asking for the CLI's exact version makes the cache
  * irrelevant, and a skewed pair impossible to install by accident.
  */
-export function pinnedPackages(
+function pinnedPackages(
   packages: readonly string[],
   version: string | undefined,
 ): readonly string[] {
@@ -113,7 +107,10 @@ export function frameworkPackages(
     case Framework.NEXT:
       // Next is React by construction, so the detection cannot disagree in a way worth honouring.
       return [RETICLE_REACT_KIT, RETICLE_NEXT_PLUGIN];
+    // React Router framework mode is a Vite app that renders React, so the kit and the plugin are
+    // both right for it too — only the connect INJECTION differs, and that is the plan's business.
     case Framework.VITE:
+    case Framework.REACT_ROUTER:
     case Framework.SVELTEKIT:
       // SvelteKit builds on Vite; until a dedicated Svelte kit exists it uses the Vite build plugin.
       // The build plugin stamps `data-reticle-source` regardless of UI library, so a Vue or Svelte
@@ -143,7 +140,6 @@ export const MCP_TARGET = 'global (claude user scope)';
 
 /** The step that runs the package manager — the other thing that commonly fails on a user's machine. */
 export const DEPS_TARGET = 'package.json';
-export const RETICLE_CONFIG_FILE = '.reticle.json';
 
 export const StepStatus = {
   APPLY: 'apply',
@@ -202,20 +198,28 @@ export interface Plan {
 
 export interface PlanInput {
   detection: Detection;
+  /**
+   * Write `captureNetworkBodies: true` into the app's config. Off unless the caller asked (#705).
+   *
+   * Optional so every existing caller and test keeps the safe default without naming it — the one
+   * direction a default about somebody else's data should be wrong in.
+   */
+  captureBodies?: boolean | undefined;
+  /**
+   * The CSP-bearing files this project actually has, keyed by path — read once in `gatherPlanInput`.
+   *
+   * Pre-read rather than given a reader, because `PlanInput` is the pure input to a pure planner and
+   * handing it an io would let any later step reach the disk from inside `buildPlan`.
+   */
+  cspSources?: Readonly<Record<string, string | undefined>> | undefined;
   /** Whether the `claude` CLI is installed (so we can register the MCP server globally). */
   claudeCli: boolean;
   /** Whether an `reticle` MCP server is already registered with Claude (any scope) — idempotency. */
   mcpExists: boolean;
-  /** Whether Cursor is installed for this user (its global config dir exists). */
-  cursorPresent: boolean;
   /** `process.platform`. Injected so this module stays pure. Windows is the only branch. */
   platform?: string;
   /** Whether THIS project has a .cursor/ directory — the signal that Cursor works on this repo. */
   cursorProjectPresent?: boolean | undefined;
-  /** Current ~/.cursor/mcp.json content, or null if absent. */
-  cursorConfig: string | null;
-  /** Absolute path of ~/.cursor/mcp.json (the write target). */
-  cursorConfigPath: string;
   /**
    * Every OTHER MCP client detected on this machine, with its config path and current content.
    *
@@ -236,6 +240,11 @@ export interface PlanInput {
    * the file every page of the user's site inherits from.
    */
   astroLayout?: { path: string; source: string } | null | undefined;
+  /**
+   * Existing `src/env.d.ts` content, when present — where the Vite-define ambient declarations go
+   * so `astro check` can see `__RETICLE_TOKEN__` / `__RETICLE_ROOT__` (#677).
+   */
+  astroEnvDts?: string | null | undefined;
   /** Discovered Next config filename (e.g. 'next.config.mjs'), or null. */
   nextConfigFile: string | null;
   /** Source of that Next config, so the export can be wrapped in withReticle. */
@@ -248,6 +257,14 @@ export interface PlanInput {
   nextReticleDevImport?: string | undefined;
   /** Whether the ReticleDev component file already exists. */
   nextReticleDevExists: boolean;
+  /**
+   * The existing ReticleDev component's source, when there is one.
+   *
+   * Read so an install predating daemon discovery can be told apart from a current one. Undefined
+   * means NOT READ, and an unread file is reported as already-wired rather than as stale: inventing
+   * work from missing information is how a plan grows steps that can never be completed.
+   */
+  nextReticleDevSource?: string | null | undefined;
   /** `data-testid` values scanned from the app's source, for the generated capabilities block. */
   testids?: readonly string[] | undefined;
   /** Ready-to-uncomment `registerStore` lines for the state libraries the app actually depends on. */
@@ -260,6 +277,8 @@ export interface PlanInput {
   viteDevModuleExists?: boolean | undefined;
   /** Whether src/hooks.client.ts already exists (SvelteKit idempotency). */
   svelteKitHooksExists?: boolean;
+  /** Whether app/entry.client.tsx already exists — it decides which React Router recipe to print. */
+  reactRouterEntryExists?: boolean;
   /** CRA's bundled entry (src/index.tsx or .js) — where the connect import has to go. */
   craEntry?: { path: string; source: string } | null;
   /** Existing .env.development.local, so an unrelated variable in it survives. */
@@ -333,7 +352,6 @@ function agentFile(input: PlanInput, relPath: string): string {
 }
 
 const CLAUDE_MCP_TITLE = 'MCP server (Claude, global)';
-const CURSOR_MCP_TITLE = 'MCP server (Cursor, global)';
 
 function claudeMcpStep(input: PlanInput): Step | null {
   if (!input.claudeCli) return null;
@@ -352,34 +370,6 @@ function claudeMcpStep(input: PlanInput): Step | null {
     status: StepStatus.APPLY,
     detail: 'register reticle globally for all projects',
     exec: { command: cmd.command, args: cmd.args, fallback: cmd.display },
-  };
-}
-
-function cursorMcpStep(input: PlanInput): Step | null {
-  if (!input.cursorPresent) return null;
-  const r = mergeCursorConfig(input.cursorConfig);
-  if (r.status === CursorMergeStatus.ALREADY) {
-    return {
-      title: CURSOR_MCP_TITLE,
-      target: input.cursorConfigPath,
-      status: StepStatus.ALREADY,
-      detail: 'reticle already in Cursor global config',
-    };
-  }
-  if (r.status === CursorMergeStatus.MANUAL) {
-    return {
-      title: CURSOR_MCP_TITLE,
-      target: input.cursorConfigPath,
-      status: StepStatus.MANUAL,
-      detail: `couldn't parse ${input.cursorConfigPath} — add this server by hand:\n  "reticle": ${JSON.stringify(cursorServerEntry())}`,
-    };
-  }
-  return {
-    title: CURSOR_MCP_TITLE,
-    target: input.cursorConfigPath,
-    status: StepStatus.APPLY,
-    detail: 'register reticle in Cursor global config',
-    write: { path: input.cursorConfigPath, content: r.content },
   };
 }
 
@@ -529,7 +519,8 @@ function claudeCommandStep(input: PlanInput): Step | null {
 }
 
 function cursorCommandStep(input: PlanInput): Step | null {
-  const present = true === input.cursorProjectPresent || (input.cursorPresent && !input.claudeCli);
+  const cursorGlobal = (input.detectedClients ?? []).some((c) => c.id === McpClient.CURSOR);
+  const present = true === input.cursorProjectPresent || (cursorGlobal && !input.claudeCli);
   return commandStepFor(agentFile(input, CURSOR_COMMAND_PATH), present, input.cursorCommandContent);
 }
 
@@ -567,7 +558,8 @@ function claudeRuleStep(input: PlanInput): Step | null {
  * committed into their repo. (Global MCP registration is different: it is global, and stays.)
  */
 function cursorRuleStep(input: PlanInput): Step | null {
-  if (!input.cursorPresent) return null;
+  const cursorGlobal = (input.detectedClients ?? []).some((c) => c.id === McpClient.CURSOR);
+  if (!cursorGlobal && true !== input.cursorProjectPresent) return null;
   if (input.cursorProjectPresent !== true && input.claudeCli) return null;
   // The whole file is Reticle's — init created it — so a stale one is REWRITTEN rather than merged.
   // Comparing content is what makes the rule updatable; comparing existence made it permanent.
@@ -607,12 +599,12 @@ const AgentId = {
   CLAUDE: 'claude',
   CURSOR: 'cursor',
 } as const;
-export type AgentId = (typeof AgentId)[keyof typeof AgentId];
+type AgentId = (typeof AgentId)[keyof typeof AgentId];
 
 interface AgentIntegration {
   readonly id: AgentId;
-  /** Global MCP registration. Global on purpose: registered once, used by every project. */
-  readonly mcpStep: (input: PlanInput) => Step | null;
+  /** Global MCP registration. Omit when the generic `otherClientSteps` loop handles it. */
+  readonly mcpStep?: (input: PlanInput) => Step | null;
   /** The project instruction file this agent re-reads every session. */
   readonly ruleStep: (input: PlanInput) => Step | null;
   /** The project slash-command file, for agents that have a command surface. */
@@ -628,7 +620,6 @@ const AGENT_INTEGRATIONS: readonly AgentIntegration[] = [
   },
   {
     id: AgentId.CURSOR,
-    mcpStep: cursorMcpStep,
     ruleStep: cursorRuleStep,
     commandStep: cursorCommandStep,
   },
@@ -637,9 +628,11 @@ const AGENT_INTEGRATIONS: readonly AgentIntegration[] = [
 /** The steps one surface contributes across every known agent, in registry order. */
 function stepsForAgents(
   input: PlanInput,
-  surface: (a: AgentIntegration) => (input: PlanInput) => Step | null,
+  surface: (a: AgentIntegration) => ((input: PlanInput) => Step | null) | undefined,
 ): Step[] {
-  return AGENT_INTEGRATIONS.map((a) => surface(a)(input)).filter((s): s is Step => s !== null);
+  return AGENT_INTEGRATIONS.map((a) => surface(a)?.(input) ?? null).filter(
+    (s): s is Step => s !== null,
+  );
 }
 
 /** The `/reticle` command file for every agent that has a command surface and is present here. */
@@ -754,17 +747,6 @@ function unpinnedRetryNote(version: string | undefined, pm: PackageManager): str
   );
 }
 
-function installFailureHint(pm: PackageManager): string {
-  if (pm !== PackageManager.PNPM) return 'If the version was refused, install the SDK yourself.';
-  return (
-    'If pnpm reported ERR_PNPM_NO_MATURE_MATCHING_VERSION, its minimumReleaseAge setting is holding ' +
-    'this release back. Either wait out the window, or allow these packages explicitly:\n' +
-    '  pnpm config set minimumReleaseAgeExclude "@reticlehq/*"\n' +
-    'Do NOT drop the version pin — unpinned, pnpm installs an older SDK against a newer daemon, and ' +
-    'that mismatch surfaces as a -32000 with nothing naming a version.'
-  );
-}
-
 function installStep(input: PlanInput): Step {
   const pm = input.detection.packageManager;
   const packages = pinnedPackages(
@@ -803,36 +785,6 @@ function installStep(input: PlanInput): Step {
   };
 }
 
-/**
- * What is wrong with the config that is already there, if anything.
- *
- * Reported from the field (#317): a project carried `"port": 3000` — its own dev-server port, which
- * is the confusion SKILL.md names as the top setup failure — and `init` printed `.reticle.json
- * already exists` on every re-run without reading a single field of it, so the file could never be
- * repaired by the command that wrote it. It stayed invisible because a daemon on `127.0.0.1:3000`
- * and Vite on `[::1]:3000` split the port by address family and neither reported a conflict.
- *
- * Narrower than the issue asked for on purpose: `init`'s IO surface is synchronous, so this cannot
- * probe what is LISTENING right now. `isLikelyDevServerPort` covers the framework defaults, which is
- * where the mistake is actually made.
- */
-function existingConfigProblem(source: string | null | undefined): string | undefined {
-  if (null === source || source === undefined) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(source);
-  } catch {
-    return (
-      `${RETICLE_CONFIG_FILE} is present but is not valid JSON, so nothing reads it — neither the ` +
-      'daemon nor the SDK. Delete it and re-run `reticle init`.'
-    );
-  }
-  if ('object' !== typeof parsed || null === parsed) return undefined;
-  const port = (parsed as Record<string, unknown>)['port'];
-  if ('number' !== typeof port || !isLikelyDevServerPort(port)) return undefined;
-  return `${devServerPortWarning(port)} Fix it by removing the "port" field from ${RETICLE_CONFIG_FILE}.`;
-}
-
 const RETICLE_CONFIG_TITLE = 'Reticle config';
 const AGENT_ROOT_CONFIG_TITLE = 'Reticle config (agent root)';
 
@@ -850,10 +802,44 @@ const AGENT_ROOT_CONFIG_TITLE = 'Reticle config (agent root)';
  * and the two files are byte-identical, so neither can disagree with the other about the port or the
  * project identity.
  */
+
 function agentRootConfigStep(input: PlanInput, content: string): Step[] {
   const root = input.agentFileRoot;
   if (root === undefined || 0 === root.length) return [];
   const path = agentFile(input, RETICLE_CONFIG_FILE);
+  const existingProject = projectIdOf(input.agentRootConfigSource);
+  const wantedProject = projectIdOf(content);
+  /**
+   * A monorepo has more than one app and the root can only point at one of them.
+   *
+   * ABSENT and CONFLICTING used to share this branch, so the second got the first's treatment and
+   * its reassuring wording. Reported from the field: two instrumented apps, a root config naming
+   * the first, and `init --app <the second>` repointed the root with no warning -- after which an
+   * agent started at the root reads one project's config and drives another. That is the
+   * silent-wrong-target failure this product exists to prevent, shipped by its own installer.
+   *
+   * Neither answer is ours to pick. Overwriting discards the other app's identity; skipping quietly
+   * leaves the agent aimed away from the app just wired. So the conflict is NAMED and nothing is
+   * written -- the app's own config is still correct either way, so the app is fully instrumented
+   * and only the root pointer is left for a human to decide.
+   */
+  if (
+    existingProject !== undefined &&
+    wantedProject !== undefined &&
+    existingProject !== wantedProject
+  ) {
+    return [
+      {
+        title: AGENT_ROOT_CONFIG_TITLE,
+        target: path,
+        status: StepStatus.NOTICE,
+        detail:
+          `left alone: it names project "${existingProject}", not "${wantedProject}". An agent ` +
+          'started here would read that project and drive this one. Point it at whichever app ' +
+          'this agent should verify, or run the agent from the app directory.',
+      },
+    ];
+  }
   if (input.agentRootConfigSource === content) {
     return [
       {
@@ -888,6 +874,18 @@ function reticleConfigStep(input: PlanInput, content: string): Step {
         target: RETICLE_CONFIG_FILE,
         status: StepStatus.NOTICE,
         detail: problem,
+      };
+    }
+    // The one thing a re-run can still learn: which channel the user actually arrived through.
+    // See configWithInstallSource — it only ever ADDS a field that is absent.
+    const backfilled = configWithInstallSource(input.reticleConfigSource, declaredInstallSource());
+    if (backfilled !== undefined) {
+      return {
+        title: RETICLE_CONFIG_TITLE,
+        target: RETICLE_CONFIG_FILE,
+        status: StepStatus.APPLY,
+        detail: 'record which install route this project came through',
+        write: { path: RETICLE_CONFIG_FILE, content: backfilled },
       };
     }
     return {
@@ -964,29 +962,6 @@ export function buildPlan(input: PlanInput): Plan {
     installStep(input),
     ...reticleConfigSteps(input),
   ];
-  if (input.detection.framework === Framework.VITE) {
-    steps.push(...viteSteps(input));
-  } else if (input.detection.framework === Framework.NEXT) {
-    steps.push(...nextSteps(input));
-  } else if (input.detection.framework === Framework.ASTRO) {
-    steps.push(...astroSteps(input));
-  } else if (input.detection.framework === Framework.CRA) {
-    steps.push(...craSteps(input));
-  } else if (input.detection.framework === Framework.NUXT) {
-    steps.push(...nuxtSteps(input));
-  } else if (input.detection.framework === Framework.SVELTEKIT) {
-    steps.push(...svelteKitSteps(input));
-    // The Vite plugin as well as the client hook. `init` already INSTALLS @reticlehq/vite-plugin for
-    // SvelteKit and then never wired it into the config, so it sat in package.json doing nothing —
-    // which is why a SvelteKit app connected fine and every verdict came back with no file:line.
-    steps.push(...viteSteps(input, VITE_PLUGIN_DETAIL.SVELTEKIT));
-  } else {
-    steps.push({
-      title: 'Connect snippet',
-      target: 'index.html',
-      status: StepStatus.MANUAL,
-      detail: htmlManual(input.options.port, input.options.projectId, input.pairingToken),
-    });
-  }
+  steps.push(...frameworkSteps(input));
   return { framework: input.detection.framework, uiLibrary: input.detection.uiLibrary, steps };
 }

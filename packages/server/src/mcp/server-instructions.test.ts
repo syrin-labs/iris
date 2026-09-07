@@ -59,6 +59,16 @@ describe('buildServerInstructions', () => {
       expect(text).toContain('reticle_context');
       expect(text).toContain('reticle_intent');
     });
+
+    /**
+     * Naming them was half a fix. Neither is advertised, so a bare name sent an agent at a tool
+     * `tools/list` does not contain: it burns a call, gets "unknown tool", and learns that the
+     * instructions cannot be trusted — which is more expensive than never having been told.
+     */
+    it('gives both of them the reticle_run call that actually reaches them', () => {
+      expect(text).toContain('reticle_run({ tool: "reticle_context"');
+      expect(text).toContain('reticle_run({ tool: "reticle_intent"');
+    });
   });
 
   it('stays short enough to be read in full, in both states', () => {
@@ -71,8 +81,62 @@ describe('buildServerInstructions', () => {
     // charged once. Anything added beyond that has to make the same argument — a paragraph that is
     // not replacing per-turn repetition is just a longer preamble, and the reason for the cap is
     // attention, not bytes.
+    //
+    // Raised again to 3,200 for the reach-for block, which makes that argument in a second form.
+    // Four advertised tools (observe, wait_for, inspect, session) were re-sent in full on EVERY
+    // turn as part of the ~18 KB surface and explained nowhere, so the model had schemas it could
+    // use and no basis on which to choose — and the measured cost of that on observe alone was
+    // triple the false alarms. Roughly 600 bytes charged once, to make several KB per turn
+    // reachable, is the same trade with the numbers in the same direction. The first-run state,
+    // where a longer preamble would do the most harm, is unchanged but for two tool names.
+    //
+    // Raised again to 3,350 for the stopping rule — one sentence, and the only one here that
+    // pushes toward LESS work. Every other line pushes toward more checking, which is right when
+    // something is broken and is the entire bill when nothing is. Measured in the competitor
+    // benchmark on a HEALTHY app: this agent spent 22 turns and roughly 3.5x the cheapest
+    // competitor's tokens confirming nothing was wrong, on a page whose FIRST verdict had already
+    // come back "yes" over a clean capture. It was not payload — that run had the smallest
+    // tool-result payload of its five. It was turns nobody had told it to stop taking.
+    //
+    // Raised again to 3,500 for the diagnose-from-source rule, cut to one sentence to earn it.
+    //
+    // THIRD raise in one release, and the ratchet is the thing to watch: a cap that moves whenever
+    // something wants in is not a cap. It holds only because each raise has been paid for with a
+    // measurement, and because the two before it were checked afterwards — the stopping rule cut
+    // the healthy-app control from 275k to a 123k mean over three runs. If a future raise cannot
+    // show that, the right answer is to cut an older sentence instead of adding to the budget.
+    // Measured on a fix-and-verify benchmark, split at the call that writes the fix: this agent
+    // spent 14 and 18 calls BEFORE its first edit where a competitor spent 8 and 9, and per-turn
+    // cost was identical on the hardest cell — so the whole gap was turns spent asking a browser a
+    // question only source can answer. ~150 bytes charged once against turns charged every run.
     for (const previouslyConnected of [true, false]) {
-      expect(buildServerInstructions({ previouslyConnected }).length).toBeLessThan(2900);
+      expect(buildServerInstructions({ previouslyConnected }).length).toBeLessThan(3500);
+    }
+  });
+});
+
+describe('diagnosis starts in the source, not in the browser', () => {
+  it('says so in both states, and names the order', () => {
+    for (const previouslyConnected of [true, false]) {
+      const text = buildServerInstructions({ previouslyConnected });
+      expect(text).toMatch(/Read the source first/);
+      expect(text).toMatch(/CONFIRM a fix, not to find one/);
+    }
+  });
+});
+
+describe('the one instruction that asks for less work', () => {
+  /**
+   * Everything else in this string pushes toward more checking. That is right when something is
+   * broken and it is the whole bill when nothing is: on a healthy app in the competitor benchmark,
+   * this agent spent 22 turns confirming that nothing was wrong, after its FIRST verdict had
+   * already come back "yes" over a clean capture.
+   */
+  it('tells the agent when it is finished, in both states', () => {
+    for (const previouslyConnected of [true, false]) {
+      const text = buildServerInstructions({ previouslyConnected });
+      expect(text).toMatch(/clean capture IS the answer/);
+      expect(text).toMatch(/stop\./);
     }
   });
 });

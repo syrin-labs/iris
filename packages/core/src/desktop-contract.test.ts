@@ -97,4 +97,24 @@ describe('desktop contract — the Rust capture helper', () => {
     if ('' === capture) return;
     expect(capture).toContain(`pub async fn ${DESKTOP_CONTRACT.RETICLE_TAURI_CAPTURE_COMMAND}(`);
   });
+
+  /**
+   * `hide()` after load used to be the headless path on every OS. A hidden macOS WKWebView has
+   * been observed to go quiet after a pause; the macOS arm parks off-screen instead of asserting
+   * that `hide()` is dead on every machine.
+   */
+  it('parks the macOS headless window off-screen rather than calling hide()', () => {
+    const lib = join(process.cwd(), '..', 'tauri', 'src', 'lib.rs');
+    if (!existsSync(lib)) return;
+    const source = readFileSync(lib, 'utf8');
+    expect(source).toContain('OFFSCREEN_PX');
+    const fn = source.split('pub fn on_page_load')[1];
+    expect(fn, 'on_page_load missing from lib.rs').toBeDefined();
+    const macosArm = (fn ?? '').split('target_os = "macos"')[1];
+    expect(macosArm, 'macOS arm missing from on_page_load').toBeDefined();
+    const arm = macosArm ?? '';
+    const untilNextCfg = arm.split('#[cfg')[0] ?? arm;
+    expect(untilNextCfg).toContain('set_position');
+    expect(untilNextCfg).not.toMatch(/\.hide\(\)/);
+  });
 });

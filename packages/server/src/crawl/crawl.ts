@@ -34,6 +34,9 @@ export interface CrawlSession {
   /** Which round of source edits is in force, so a finding drawn entirely from pre-edit evidence
    *  says so. Optional for the same reason `currentDocumentId` is. */
   readonly currentEditEpoch?: number | undefined;
+  /** The page under test, so a third-party beacon cannot be reported against a control. Optional
+   *  for the same reason `currentDocumentId` is. */
+  readonly url?: string | undefined;
   /**
    * Attribution window around each click. Optional so a caller can supply a minimal session, but a real
    * session MUST provide it: without a window the click's own effects carry no actionId, and an
@@ -91,7 +94,7 @@ export const CAPPED_SNAPSHOT_NOTE =
  * The same words as the capped-snapshot case on purpose — it is the same idea (interactiveFound is a
  * floor) reached by a different route, and a second vocabulary for it would just be more to learn.
  */
-export function revealedControlsNote(count: number): string {
+function revealedControlsNote(count: number): string {
   return (
     `the page changed as you clicked: ${String(count)} control(s) that did not exist when this crawl ` +
     'started were never visited — interactiveFound is a floor, not a total; re-run the crawl from ' +
@@ -169,7 +172,19 @@ function failedRequests(events: ReticleEvent[], floor: number): ReticleEvent[] {
 export function legitimatelyInert(desc: string): boolean {
   if (desc.includes('[disabled]')) return true;
   if (desc.includes('[checked]')) return true;
-  return /\b(textbox|searchbox|combobox|spinbutton)\b/.test(desc);
+  // Inputs, and the ARIA LIVE-REGION roles.
+  //
+  // `alert`, `status`, `log`, `timer` and `marquee` exist to be READ — a screen reader announces
+  // them and nothing is meant to happen when one is clicked. Clicking twice and seeing nothing is
+  // therefore correct behaviour, and reporting it as `dead-control` accuses a working app.
+  //
+  // Found by driving a real app: the demo reported `dead-control — alert "Invalid email or
+  // password"`, which is a login form correctly telling somebody their password was wrong. That is
+  // the most expensive kind of false positive there is — the strongest claim the crawler makes,
+  // about an app that was working, and on the path a new user meets first.
+  //
+  // `alertdialog` is deliberately NOT here: it is interactive, and a word boundary keeps it out.
+  return /\b(textbox|searchbox|combobox|spinbutton|alert|status|log|timer|marquee)\b/.test(desc);
 }
 
 /**
@@ -325,6 +340,11 @@ export async function crawl(
     for (const c of findContradictions(events, {
       currentDocumentId: session.currentDocumentId,
       currentEditEpoch: session.currentEditEpoch,
+      appOrigin: session.url,
+      // The crawl's window IS one control's click, so it can name the floor the consequence rules
+      // need — without it a crawl would report nothing about the UI moving, which is most of what a
+      // crawl is for.
+      actionSince: since,
     })) {
       counts.contradictions += 1;
       anomalies.push({

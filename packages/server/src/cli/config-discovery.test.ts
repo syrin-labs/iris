@@ -64,6 +64,13 @@ describe('discoverProjectConfigs', () => {
     expect(discoverProjectConfigs(root).found.map((f) => f.path)).toContain(path);
   });
 
+  it('finds a config when a declared workspace is the app itself', () => {
+    mkdirSync(join(root, '.git'), { recursive: true });
+    write('package.json', JSON.stringify({ workspaces: ['web'] }));
+    const path = write('web/.reticle.json', '{"projectId":"web"}');
+    expect(discoverProjectConfigs(root).found.map((f) => f.path)).toContain(path);
+  });
+
   it('reads the pnpm workspace manifest as well', () => {
     mkdirSync(join(root, '.git'), { recursive: true });
     write('pnpm-workspace.yaml', 'packages:\n  - "sites/*"\n');
@@ -83,6 +90,13 @@ describe('discoverProjectConfigs', () => {
     expect(report.found).toHaveLength(0);
     expect(report.searched.length).toBeGreaterThan(0);
     expect(report.searched).toContain(root);
+  });
+
+  it('does not report workspace directories that do not exist', () => {
+    mkdirSync(join(root, '.git'), { recursive: true });
+    const report = discoverProjectConfigs(root);
+    expect(report.searched).not.toContain(join(root, 'apps'));
+    expect(report.searched).not.toContain(join(root, 'packages'));
   });
 
   it('walks up to the repo root from a directory inside it', () => {

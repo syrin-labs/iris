@@ -14,7 +14,7 @@ It answers the only question that matters: did the change actually work? On Reac
 
 ## Install it: paste this into your coding agent
 
-You do not install Reticle by hand. Copy the block below into Claude Code, Cursor, Copilot, Codex, Windsurf, OpenCode, or any MCP agent, and let the agent wire its own workspace. It ends with the only definition of "installed" that counts: one real flow driven, one real verdict returned.
+You do not install Reticle by hand, and neither does your agent: it runs one command that does the whole thing. Copy the block below into Claude Code, Cursor, Copilot, Codex, Windsurf, OpenCode, or any MCP agent, and let it wire its own workspace. It ends with the only definition of "installed" that counts: one real flow driven, one real verdict returned.
 
 ```text
 Reticle is the proof layer for AI coding agents. It runs a dev-only SDK inside my
@@ -30,12 +30,15 @@ silent 500.
 
 Install it now:
 
-  RETICLE_INSTALL_SOURCE=docs_site npx @reticlehq/server@latest init
+  RETICLE_INSTALL_SOURCE=docs_site npx @reticlehq/server@latest init \
+    --flow "<pick the journey that matters in my app and name it here>"
 
-Then follow https://docs.reticle.sh/install-agentic.md and, if anything needs a
-manual edit, https://docs.reticle.sh/install-manual.md. Do not stop until you have
-driven one real flow in my app and produced a verdict. That, not a config file, is
-what "installed" means.
+That one command wires the project, starts the dev server, opens the app, waits
+for it to connect and drives that flow to a verdict. Do not walk it by hand: read
+what it prints, do anything it says is outstanding, and re-run it, which is safe.
+It exits non-zero until a verdict exists, and that, not a config file, is what
+"installed" means. Only if it could not run at all, follow
+https://docs.reticle.sh/install-manual.md.
 
 Afterwards, use it whenever you change any user-facing behaviour.
 ```

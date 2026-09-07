@@ -11,12 +11,39 @@
  * `payment` catches "Send payment" and "Confirm payment" (which the bare-verb list missed entirely,
  * because `\bpay\b` does not match "payment"), and `send money`/`send funds` catch the rest.
  *
+ * `logout` / `log out` / `sign out` were here and are not. Signing out is reversible, and the
+ * words fire on almost every authenticated drive — a `Log out` menuitem was blocked on every
+ * session. Same cost as `send`: a guard that fires on routine controls trains agents to pass
+ * `confirmDangerous` reflexively.
+ *
  * The guard stays deliberately asymmetric — a false block costs one round-trip, a missed block can
  * charge somebody's card — so this narrows the trigger without lowering money coverage. Both
  * directions are pinned in security.test.ts.
  */
+/**
+ * Labels that read as irreversible: something is destroyed, or money moves.
+ *
+ * `deploy` and `publish` were here and are not. The guard's contract — written at the top of
+ * act-danger.ts — is "a money-moving or destructive control", and a deploy is neither: nothing is
+ * destroyed, nothing is paid, and the thing it produces did not exist before. Consequential is a
+ * wider net than this list is allowed to be, or half the buttons in a dev tool sit behind a
+ * permission flag.
+ *
+ * Removed on measurement, not taste. Three benchmark runs against an app with a "New deploy" button
+ * lost their ENTIRE turn budget to the refusal. Improving its wording did not rescue the last one:
+ * the agent spent its remaining turns weighing a bug report about the block and looking for a
+ * webmcp workaround. A guard that costs a whole run on a control it was never written to catch is
+ * not protecting anybody — it is training agents to route around it, which is worse than not having
+ * it, because the routing-around generalises to the buttons that DO matter.
+ */
 const DANGEROUS_ACTION =
-  /\b(delete|remove|destroy|erase|drop|terminate|revoke|reset|logout|log out|sign out|close account|cancel subscription|purchase|buy|pay|payment|place order|confirm order|deploy|publish|send money|send funds|transfer|withdraw|refund)\b/i;
+  /\b(delete|remove|destroy|erase|drop|terminate|revoke|reset|close account|cancel subscription|purchase|buy|pay|payment|place order|confirm order|send money|send funds|transfer|withdraw|refund)\b/i;
+
+/**
+ * Roles that pick a value from a list, not perform an action. Selecting "Payment" as a document
+ * type is not a payment. `menuitem` is deliberately not here: a menu item labelled Delete still is.
+ */
+const VALUE_PICKER_ROLE = 'option';
 
 /** The hostnames that ARE loopback outright, with no parsing: the name, and IPv6 ::1 both ways. */
 const LOOPBACK_HOSTNAMES: readonly string[] = ['localhost', '::1', '0:0:0:0:0:0:0:1'];
@@ -89,7 +116,14 @@ export function isOpaqueOrigin(origin: string): boolean {
   }
 }
 
-/** Best-effort classifier for labels and tool names that can trigger irreversible effects. */
-export function isDangerousActionText(text: string): boolean {
+/**
+ * Best-effort classifier for labels and tool names that can trigger irreversible effects.
+ *
+ * `role` is the resolved ARIA role of the control. An `option` is a value picker: its text names
+ * the value, not an action, so "Payment" as a select choice is not a payment. Callers that have no
+ * role (a tool name, a click with no role on the descriptor) omit it and the text decides.
+ */
+export function isDangerousActionText(text: string, role?: string): boolean {
+  if (role !== undefined && role.trim().toLowerCase() === VALUE_PICKER_ROLE) return false;
   return DANGEROUS_ACTION.test(text.replace(/[_-]+/g, ' '));
 }

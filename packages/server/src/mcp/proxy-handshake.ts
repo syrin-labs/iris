@@ -115,6 +115,38 @@ export function toolsChangedNotification(catalogWasLocal: boolean): string | nul
 }
 
 /**
+ * What a locally-answered handshake must say about itself.
+ *
+ * The proxy answering `initialize` is right — a hang gives the agent no tools AND no diagnosis — but
+ * the response it sent was INDISTINGUISHABLE from a daemon's. Same `serverInfo`, same capabilities,
+ * same `instructions`. So the client marked the server installed and enabled, the agent got a tool
+ * list that was cached at best and empty at worst, and nothing anywhere connected the two facts.
+ *
+ * Reported from the field, from two different agent hosts at once: the marketplace showed Reticle
+ * installed with the whole tool surface enabled, and the agent asked to verify a flow reported that
+ * RETICLE WAS NOT PRESENT ON THE MACHINE — while the daemon was running and a browser session was
+ * live. That conclusion is the reasonable reading of an empty surface with no explanation attached,
+ * and it is unrecoverable: the proxy's own recovery is "the next client request re-probes the port",
+ * and a client holding zero tools never makes another request.
+ *
+ * `instructions` is the channel because it is the only one that survives an empty catalog. It rides
+ * on the initialize result, which SUCCEEDED, and every host we target puts it in front of the model.
+ * A tool description cannot reach an agent that was handed no tools.
+ *
+ * The healthy block is kept underneath rather than replaced: an agent that IS about to get a working
+ * surface (the common case — the first call wakes a daemon) still needs to know how to drive it.
+ */
+export function degradedInstructions(healthy: string, port: number, reason: string): string {
+  return `DEGRADED SURFACE — READ THIS BEFORE ANY reticle_* CALL: no Reticle daemon answered on port ${String(port)} (${reason}), so this handshake was completed by the Reticle MCP proxy itself, not by Reticle's daemon. Any tool list you were handed came from a cache or is empty — it is not evidence that anything is behind it.
+
+Reticle IS installed: this process is Reticle. Do NOT report it as missing, not present, or not installed — that is the wrong diagnosis and it is the one this state reliably produces. The right one is that the daemon is not reachable yet.
+
+Your next reticle_* call starts a daemon and then either works or fails with the specific reason. If you have NO reticle_* tools at all, say exactly that to the user and tell them to run \`reticle doctor\` in a terminal — it reports what is holding port ${String(port)} and whether a daemon can start at all.
+
+${healthy}`;
+}
+
+/**
  * The largest single JSON-RPC line the proxy will accumulate from a client.
  *
  * Generous — a tool call with a big argument payload is legitimate — but finite, because without a
@@ -123,7 +155,7 @@ export function toolsChangedNotification(catalogWasLocal: boolean): string | nul
  */
 export const MAX_STDIN_LINE_BYTES = 16 * 1024 * 1024;
 
-export interface DrainedLines {
+interface DrainedLines {
   /** Complete lines, in order. Empty when the chunk carried no newline. */
   lines: string[];
   /** The trailing partial line, carried into the next chunk. */

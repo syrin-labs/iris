@@ -122,6 +122,49 @@ chk('an action dispatches', true === acted.dispatched || true === acted.result?.
   chk('  and the refusal is not blamed on Reticle', !/not one Reticle recognizes/.test(body));
 }
 
+// ── THE ONBOARDING SEQUENCE: a drive that ends in a bug report ────────────────────────────────
+// The moment the whole funnel is for. A new user watches their agent drive their app and sees a
+// finding with a file and a line — not a capability demo, not a green nobody earned.
+//
+// It was proven by hand on a real defect and nothing gated it, which is how it would quietly stop
+// working. `reticle demo` used to be the path and was DELETED: a bespoke demo command proves
+// nothing about the workflow somebody is deciding to adopt. So this drives the tools an agent
+// actually has, against the app it actually installed into.
+//
+// The three properties, in the order a user meets them:
+//   1. a verdict is REFUSED when the app did not do what was declared — the bug report exists;
+//   2. it names WHERE — a source file and line, so the finding is one click from an edit;
+//   3. it says WHY in a sentence, so the human reading over the agent's shoulder understands it.
+{
+  // Driven on the LOGIN button, which is the one control guaranteed present on a freshly reloaded
+  // app. The first draft used `nav-deployments`, which only exists after signing in — so the spec
+  // failed on its own selector and reported `verified=undefined`, which looks exactly like the
+  // product returning nothing. The refusal said so precisely ("the call was valid — the selector
+  // matched nothing on the page RIGHT NOW"), which is the message this release fixed.
+  const missing = await call('reticle_act_and_wait', {
+    sessionId,
+    action: 'click',
+    target: { testid: 'login-submit' },
+    until: { kind: 'state', path: 'view', equals: 'this-view-does-not-exist' },
+    timeout_ms: 4000,
+  });
+  chk(
+    'a flow that does not do what was declared produces a REFUSAL, not a pass',
+    missing.verified === 'no',
+    `verified=${String(missing.verified)}`,
+  );
+  chk(
+    '  and the finding names a source file and line',
+    'string' === typeof missing.source && /:\d+/.test(missing.source),
+    String(missing.source),
+  );
+  chk(
+    '  and it says why in a sentence a human can read',
+    'string' === typeof missing.because && 20 < missing.because.length,
+    String(missing.because).slice(0, 70),
+  );
+}
+
 await client.stop();
 console.log(`\n${0 === fail ? '✅' : '❌'} RELEASE SMOKE (${pass} passed, ${fail} failed)`);
 process.exit(0 === fail ? 0 : 1);

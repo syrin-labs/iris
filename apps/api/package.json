@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/api",
-  "version": "2.11.0",
+  "version": "2.13.1",
   "private": true,
   "description": "Demo backend for exercising Reticle against real-world behaviors (auth, errors, eventual consistency, LLM, uploads).",
   "type": "module",

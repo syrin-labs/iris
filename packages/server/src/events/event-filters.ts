@@ -1,4 +1,4 @@
-import { EventType, type ReticleEvent } from '@reticlehq/core';
+import { EventType, URL_RAW, urlForMatch, type ReticleEvent } from '@reticlehq/core';
 import { asString, asNumber } from '../tools/tools-helpers.js';
 import { mergeNetworkDetail } from '../input/network-detail.js';
 
@@ -63,7 +63,7 @@ export function matchNet(
   if (method !== undefined && asString(d['method'])?.toUpperCase() !== method.toUpperCase()) {
     return false;
   }
-  if (urlContains !== undefined && !(asString(d['url']) ?? '').includes(urlContains)) {
+  if (urlContains !== undefined && !urlForMatch(d).includes(urlContains)) {
     return false;
   }
   if (status !== undefined && asNumber(d['status']) !== status) return false;
@@ -93,6 +93,22 @@ export function reconcileNet(events: ReticleEvent[]): ReticleEvent[] {
     })
     .map((e): ReticleEvent => ({ ...e, data: { ...e.data, status: 'pending', pending: true } }));
   return [...completed, ...unresolved].sort((a, b) => a.t - b.t);
+}
+
+/**
+ * Strip the grader-only raw URL before an event is rendered to the agent.
+ *
+ * `urlRaw` exists so `urlContains` can match a path redaction rewrote. It is a secret-bearing field
+ * by construction (the whole reason `url` was redacted) and must never appear in observe, evidence,
+ * or a network listing.
+ */
+export function withoutUrlRaw(event: unknown): unknown {
+  if (typeof event !== 'object' || null === event) return event;
+  const rec = event as Record<string, unknown>;
+  const data = rec['data'];
+  if (typeof data !== 'object' || null === data || !(URL_RAW in data)) return event;
+  const { [URL_RAW]: _raw, ...rest } = data as Record<string, unknown>;
+  return { ...rec, data: rest };
 }
 
 /** Compact network-call summary for reticle_network output — drops event plumbing (t, type,

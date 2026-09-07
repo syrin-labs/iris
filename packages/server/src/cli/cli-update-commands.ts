@@ -8,9 +8,10 @@
 import { checkForUpdate } from '../update/update-checker.js';
 import { updateTarget } from '../update/update-nudge.js';
 import { applyUpdate, rollback } from '../update/updater.js';
+import { refreshAgentRules } from '../init/refresh-rules.js';
 import { SERVER_VERSION } from '../version/server-version.js';
 import { log } from '../log.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { reticleDepsOf, sdkSyncCommand } from '../update/sdk-sync.js';
 import { detectPackageManager } from '../init/detect.js';
@@ -65,6 +66,24 @@ export async function handleUpdate(): Promise<void> {
       return;
     }
     log('reticle_update', { ok: true, from: SERVER_VERSION, to: target });
+    // Bring this project's agent rules up with the version.
+    //
+    // The managed block has always been updatable — marker-delimited, idempotent by comparing
+    // content — and nothing called it after the first install. `mergeMarkedInstruction` is reachable
+    // from `buildPlan` alone, so a project set up on an older release kept that release's
+    // instructions forever and every improvement to them reached new projects only.
+    //
+    // That is backwards: the people who most need better instructions are the ones already
+    // installed and not getting value, and this is the moment they are touching the install anyway.
+    // Only files that ALREADY carry the block are touched, and only inside the markers.
+    const refreshed = refreshAgentRules(process.cwd(), {
+      read: (path) => (existsSync(path) ? readFileSync(path, 'utf8') : null),
+      write: (path, content) => {
+        writeFileSync(path, content, 'utf8');
+      },
+    });
+    if (0 !== refreshed.updated.length)
+      log('reticle_rules_refreshed', { files: refreshed.updated, to: target });
     // The app's SDK FIRST, then the CLI. `reticle update` used to swap only the CLI, so the command
     // whose job is keeping an install current was itself a way to produce a version-skewed pair —
     // and the skew message told people to run it to fix an outdated SDK, which it could not do.

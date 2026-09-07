@@ -48,6 +48,15 @@ export const InstrumentationGapKind = {
   /** A control was driven that the declared capability contract does not mention. */
   UNDECLARED_CONTROL: 'undeclared-control',
   /**
+   * A flow cannot name a control with a stable testid, so the proposal is to add one.
+   *
+   * Honesty does not emit this on a verdict today — a missing testid is not itself a weaker
+   * channel the way a missing signal is. Oracles do, when they can locate the control. It
+   * belongs in this vocabulary so `reticle_domain` and a later honesty emit cannot disagree
+   * about the name of the same absence.
+   */
+  MISSING_TESTID: 'missing-testid',
+  /**
    * Code changed, and this verdict is the first one taken since — with nothing declaring what the
    * change was supposed to make true.
    *
@@ -61,6 +70,24 @@ export const InstrumentationGapKind = {
    * developer's own words and an agent will act on it, which is strictly worse than honest absence.
    */
   UNDECLARED_CHANGE: 'undeclared-change',
+  /**
+   * A verdict PASSED and the ledger still holds intents nothing has proved.
+   *
+   * The mirror of `UNDECLARED_CHANGE`, and the more expensive half. That one fires when NOTHING was
+   * declared; this fires when something was and no verdict ever settled it — which reads identically
+   * to done from inside the run, because every verdict the agent drew came back green.
+   *
+   * Measured on the bench fixture: an agent fixed a form guard, drove the app, and drew SEVEN green
+   * verdicts, then reported FIXED. The form still accepted a whitespace-only service. Its closing
+   * words quoted its own patch as the evidence — seven verdicts about other things, and a conclusion
+   * read off the diff. No rule could see it: the change WAS declared, so `UNDECLARED_CHANGE` stayed
+   * silent, and each individual verdict was honestly green.
+   *
+   * A green does not settle what the run still owes, and only the ledger knows the difference. This
+   * is not a failure — the assertion held — so it downgrades nothing; it names the debt on the
+   * result the agent is already reading, at the moment it is deciding whether it is finished.
+   */
+  INTENT_UNDISCHARGED: 'intent-undischarged',
   /**
    * A flow was saved and nothing says what it is for.
    *
@@ -111,8 +138,12 @@ const GAP_FIX: Readonly<Record<InstrumentationGapKind, string>> = {
     'let the Reticle router adapter observe navigation, or fire reticle.signal on route commit',
   [InstrumentationGapKind.UNDECLARED_CONTROL]:
     'add this control to reticle.describe() so the capability contract matches what the app actually exposes',
+  [InstrumentationGapKind.MISSING_TESTID]:
+    'add data-testid="..." on this control so the flow can name it after a refactor',
   [InstrumentationGapKind.UNDECLARED_CHANGE]:
     'declare it with reticle_intent { action: "declare", intents: [{ id, statement }] } — the statement is prose, in your own words: which user does what, and what should become true',
+  [InstrumentationGapKind.INTENT_UNDISCHARGED]:
+    'draw a verdict whose `until` asserts the intent itself, then it discharges — or call reticle_run({ tool: "reticle_context" }) to see exactly what is still owed',
   [InstrumentationGapKind.NO_FLOW_INTENT]:
     'save it again with intent: "<which user does what, and what should become true>" — prose, in your own words — or set intentId to an intent already in the ledger',
 };

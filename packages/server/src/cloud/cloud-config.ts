@@ -15,12 +15,13 @@ import type { FileSystemPort } from '../project/fs-port.js';
 import { resolveCloudConfig, type CloudConfig } from './cloud-sync.js';
 
 /** `<reticleRoot>/cloud.json` — the project's cloud binding + sync policy (non-secret). */
-export const CLOUD_LINK_FILE = 'cloud.json';
+/** Re-exported so the existing importers keep working; the string itself lives in core. */
+export const CLOUD_LINK_FILE = ReticleDir.CLOUD_LINK_FILE;
 /** `~/.reticle/credentials.json` — the user's per-cloud-project API keys (the only secret). */
 export const CREDENTIALS_FILE = 'credentials.json';
 
 /** What the daemon mirrors to the cloud for a project. Each surface is independently toggleable. */
-export interface SyncPolicy {
+interface SyncPolicy {
   /** Push verification-run artifacts to the dashboard Runs tab. */
   runs: boolean;
   /** Push per-flow project-memory outcomes (the regression history). */
@@ -45,6 +46,8 @@ export interface ProjectCloud {
 
 interface CloudLink {
   projectId: string;
+  /** Which tenant this binding belongs to. Absent in a cloud.json written before org-scoped slots. */
+  orgId: string | undefined;
   url: string;
   sync: Partial<SyncPolicy>;
   verify: VerifyMode;
@@ -72,6 +75,7 @@ function parseLink(raw: unknown): CloudLink | null {
     'object' === typeof o.sync && o.sync !== null ? (o.sync as Record<string, unknown>) : {};
   return {
     projectId: o.projectId,
+    orgId: 'string' === typeof o.orgId && o.orgId.length > 0 ? o.orgId : undefined,
     url: o.url,
     sync: {
       runs: asBool(sync.runs, DEFAULT_SYNC_POLICY.runs),
@@ -83,11 +87,71 @@ function parseLink(raw: unknown): CloudLink | null {
 }
 
 /** Look up the API key for a cloud project id in the user credentials map. */
-function credentialFor(raw: unknown, projectId: string): string | null {
+/**
+ * The API key this machine holds for one project ON ONE CLOUD.
+ *
+ * The store used to be keyed by cloud project id ALONE, which collides in the case that is not rare
+ * at all — it is the default. `reticle link` names every project "default", so a repo linked to a
+ * self-hosted install and a repo linked to the hosted service both claim the slot `default`, and
+ * whichever was linked last wins. Measured: two repos on one machine, and the production key was
+ * being sent to a localhost server, which answered 401.
+ *
+ * That is the same class of defect as sending a session token to a host that did not issue it, and
+ * it deserves the same answer: a credential is scoped to the cloud that minted it, and no credential
+ * at all is better than one belonging to somewhere else.
+ *
+ * Two shapes are accepted. `{ key, url }` is what is written now and is checked against the URL
+ * being dialled. A bare string is the legacy shape, has no URL to check, and is still honoured —
+ * refusing it would silently unlink every repo that predates this change, which is a worse outage
+ * than the collision. Re-linking upgrades a repo to the safe shape.
+ */
+export const credentialSlot = (url: string, projectId: string, orgId?: string): string =>
+  orgId === undefined || 0 === orgId.length
+    ? `${normalizeCloudUrl(url)}::${projectId}`
+    : `${normalizeCloudUrl(url)}::org::${orgId}::${projectId}`;
+
+function credentialFor(
+  raw: unknown,
+  projectId: string,
+  url: string,
+  orgId?: string,
+): string | null {
   if (typeof raw !== 'object' || null === raw) return null;
-  const key = (raw as Record<string, unknown>)[projectId];
-  return 'string' === typeof key && key.length > 0 ? key : null;
+  const store = raw as Record<string, unknown>;
+  /*
+   * The ORG slot first, because cloud + project is still not an identity.
+   *
+   * `link` names every project "default", so two ACCOUNTS on one cloud both claimed the slot
+   * `<url>::default` and the last link won. Measured on a laptop: a brand-new workspace ran
+   * `reticle login` and was handed a stored key belonging to a different organisation — valid, so
+   * every validation passed, and every run it pushed would have landed in a stranger's dashboard.
+   * Keying by cloud fixed two clouds colliding; only keying by ORG fixes two tenants colliding.
+   */
+  const orgScoped = orgId === undefined ? undefined : store[credentialSlot(url, projectId, orgId)];
+  if ('string' === typeof orgScoped && orgScoped.length > 0) return orgScoped;
+  /*
+   * Then the cloud+project slot, which is what every repo linked before this change still holds. It
+   * is ambiguous between tenants by construction, which is why it is consulted second and why the
+   * writer above stopped producing it as the only entry.
+   */
+  const composite = store[credentialSlot(url, projectId)];
+  if ('string' === typeof composite && composite.length > 0) return composite;
+  const entry = store[projectId];
+  if ('string' === typeof entry) return entry.length > 0 ? entry : null;
+  if (typeof entry !== 'object' || null === entry) return null;
+  const record = entry as Record<string, unknown>;
+  const key = record['key'];
+  const forUrl = record['url'];
+  if ('string' !== typeof key || 0 === key.length) return null;
+  // A credential stamped with a DIFFERENT cloud is not this project's credential, however much the
+  // project ids match. Refuse rather than dial somewhere with somebody else's key.
+  if ('string' === typeof forUrl && normalizeCloudUrl(forUrl) !== normalizeCloudUrl(url))
+    return null;
+  return key;
 }
+
+/** Trailing slashes are not identity: `https://x/` and `https://x` are one cloud. */
+const normalizeCloudUrl = (url: string): string => url.replace(/\/+$/, '');
 
 /**
  * Resolve the cloud picture for a project rooted at `reticleRoot`. Reads the project's link file + the
@@ -118,6 +182,8 @@ export async function resolveProjectCloud(
   const key = credentialFor(
     await readJson(fs, join(homeDir, ReticleDir.ROOT, CREDENTIALS_FILE)),
     link.projectId,
+    link.url,
+    link.orgId,
   );
   const config: CloudConfig | null =
     key !== null ? { url: link.url.replace(/\/+$/, ''), apiKey: key } : null;

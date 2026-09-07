@@ -148,6 +148,9 @@ describe('a satisfied declared consequence outranks idle-settlement', () => {
         outcomePending: true,
       }).verified,
     ).toBe(Verified.UNKNOWN);
+    // A net-only declaration still loses to an unread body: the body is then the only channel
+    // that could have contradicted the screen. The skip is the next describe, and it requires
+    // `independentOfBody` — passing `declaredConsequence` alone must not open that path.
     expect(
       decideVerified({
         pass: true,
@@ -174,6 +177,84 @@ describe('a satisfied declared consequence outranks idle-settlement', () => {
         honesty: clean,
       }).verified,
     ).toBe(Verified.UNKNOWN);
+  });
+});
+
+/**
+ * An unread 2xx body is not a veto when the caller already proved the action on a channel the
+ * body does not own.
+ *
+ * Measured on a chat composer: `act_and_wait` declared a 201 AND the unique message text, both
+ * held, and the verdict came back `unknown / outcome_unread` solely because bodies were not
+ * captured. The agent then went to enable body capture instead of finishing the drive. The clause
+ * exists for batch/GraphQL 200s whose failures live only in the body; it must not fire when a
+ * body-independent declaration already held. The unread write still rides out in `because`.
+ */
+describe('a body-independent declared consequence outranks an unread payload', () => {
+  it('is YES when the independent channel held and a 2xx body went unread', () => {
+    const v = decideVerified({
+      pass: true,
+      declaredConsequence: true,
+      independentOfBody: true,
+      honesty: clean,
+      settled: true,
+      outcomeUnread: ['POST /api/chat/messages'],
+    });
+    expect(v.verified).toBe(Verified.YES);
+    expect(v.verifiedReason).toBe(VerifiedReason.PROVED);
+  });
+
+  it('still NAMES the unread write — a caveat hidden is a caveat dropped', () => {
+    const v = decideVerified({
+      pass: true,
+      declaredConsequence: true,
+      independentOfBody: true,
+      honesty: clean,
+      settled: true,
+      outcomeUnread: ['POST /api/chat/messages'],
+    });
+    expect(v.because).toContain('POST /api/chat/messages');
+    expect(v.because).toMatch(/unread|never recorded/i);
+  });
+
+  it('a net-only declaration still downgrades — the body is the remaining channel', () => {
+    const v = decideVerified({
+      pass: true,
+      declaredConsequence: true,
+      honesty: clean,
+      settled: true,
+      outcomeUnread: ['POST /api/bulk-hold'],
+    });
+    expect(v.verified).toBe(Verified.UNKNOWN);
+    expect(v.verifiedReason).toBe(VerifiedReason.OUTCOME_UNREAD);
+  });
+
+  it('an observed contradiction still outranks the independent channel', () => {
+    const v = decideVerified({
+      pass: true,
+      declaredConsequence: true,
+      independentOfBody: true,
+      honesty: clean,
+      settled: true,
+      outcomeUnread: ['POST /api/chat/messages'],
+      contradictions: [{ kind: ContradictionKind.UI_ADVANCED_REQUEST_FAILED }],
+    });
+    expect(v.verified).toBe(Verified.NO);
+    expect(v.verifiedReason).toBe(VerifiedReason.CONTRADICTED);
+  });
+
+  it('a 202 still downgrades — that outcome does not exist yet', () => {
+    const v = decideVerified({
+      pass: true,
+      declaredConsequence: true,
+      independentOfBody: true,
+      honesty: clean,
+      settled: true,
+      outcomePending: true,
+      outcomeUnread: ['POST /api/chat/messages'],
+    });
+    expect(v.verified).toBe(Verified.UNKNOWN);
+    expect(v.verifiedReason).toBe(VerifiedReason.OUTCOME_PENDING);
   });
 });
 

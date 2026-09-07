@@ -33,16 +33,32 @@ function bridgeOrigins(port: number): string[] {
  * Matches to the end of the directive (`;`) or the end of the enclosing quoted string, which is how
  * these are written in both a Next `headers()` value and a `<meta content="...">`.
  */
-function connectSrcSources(text: string): string[] | undefined {
+function directiveSources(text: string, directive: string): string[] | undefined {
   // Stops at the directive separator or the closing double quote of the enclosing string. Single
   // quotes are NOT terminators: `'self'` is a source, not the end of the list.
-  const match = /connect-src([^;"]*)/i.exec(text);
+  const match = new RegExp(`${directive}([^;"]*)`, 'i').exec(text);
   const list = match?.[1];
   if (list === undefined) return undefined;
   return list
     .split(/\s+/)
     .map((source) => source.trim())
     .filter((source) => source.length > 0);
+}
+
+/**
+ * What this policy allows a WebSocket to reach — `connect-src`, or `default-src` when it is absent.
+ *
+ * The fallback is the CSP spec's, and leaving it out made the check blind to the commonest strict
+ * policy there is. MarkText, a production Electron editor, declares
+ * `default-src 'self'; script-src 'self'; …` with NO `connect-src`: its WebSockets are restricted to
+ * 'self', the bridge is blocked, and this returned "no problem" because it was looking for a
+ * directive that was not written. Every fetch-directive falls back to `default-src`; that is what
+ * `default` means, and it is why an author does not repeat themselves.
+ *
+ * Still undefined when NEITHER is present — a policy that constrains neither is not blocking us.
+ */
+function connectSrcSources(text: string): string[] | undefined {
+  return directiveSources(text, 'connect-src') ?? directiveSources(text, 'default-src');
 }
 
 /**
@@ -66,6 +82,76 @@ export function cspConnectSrcProblem(text: string, port: number): string | undef
     `bridge: ${missing.join(' and ')} ${1 === missing.length ? 'is' : 'are'} missing. The browser ` +
     `will block the WebSocket and report it in ITS console only — every check on the Reticle side ` +
     `will pass while the app never connects. ${devCspAddition(port)}`
+  );
+}
+
+/**
+ * What this policy allows a SCRIPT to be — `script-src`, or `default-src` when it is absent.
+ *
+ * Same fallback and same reason as {@link connectSrcSources}: every fetch-directive falls back to
+ * `default-src`, which is why an author writing `default-src 'self'` does not repeat themselves.
+ */
+function scriptSrcSources(text: string): string[] | undefined {
+  return directiveSources(text, 'script-src') ?? directiveSources(text, 'default-src');
+}
+
+/**
+ * Would this policy stop the pasted connect snippet from RUNNING?
+ *
+ * The `connect-src` check above assumes the SDK got as far as opening a socket. Under a policy
+ * without `'unsafe-inline'` it never does: the snippet `init` prints is an inline
+ * `<script type="module">`, the browser refuses to execute it, and there is no SDK, no socket and
+ * nothing for `connect-src` to block. `reticle open` then reports "no session / app carries no SDK",
+ * which sends diagnosis at the wrong cause entirely (#679).
+ *
+ * The rule is the spec's, not a guess:
+ *
+ * - `'unsafe-inline'` is the ONLY source that admits an inline script. `*` does not — a host
+ *   wildcard says nothing about inline code, and reading it as permission is the commonest CSP
+ *   misconception there is.
+ * - a nonce, a hash, or `'strict-dynamic'` makes browsers IGNORE `'unsafe-inline'` entirely. A
+ *   policy carrying both is a policy that blocks inline scripts, and one carrying a nonce blocks
+ *   ours specifically: the nonce is minted for the app's own tags, not for a snippet pasted in by
+ *   hand.
+ */
+function blocksInlineScript(sources: readonly string[]): boolean {
+  const overridesUnsafeInline = sources.some(
+    (source) =>
+      source.startsWith("'nonce-") || source.startsWith("'sha") || "'strict-dynamic'" === source,
+  );
+  if (overridesUnsafeInline) return true;
+  return !sources.includes("'unsafe-inline'");
+}
+
+/**
+ * The problem with this app's `script-src`, or undefined if there is not one.
+ *
+ * Reports the remedy that works under `'self'` — serve the connect code as an external module file —
+ * rather than telling anyone to weaken their policy with `'unsafe-inline'`.
+ */
+export function cspInlineScriptProblem(text: string, port: number): string | undefined {
+  const sources = scriptSrcSources(text);
+  if (sources === undefined || 0 === sources.length) return undefined;
+  if (!blocksInlineScript(sources)) return undefined;
+  return (
+    `this app declares a Content-Security-Policy whose \`script-src\` does not admit an inline ` +
+    `script, so the connect snippet never executes. Nothing on the Reticle side can see this: with ` +
+    `no SDK there is no socket, and \`reticle open\` reports "no session / app carries no SDK" — ` +
+    `the wrong cause. ${externalScriptRemedy()} ${devCspAddition(port)}`
+  );
+}
+
+/** Where the external connect module goes, for an app served from a static directory. */
+export const EXTERNAL_CONNECT_PATH = 'public/reticle-connect.js';
+
+/** The remedy that works under `script-src 'self'`, as text to copy. */
+export function externalScriptRemedy(): string {
+  return (
+    `Serve the connect code as an EXTERNAL module instead: put it in ` +
+    `\`${EXTERNAL_CONNECT_PATH}\` and reference it with ` +
+    `\`<script type="module" src="/reticle-connect.js"></script>\`, which \`script-src 'self'\` ` +
+    `already allows. Note that an external module is DEFERRED, so the app's own classic scripts run ` +
+    `first and requests they fire before the SDK attaches are not observed.`
   );
 }
 

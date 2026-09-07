@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { missingTokenWarning } from './missing-token.js';
 import { ensurePairingToken } from './ensure-token.js';
 import { homedir } from 'node:os';
@@ -16,6 +16,7 @@ import {
 } from '@reticlehq/core';
 import { resolveProjectId } from './project-id.js';
 import { discoverDaemonPort } from './discover-port.js';
+import { announceDevServer } from './announce.js';
 import { SVELTE_FILE, stampSvelte } from './svelte-source.js';
 import {
   resolvableChain,
@@ -54,6 +55,30 @@ const NODE_MODULES = 'node_modules';
  * by the injected <script src> and served by the load hook below.
  */
 export const RETICLE_CONNECT_MODULE = '/@reticle-connect';
+
+/**
+ * The URL the injected `<script src>` must actually point at: `base` + the module id.
+ *
+ * {@link RETICLE_CONNECT_MODULE} is a SERVER-ROOT path, and emitting it verbatim is only correct
+ * when Vite is serving from the root. Under `base: '/playground/'` the browser asked for
+ * `/@reticle-connect`, Vite answered 404 with its own "did you mean /playground/@reticle-connect"
+ * hint, and the page rendered perfectly while never connecting (#676) — the exact failure shape
+ * Reticle exists to catch, in Reticle's own setup path.
+ *
+ * Vite does not prefix tags returned from `transformIndexHtml`, so the prefix has to be applied
+ * here. Only a path base is joined: Vite serves the dev app from the root when `base` is an
+ * external URL, so prefixing a CDN origin onto a dev-server module would point the tag off-host.
+ */
+export function connectModuleUrl(base: string | undefined): string {
+  if (undefined === base || !base.startsWith('/')) return RETICLE_CONNECT_MODULE;
+  // Trimmed by slicing rather than with `/\/+$/`: a trailing-slash-run regex is a polynomial
+  // backtracking shape over a value that comes out of the user's config, and CodeQL is right to
+  // flag it. This is linear and says the same thing.
+  let end = base.length;
+  while (0 < end && '/' === base[end - 1]) end -= 1;
+  const trimmed = base.slice(0, end);
+  return 0 === trimmed.length ? RETICLE_CONNECT_MODULE : `${trimmed}${RETICLE_CONNECT_MODULE}`;
+}
 
 /**
  * The pre-hook, as source for an inline <head> script.
@@ -168,6 +193,20 @@ export interface ReticleVitePluginOptions {
    */
   captureNetworkBodies?: boolean;
   /**
+   * Make Reticle's OWN presenter visible to snapshots and queries. CONTRIBUTORS ONLY.
+   *
+   * Reachable here for the same reason `captureNetworkBodies` is: the plugin is the only `connect()`
+   * most apps ever have, so an SDK option the plugin cannot pass is an option that does not exist.
+   *
+   * The presenter is hidden from every tool by design — an agent that can drive Reticle's own
+   * interface can fabricate its own impact report. The cost is that a HUD change is the only kind of
+   * change Reticle cannot be used to check. This is the hatch for that one case, and the app reports
+   * it in its capabilities so a verdict drawn with it open is never mistaken for an ordinary one.
+   *
+   * Also settable as `VITE_RETICLE_EXPOSE_PRESENTER=1`.
+   */
+  exposePresenter?: boolean;
+  /**
    * Let Reticle run when the page or the bridge is not on localhost.
    *
    * Off by default: the SDK refuses outside localhost so a page on the open internet cannot be
@@ -231,7 +270,7 @@ export interface ReticleVitePlugin {
   load: (id: string) => string | null;
   transformIndexHtml: (html: string) => HtmlTag[];
   /** Vite hands over the resolved config; used to resolve the HTML entry exactly. */
-  configResolved?: (config: { root?: string; command?: string }) => void;
+  configResolved?: (config: { root?: string; command?: string; base?: string }) => void;
   /** Dev-server hook: keeps the served connect module from outliving the token it was built without. */
   configureServer?: (server: ViteDevServerLike) => void;
   /** Build-time post-condition: desktop injection must have happened. */
@@ -245,6 +284,21 @@ export interface ReticleVitePlugin {
  * plugin never imports, the same way the Svelte compiler and Playwright are handled elsewhere.
  */
 export interface ViteDevServerLike {
+  /**
+   * Vite's own HTTP server, for the port it ACTUALLY bound and the moment it bound it. Optional and
+   * nullable because middleware mode has none — and because a structural stand-in that demands more
+   * than Vite guarantees stops being assignable, which red-builds every typechecked config.
+   */
+  httpServer?: {
+    once(event: string, listener: () => void): unknown;
+    address(): string | { port: number } | null;
+  } | null;
+  /**
+   * The URLs Vite prints on boot. Read rather than assembled: host, protocol and base are all
+   * configurable, so composing a URL here would be a guess about the one thing the dev server can
+   * simply be asked.
+   */
+  resolvedUrls?: { local: string[]; network: string[] } | null;
   middlewares: {
     // METHOD syntax throughout, deliberately. A property-style `(mod: object) => void` is checked
     // strictly (contravariantly) in its parameters, so widening a parameter to `object` makes the
@@ -389,6 +443,10 @@ function connectArgs(options: ReticleVitePluginOptions): string {
   if (true === options.captureNetworkBodies || '1' === process.env['VITE_RETICLE_CAPTURE_BODIES']) {
     args['captureNetworkBodies'] = true;
   }
+  // Same shape, same reason. Off unless asked for, in a config or for one session.
+  if (true === options.exposePresenter || '1' === process.env['VITE_RETICLE_EXPOSE_PRESENTER']) {
+    args['exposePresenter'] = true;
+  }
   // Same shape, same reason: without it an app that cannot be served on localhost has no way to
   // reach the SDK option at all. The pairing token still applies — see the option's docstring.
   if (
@@ -445,6 +503,25 @@ export function installedSdk(
   appRoot: string,
   canResolve: (dep: string) => boolean = (dep) => null !== resolvableChain([dep], appRoot),
 ): { specifier: string; usesInstall: boolean } {
+  try {
+    const pkgPath = join(appRoot, 'package.json');
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as Record<
+        string,
+        Record<string, string> | undefined
+      >;
+      const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+      if (deps[RETICLE_SENSOR] !== undefined && deps[RETICLE_PACKAGE] === undefined) {
+        return { specifier: RETICLE_SENSOR, usesInstall: false };
+      }
+      if (deps[RETICLE_PACKAGE] !== undefined) {
+        return { specifier: RETICLE_PACKAGE, usesInstall: true };
+      }
+    }
+  } catch {
+    // Ignore read or parse failures when checking dependencies
+  }
+
   if (canResolve(RETICLE_PACKAGE)) return { specifier: RETICLE_PACKAGE, usesInstall: true };
   if (canResolve(RETICLE_SENSOR)) return { specifier: RETICLE_SENSOR, usesInstall: false };
   // Neither resolves: keep the historical name so the failure reads as "the SDK is not installed"
@@ -519,6 +596,8 @@ export function reticle(options: ReticleVitePluginOptions = {}): ReticleVitePlug
   let root: string | undefined;
   /** 'serve' | 'build'. The dev check only applies to serve; buildEnd covers the other. */
   let command: string | undefined;
+  /** Vite's resolved `base`. Undefined until configResolved, which is before any HTML is served. */
+  let base: string | undefined;
   const warn = options.onWarn ?? ((message: string) => globalThis.console.warn(message));
   /** Whether connect() actually reached a module — asserted at buildEnd, never assumed. */
   let injected = false;
@@ -557,7 +636,8 @@ export function reticle(options: ReticleVitePluginOptions = {}): ReticleVitePlug
     `[${RETICLE_VITE_PLUGIN_NAME}] could not inject reticle.connect(): the HTML entry module was ` +
     'never matched, so this app carries no instrumentation and will never connect. Check that ' +
     'index.html references your entry with a <script type="module" src="...">, or pass ' +
-    '`inject: false` and call reticle.connect() yourself.';
+    '`inject: false` and call reticle.connect({ token: __RETICLE_TOKEN__ }) yourself. The plugin ' +
+    'still inlines that define; a connect without it is refused.';
 
   /**
    * The DEV message, which must be weaker — and this is the whole reason the two are separate.
@@ -741,6 +821,7 @@ export function reticle(options: ReticleVitePluginOptions = {}): ReticleVitePlug
     configResolved(config) {
       root = config.root;
       command = config.command;
+      base = config.base;
     },
     /**
      * Serve the connect module fresh, every time.
@@ -768,8 +849,55 @@ export function reticle(options: ReticleVitePluginOptions = {}): ReticleVitePlug
      */
     configureServer(server) {
       if (!inject) return;
+      // Tell `~/.reticle` this dev server exists, the moment it is actually listening.
+      //
+      // This is the one fact nobody outside this process could observe: the plugin is loaded in the
+      // dev server that is RUNNING, not merely present in a config file on disk. Its absence is the
+      // commonest setup failure there is — a plugin added to a config the running server already
+      // read — and until now that failure was indistinguishable from every other one.
+      //
+      // Deliberately reads the port and URL off the server rather than composing them. The port may
+      // be `strictPort: false` and have moved, the host and base are configurable, and every one of
+      // those is something the user can change under us.
+      const announce = (): void => {
+        const address = server.httpServer?.address();
+        const port =
+          'object' === typeof address && null !== address && undefined !== address
+            ? address.port
+            : undefined;
+        if (undefined === port) return;
+        const opts = resolveLazy();
+        const withdraw = announceDevServer({
+          port,
+          pid: process.pid,
+          root: opts.root ?? process.cwd(),
+          url: server.resolvedUrls?.local[0] ?? `http://localhost:${String(port)}/`,
+          ...(opts.sdkVersion === undefined || 0 === opts.sdkVersion.length
+            ? {}
+            : { sdkVersion: opts.sdkVersion }),
+          startedAt: Date.now(),
+          ...(opts.projectId === undefined ? {} : { projectId: opts.projectId }),
+        });
+        server.httpServer?.once('close', withdraw);
+        // `close` does not fire on Ctrl-C, which is how a dev server usually dies. The read side
+        // checks liveness anyway, so a missed withdrawal degrades rather than lies — these just
+        // keep the directory tidy in the cases we can catch.
+        process.once('exit', withdraw);
+        process.once('SIGINT', withdraw);
+        process.once('SIGTERM', withdraw);
+      };
+      // Already bound in some setups (middleware mode, a restart), not yet in the common one.
+      if (null === server.httpServer?.address() || undefined === server.httpServer?.address()) {
+        server.httpServer?.once('listening', announce);
+      } else {
+        announce();
+      }
       server.middlewares.use((req, _res, next) => {
-        if ((req.url ?? '').split('?')[0] === RETICLE_CONNECT_MODULE) {
+        // Matched against BOTH forms: plugin middlewares run ahead of Vite's own base
+        // middleware, so the request still carries `base` here, while a middleware-mode host may
+        // have stripped it already.
+        const requestPath = (req.url ?? '').split('?')[0];
+        if (requestPath === RETICLE_CONNECT_MODULE || requestPath === connectModuleUrl(base)) {
           if (currentConnectSource() !== lastServedConnectSource) {
             connectChanges++;
             if (CONNECT_CHURN_LIMIT === connectChanges) warn(connectChurnWarning());
@@ -811,7 +939,7 @@ export function reticle(options: ReticleVitePluginOptions = {}): ReticleVitePlug
         // `renderers.size === 0`, so the render meter counted zero forever while the docs advertised
         // commit counts. This runs during parse, before any module, and the meter adopts its buffer.
         { tag: 'script', children: RENDER_PREHOOK_SOURCE, injectTo: 'head-prepend' },
-        { tag: 'script', attrs: { type: 'module', src: RETICLE_CONNECT_MODULE }, injectTo: 'body' },
+        { tag: 'script', attrs: { type: 'module', src: connectModuleUrl(base) }, injectTo: 'body' },
       ];
     },
   };

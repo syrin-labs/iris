@@ -76,7 +76,38 @@ function describeIssue(issue: z.ZodIssue): string {
  * Deliberately still THROWS: every call site already handles a throw, and turning this into a
  * result type would mean touching three handlers to gain nothing the message does not already say.
  */
+/**
+ * The placeholder `verify_next` puts in the `until` it suggests, sent back unchanged.
+ *
+ * The nudge hands the agent a ready-made `act_and_wait` call with `ref` and `action` filled in from
+ * the act that dispatched, and leaves the consequence blank on purpose: naming it is the one part
+ * only the agent can know, and guessing would be Reticle inventing the assertion.
+ *
+ * Sent verbatim it parses as a perfectly valid text predicate that simply never matches, so the
+ * verdict came back `verified:"no"` / "the declared consequence did not hold" — blaming the app for
+ * a placeholder the agent forgot to replace, and sending it to hunt a defect that does not exist.
+ * Measured on a live app before this guard: a confident, wrong, actionable-looking answer, which is
+ * the exact failure the rest of this file exists to avoid.
+ */
+const UNFILLED_PLACEHOLDER = /^<name the consequence/i;
+
+function placeholderValue(input: unknown): string | undefined {
+  if ('object' !== typeof input || null === input) return undefined;
+  const value = (input as Record<string, unknown>)['value'];
+  return 'string' === typeof value && UNFILLED_PLACEHOLDER.test(value) ? value : undefined;
+}
+
 export function parsePredicate(input: unknown): z.infer<typeof PredicateSchema> {
+  const unfilled = placeholderValue(input);
+  if (unfilled !== undefined) {
+    throw new Error(
+      `that predicate still carries the placeholder from verify_next ("${unfilled}"). Nothing ran, ` +
+        'and no verdict was produced — which is deliberate: as written it would have failed and ' +
+        'blamed the app for a value you had not filled in yet. Replace it with the consequence ' +
+        'this action actually causes, and prefer one the action CHANGES: a signal, a request, a ' +
+        'route, or store state. Text on screen that was already there proves nothing.',
+    );
+  }
   const parsed = PredicateSchema.safeParse(input);
   if (parsed.success) return parsed.data;
   const kind =
@@ -88,7 +119,7 @@ export function parsePredicate(input: unknown): z.infer<typeof PredicateSchema> 
   const issues = parsed.error.issues.slice(0, 3).map(describeIssue).join('; ');
   throw new Error(
     `that predicate did not parse (kind "${kind}"): ${issues}. Nothing ran — the predicate was ` +
-      `not evaluated, so no verdict was produced. ${accepted(kind)} ` +
+      `not evaluated, so no verdict was produced. ${accepted(kind, parsed.error.issues)} ` +
       `A valid ${kind} predicate looks like: ${exampleFor(kind)}`,
   );
 }
@@ -100,12 +131,26 @@ export function parsePredicate(input: unknown): z.infer<typeof PredicateSchema> 
  * round trip on the one call path that produces verdicts. Naming the accepted fields — or, when the
  * kind itself is the mistake, the accepted kinds — makes the retry informed instead.
  */
-function accepted(kind: string): string {
+function accepted(kind: string, issues: readonly z.ZodIssue[]): string {
   const fields = predicateFieldsFor(kind);
   if (0 < fields.length) {
     // A field whose value is an object is the one an agent cannot guess from its name alone, so
     // expand it in the same breath rather than making the shape a second round trip.
-    const nested = Object.entries(predicateNestedFieldsFor(kind))
+    //
+    // Only the field the rejection actually points at, though. Expanding every object-valued field
+    // of the kind makes the sentence longer the more the schema grows, and buries the one clause
+    // that answers the question asked — the same argument this file already makes for showing one
+    // example per kind instead of a generic one. `element` is the only kind with an object-valued
+    // field today, so the two agree except when the mistake is somewhere else entirely, which is
+    // the case pinned in the tests.
+    const all = predicateNestedFieldsFor(kind);
+    const blamed = new Set(
+      issues
+        .map((issue) => issue.path[0])
+        .filter((field): field is string => 'string' === typeof field),
+    );
+    const nested = Object.entries(all)
+      .filter(([field]) => blamed.has(field))
       .map(([field, keys]) => ` ${field} accepts: ${keys.join(', ')}.`)
       .join('');
     return `${kind} accepts: ${fields.join(', ')}.${nested}`;

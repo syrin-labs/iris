@@ -116,17 +116,16 @@ function snapshotHealth(): {
  * tab blind. Uses a native (pre-bound) timer so a frozen app clock (reticle_clock) never stalls it.
  */
 export function installHealth(emit: Emit): Teardown {
+  const ac = new AbortController();
+  const { signal } = ac;
+
   const report = (reason: HealthReason): void => {
     emit(EventType.PAGE_HEALTH, { ...snapshotHealth(), reason });
   };
 
-  const onVisibility = (): void => report(HealthReason.VISIBILITY);
-  const onFocus = (): void => report(HealthReason.FOCUS);
-  const onBlur = (): void => report(HealthReason.BLUR);
-
-  document.addEventListener('visibilitychange', onVisibility);
-  window.addEventListener('focus', onFocus);
-  window.addEventListener('blur', onBlur);
+  document.addEventListener('visibilitychange', () => report(HealthReason.VISIBILITY), { signal });
+  window.addEventListener('focus', () => report(HealthReason.FOCUS), { signal });
+  window.addEventListener('blur', () => report(HealthReason.BLUR), { signal });
 
   report(HealthReason.INITIAL); // baseline so the server knows state before the first change
   const stopHeartbeat = nativeSetInterval(
@@ -136,8 +135,6 @@ export function installHealth(emit: Emit): Teardown {
 
   return () => {
     stopHeartbeat();
-    document.removeEventListener('visibilitychange', onVisibility);
-    window.removeEventListener('focus', onFocus);
-    window.removeEventListener('blur', onBlur);
+    ac.abort();
   };
 }

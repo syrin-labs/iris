@@ -12,6 +12,7 @@
 // Self-check: `node apps/e2e/gate-harness.mjs --self-check`
 import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { pidOnPort } from './port-pid.mjs';
 
 /** Reticle's default bridge port — the one every doc, error message and config example names. */
 export const DEFAULT_BRIDGE_PORT = 4400;
@@ -49,7 +50,40 @@ const FREE_PORT_SETTLE_MS = 400;
  * hung unanswered, with nothing in ~/.reticle/proxy-4400.log because the process that writes it was
  * the one that died. An agent in that state is not degraded, it is gone, and no log says so.
  */
+/**
+ * Stop a spawned process AND whatever it started, on either kind of machine.
+ *
+ * A dev server is a wrapper: `npm run dev` starts vite, `create-next-app` starts next. Killing the
+ * pid we hold leaves the real server listening, and the next scaffold in the gate then fails to
+ * bind — a cascade whose first visible symptom is an unrelated port conflict three scaffolds later.
+ *
+ * POSIX gets the process GROUP (the negative pid, which is why these are spawned detached).
+ * Windows has no process groups and `process.kill(-pid)` throws there, so it gets `taskkill /T`,
+ * which walks the child tree instead. Same guarantee, two mechanisms, one call site for callers.
+ */
+export function killTree(pid) {
+  if (pid === undefined) return;
+  try {
+    if ('win32' === process.platform) {
+      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    } else {
+      process.kill(-pid, 'SIGTERM');
+    }
+  } catch {
+    /* already gone, or never had children — either way there is nothing left to stop */
+  }
+}
+
 export function portHolders(port) {
+  // Windows has no lsof, and `lsof()` below answers "nothing matched" for a tool that is absent —
+  // an honest answer to the wrong question. Every caller then believed the port was free, so a
+  // registry or daemon left behind by a failed run was never cleared and the NEXT run inherited it.
+  // That is how one broken prepack became "no token from verdaccio" a run later. `pidOnPort` is the
+  // netstat equivalent this repo already had, in a module written for exactly this gap.
+  if ('win32' === process.platform) {
+    const pid = pidOnPort(port);
+    return pid === null ? [] : [{ pid, listener: true, command: commandOf(pid) }];
+  }
   const listeners = new Set(lsof(['-nP', `-iTCP:${String(port)}`, '-sTCP:LISTEN', '-t']));
   const all = lsof(['-nP', `-iTCP:${String(port)}`, '-t']);
   return all.map((pid) => ({
@@ -297,8 +331,25 @@ export const Attribution = {
   INCONCLUSIVE: 'inconclusive',
 };
 
-export function attributeOutcome({ connected, transportAliveThroughout }) {
-  if (connected) return { outcome: Attribution.PASS, because: 'a session connected' };
+/**
+ * Why a connected-but-empty session is a FAIL, not a PASS.
+ *
+ * The install gate used to treat "a session connected" as success. An app can connect with
+ * `registerCapabilities({ testids: [], signals: [], stores: [] })`, so `hasCapabilities` stays
+ * false and `reticle_state` has nothing to read. That is the end state the gate exists to catch:
+ * connected is not verifiable. Callers that do not pass `hasCapabilities` (the soak, which only
+ * asks whether the link stayed up) keep the old connected-is-enough meaning.
+ */
+const BECAUSE_SESSION_UNOBSERVABLE =
+  'a session connected but hasCapabilities is false, so the app cannot answer a state question';
+
+export function attributeOutcome({ connected, transportAliveThroughout, hasCapabilities }) {
+  if (connected) {
+    if (false === hasCapabilities) {
+      return { outcome: Attribution.FAIL, because: BECAUSE_SESSION_UNOBSERVABLE };
+    }
+    return { outcome: Attribution.PASS, because: 'a session connected' };
+  }
   if (!transportAliveThroughout) {
     return {
       outcome: Attribution.INCONCLUSIVE,
@@ -381,6 +432,28 @@ async function selfCheck() {
   assert.equal(
     attributeOutcome({ connected: false, transportAliveThroughout: true }).outcome,
     Attribution.FAIL,
+  );
+  assert.equal(
+    attributeOutcome({
+      connected: true,
+      transportAliveThroughout: true,
+      hasCapabilities: false,
+    }).outcome,
+    Attribution.FAIL,
+    'a session that connected with nothing to observe is a FAIL, not a pass',
+  );
+  assert.equal(
+    attributeOutcome({
+      connected: true,
+      transportAliveThroughout: true,
+      hasCapabilities: true,
+    }).outcome,
+    Attribution.PASS,
+  );
+  assert.equal(
+    attributeOutcome({ connected: true, transportAliveThroughout: true }).outcome,
+    Attribution.PASS,
+    'callers that do not ask about capabilities keep the connected-is-enough meaning',
   );
 
   client.kill('SIGKILL');

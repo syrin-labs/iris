@@ -1,4 +1,4 @@
-import { BlindSpotKind, CaptureLoss, PredicateKind } from '@reticlehq/core';
+import { CaptureLoss, PredicateKind } from '@reticlehq/core';
 import { gapsForAction } from '../honesty/instrumentation-gaps.js';
 import { noteSessionGaps } from '../honesty/gap-ledger.js';
 import { declaresState } from '../events/predicate-asks.js';
@@ -7,10 +7,12 @@ import type { InstrumentationGap, JournalVerdictEffect } from '@reticlehq/core';
 import type { Predicate } from '../events/predicate.js';
 import type { Session } from '../session/session.js';
 import { findContradictions, type Contradiction } from '../events/contradictions.js';
-import { declaredExpectations } from '../events/declared.js';
+import { declaredExpectations, declaresBodyIndependentChannel } from '../events/declared.js';
 import {
+  absenceBlindSpotNote,
   blindSpotsFromState,
   buildCoverageStatement,
+  restsOnCompleteWindow,
   Coverage,
   impeachesCapture,
   transportGapNote,
@@ -19,30 +21,10 @@ import { buildHonestyBlock } from '../honesty/honesty.js';
 import { hasAcceptedWrite } from '../honesty/accepted-write.js';
 import { unreadWriteLabels } from '../honesty/unread-outcome.js';
 import { decideVerified } from '../honesty/verified.js';
-import { describeWaitTarget } from '../honesty/unsettled.js';
+import { describeWaitTarget, namedNetIsInFlight } from '../honesty/unsettled.js';
 import { inFlightRequestLabels, repeatedRequestLabels } from './settle-in-flight.js';
 import { gradeOfPredicate } from './assert-grade.js';
 import { assertSource } from './assert-source.js';
-
-type StateBlindSpot = ReturnType<typeof blindSpotsFromState>[number];
-
-function absenceBlindSpotNote(
-  predicate: Predicate,
-  spots: readonly StateBlindSpot[],
-): string | undefined {
-  if (predicate.kind !== 'element' || predicate.absent !== true) return undefined;
-
-  const relevant = spots.filter(
-    (spot) =>
-      spot.count > 0 &&
-      spot.kind === BlindSpotKind.CROSS_ORIGIN_IFRAME &&
-      undefined !== predicate.query.scope,
-  );
-  if (0 === relevant.length) return undefined;
-
-  const statement = buildCoverageStatement(relevant);
-  return `the absence assertion targeted a region Reticle could not observe (${statement.note ?? 'partial coverage'}), so a passing DOM check cannot prove absence`;
-}
 
 /**
  * The honesty verdict for a plain `reticle_assert`.
@@ -98,7 +80,7 @@ export async function assertVerdict(
   // in that session partial — including ones about a region it cannot affect. That errs toward
   // over-warning, which is the correct direction here: the failure this guards against is a green
   // that implies coverage it never had, and a needless caveat costs the agent a sentence.
-  const spots = blindSpotsFromState(session.blindSpots());
+  const spots = blindSpotsFromState(session.blindSpots(), session.runtime);
   const statement = buildCoverageStatement(spots);
   const absenceBlindSpot = absenceBlindSpotNote(predicate, spots);
   // Omitted entirely when coverage is full, so an intact page pays nothing and the field's PRESENCE
@@ -131,6 +113,7 @@ export async function assertVerdict(
     prior,
     currentDocumentId: session.currentDocumentId,
     currentEditEpoch: session.currentEditEpoch,
+    appOrigin: session.url,
     expectedFailures: declared.netFailures,
     renderProved: pass && declared.rendersContent,
     ...(actCursor !== undefined && actCursor >= since ? { actionSince: actCursor } : {}),
@@ -145,23 +128,42 @@ export async function assertVerdict(
   const impeachingNotes = [impeaching.note, gap].filter((n): n is string => n !== undefined);
   const outcomePending = hasAcceptedWrite(windowEvents);
   const outcomeUnread = unreadWriteLabels(windowEvents);
+  const stillInFlight = inFlightRequestLabels(windowEvents);
   const decision = decideVerified({
     pass,
     // Same rule as the act path: the caller named a consequence, so a settlement-only finding must
     // not override it. A fix that lived on one half of the verdict surface would leave the other
     // half broken, and this is the tool agents call most.
     declaredConsequence: predicate.kind !== PredicateKind.SETTLED,
+    ...(declaresBodyIndependentChannel(predicate) ? { independentOfBody: true } : {}),
     ...(inconclusive === undefined ? {} : { inconclusive }),
     ...(true === observationLost ? { observationLost: true } : {}),
     ...(absenceBlindSpot === undefined ? {} : { absenceBlindSpot }),
+    ...(namedNetIsInFlight(predicate, stillInFlight) ? { namedRequestInFlight: true } : {}),
     honesty: buildHonestyBlock({
       grade: gradeOfPredicate(predicate),
       attribution: 'window',
+      // Did the buffer evict SCARCE evidence belonging to this window, AND does a green here rest on
+      // the window being complete. assert never consulted the buffer at all, on the reasoning that it
+      // "observes an already-open window" — but eviction happens on push regardless of who opened the
+      // window, so `{ console, absent: true }` returned `yes` over a window whose evidence was gone,
+      // which is absence of evidence read as evidence of absence.
+      //
+      // The second half of the condition is not a refinement, it is what keeps this usable. Scarce
+      // loss is recorded for AGE eviction too, so `lostSince(0)` is true on any session past the 60s
+      // cutoff, and assert takes a caller-chosen `since` that is often 0. Impeaching every verdict
+      // over a wide window would make `unknown` the answer to everything — the failure this repo has
+      // already paid for once, when `unclean_capture` became the dominant cause of `unknown` in the
+      // field. The act path needs no such guard: its cursor is the action's own.
+      truncated: session.lostSince(since) && restsOnCompleteWindow(predicate),
       coveragePartial: Coverage.PARTIAL === statement.coverage,
+      ...(statement.note === undefined ? {} : { coverageNote: statement.note }),
       ...(0 === impeachingNotes.length ? {} : { blindSpots: impeachingNotes }),
-      // Which loss, as an enum, beside the prose. `assert` observes an already-open window and never
-      // consults the ring buffer's health, so `buffer_loss` is not one of its answers.
+      // Which loss, as an enum, beside the prose.
       losses: [
+        ...(session.lostSince(since) && restsOnCompleteWindow(predicate)
+          ? [CaptureLoss.BUFFER_LOSS]
+          : []),
         ...(gap === undefined ? [] : [CaptureLoss.TRANSPORT_GAP]),
         ...(impeaching.note === undefined ? [] : [CaptureLoss.BLIND_SPOT]),
       ],
@@ -173,7 +175,7 @@ export async function assertVerdict(
     // contradiction, and "the window closed before the app finished" is no more actionable here.
     unsettled: {
       waitedFor: describeWaitTarget(predicate),
-      stillInFlight: inFlightRequestLabels(windowEvents),
+      stillInFlight,
       repeated: repeatedRequestLabels(windowEvents),
     },
   });
@@ -186,6 +188,8 @@ export async function assertVerdict(
     source: session.lastAct.source(),
     stateAsked: declaresState(predicate),
     stateUnwatched: isStateUnwatched(spots),
+    // What the app DECLARED, so an under-instrumented one is told without having to be asked.
+    hasCapabilities: session.hasCapabilities,
     domMutated: false,
     signalsFired: 0,
     routeChanged: false,

@@ -19,15 +19,22 @@
  *    keeps today's cost and today's exit behaviour, and blocking never happens where blocking is
  *    wrong. The signal is the standard "am I being piped" one and needs no argument parsing, which
  *    also keeps `init`'s documented flag surface where it is.
- *  - It never starts anything. A dev server started by a long-lived daemon is invisible to the
- *    person whose machine it runs on and orphans when the daemon exits, so the daemon stays out of
- *    it — the AGENT starts one, under the guards in agent-rules.ts, because it is attributable and
- *    stoppable there. So the honest shape here is: confirm the app if it connects, otherwise name
- *    the ONE command that is outstanding and the one that proves it worked.
+ *  - The DAEMON never starts anything. A dev server started by a long-lived daemon is invisible to
+ *    the person whose machine it runs on and orphans when the daemon exits, so the daemon stays out
+ *    of it. Note what that reasoning is actually about: attributability, not abstinence. A
+ *    foreground `init` somebody ran satisfies it — the command is in their transcript, and it stops
+ *    what it started if setup fails or is interrupted — which is why the runtime phase is allowed
+ *    to boot one where the daemon is not. This function keeps its own shape either way: confirm the
+ *    app if it connects, otherwise name the ONE command that is outstanding and the one that proves
+ *    it worked.
  */
 import { InitConfirmation, RETICLE_DEFAULT_PORT } from '@reticlehq/core';
-import type { InitOutcome } from '@reticlehq/core';
+import type { DevServerEntry, InitOutcome } from '@reticlehq/core';
 import { fetchStatus, summarizeStatus } from '../cli/cli-launch.js';
+import { readDevServers } from '../daemon/dev-servers.js';
+import { devServersForProject } from '@reticlehq/core';
+import { readProjectId } from '../cli/cli-port.js';
+import { reticleStateHome } from '../daemon/daemon.js';
 import { reportInitOutcome } from '../telemetry/init-telemetry.js';
 
 /**
@@ -37,12 +44,21 @@ import { reportInitOutcome } from '../telemetry/init-telemetry.js';
  * has not restarted their dev server yet is not held hostage by a wait that cannot succeed — they
  * have not typed the command that would make it succeed, and the message tells them which one.
  */
-export const CONFIRM_WINDOW_MS = 12_000;
-export const CONFIRM_POLL_MS = 500;
+const CONFIRM_WINDOW_MS = 12_000;
+const CONFIRM_POLL_MS = 500;
 
 export interface ConfirmDeps {
   /** Session ids connected right now, or null when nothing is listening on the bridge port. */
   listSessionIds: () => Promise<readonly string[] | null>;
+  /**
+   * The dev servers that have announced themselves, read at the END of the wait rather than the
+   * start: a dev server booting alongside `init` is the common case, and asking before it has
+   * finished listening would report the state we are trying to move away from.
+   *
+   * Optional so every existing construction of these deps — and any embedder's — keeps working and
+   * simply gets today's less specific message.
+   */
+  listDevServers?: () => readonly DevServerEntry[];
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   windowMs?: number;
@@ -101,7 +117,30 @@ const PROVE_COMMAND = '`npx @reticlehq/server status`';
  * there is a command outstanding. A missing daemon is not a defect in the install — the daemon comes
  * up when the agent loads the tools — so it is a notice.
  */
-export function confirmationMessage(confirmation: InitConfirmation, port: number): string {
+/**
+ * Narrow "no app connected" using what the dev servers themselves announced.
+ *
+ * `confirmAppConnected` can only observe the bridge, so its NO_SESSION covers two situations with
+ * OPPOSITE fixes: the dev server is not running Reticle at all, or it is and no page has been
+ * opened. An announced entry is proof the plugin is loaded in the process that is actually running
+ * — which means the config is right and it has already been restarted.
+ *
+ * Only the unexplained answer is sharpened. CONNECTED is the finished state and NO_DAEMON is a
+ * different fact; neither becomes more true because a dev server is up.
+ */
+export function sharpenWithDevServers(
+  confirmation: InitConfirmation,
+  running: readonly DevServerEntry[],
+): InitConfirmation {
+  if (confirmation !== InitConfirmation.NO_SESSION) return confirmation;
+  return 0 === running.length ? InitConfirmation.NO_SESSION : InitConfirmation.NO_PAGE;
+}
+
+export function confirmationMessage(
+  confirmation: InitConfirmation,
+  port: number,
+  running: readonly DevServerEntry[] = [],
+): string {
   if (confirmation === InitConfirmation.CONNECTED) {
     return (
       '  [✓] an app is connected — that is the install finished, not just written.\n' +
@@ -114,6 +153,17 @@ export function confirmationMessage(confirmation: InitConfirmation, port: number
       'this run did not wait for one.\n' +
       '      The daemon starts on its own when your agent loads the Reticle tools. After that, ' +
       `${PROVE_COMMAND} confirms the app.`
+    );
+  }
+  if (confirmation === InitConfirmation.NO_PAGE) {
+    // Deliberately never says "restart". The announcement is proof they already did — telling them
+    // again is how a correct instruction reads as the tool not knowing what is going on.
+    const where = running.map((s) => `        ${s.url}`).join('\n');
+    return (
+      '  [⚠] your dev server has Reticle loaded, and no page has connected yet — so the only step ' +
+      'left is opening the app.\n' +
+      `      Open it in a browser:\n${where}\n` +
+      `      ${PROVE_COMMAND} then confirms it.`
     );
   }
   return (
@@ -140,7 +190,7 @@ export function confirmationMessage(confirmation: InitConfirmation, port: number
  * on the machine and "a session exists" is satisfied by somebody else's app, which is the false
  * green `confirmAppConnected` refuses by design.
  */
-export function unwatchedMessage(port: number): string {
+function unwatchedMessage(port: number): string {
   return (
     '  [ℹ] the files are written. An app CONNECTING is what finishes the install, and this run did ' +
     'not wait to see one.\n' +
@@ -181,8 +231,10 @@ export async function confirmInstall(
   }
   io.print('');
   io.print(WATCHING(deps.windowMs ?? CONFIRM_WINDOW_MS));
-  const confirmation = await confirmAppConnected(deps);
-  io.print(confirmationMessage(confirmation, deps.port));
+  const observed = await confirmAppConnected(deps);
+  const running = deps.listDevServers?.() ?? [];
+  const confirmation = sharpenWithDevServers(observed, running);
+  io.print(confirmationMessage(confirmation, deps.port, running));
   report({ ...outcome, confirmation });
 }
 
@@ -192,6 +244,13 @@ export function nodeConfirmDeps(port: number = RETICLE_DEFAULT_PORT): ConfirmDep
   port: number;
 } {
   return {
+    // Scoped to the project being set up. The registry is machine-wide, so unscoped it reported a
+    // sibling app's dev server as this one's — see devServersForProject.
+    listDevServers: () =>
+      devServersForProject(readDevServers(reticleStateHome()), {
+        projectId: readProjectId(process.cwd()),
+        root: process.cwd(),
+      }),
     listSessionIds: async () => {
       const payload = await fetchStatus(port);
       // `fetchStatus` resolves undefined when nothing answered, which is precisely the "no daemon"

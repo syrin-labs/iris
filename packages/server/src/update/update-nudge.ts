@@ -30,7 +30,7 @@ import { creditNudge } from './nudge-credit.js';
  * story rests on. Numeric per segment, so 2.10.0 correctly beats 2.9.0 (string order does not), and
  * a bare release beats its own prerelease.
  */
-export function isNewerVersion(candidate: string, current: string): boolean {
+function isNewerVersion(candidate: string, current: string): boolean {
   const parse = (v: string): { parts: number[]; pre: boolean } => {
     const [core = '', ...rest] = v.split(/[-+]/);
     return { parts: core.split('.').map((n) => Number.parseInt(n, 10) || 0), pre: rest.length > 0 };
@@ -86,6 +86,13 @@ const MAX_LISTED_BREAKING = 4;
  *
  * Bounded on purpose: this rides on a tool result every turn until it is delivered, so a long
  * changelog is a per-turn tax. The count of anything elided is stated rather than silently dropped.
+ *
+ * It also names what `update` does to the RULE FILES, which is the half nobody would guess. A new
+ * release changes what the always-loaded instructions should say — that is the whole reason
+ * `refreshAgentRules` exists — and an agent that reads "it restarts the daemon" has no reason to
+ * think its CLAUDE.md is now a release behind. Saying so costs one clause on a message that is
+ * delivered once per daemon, and it is the difference between a fleet that upgrades its rules and
+ * one that upgrades its binary and keeps last release's instructions forever.
  */
 export function buildNudge(
   latestVersion: string,
@@ -108,8 +115,10 @@ export function buildNudge(
         : `This release has BREAKING changes: ${listed.join('; ')}` +
           (0 < rest ? ` (+${String(rest)} more — see the changelog)` : '') +
           '. Read them before updating. ') +
-      `Tell the human, and run \`${UPDATE_COMMAND}\` if they agree — it restarts the daemon, ` +
-      'so do it between tasks rather than mid-verification. Continue your current task first.',
+      `Tell the human, and run \`${UPDATE_COMMAND}\` if they agree — it upgrades the packages, ` +
+      "refreshes the Reticle rules in this project's CLAUDE.md / AGENTS.md, and restarts the " +
+      'daemon, so do it between tasks rather than mid-verification. Continue your current task ' +
+      'first.',
   };
 }
 
@@ -207,6 +216,27 @@ export function takeUpdateNudge(): UpdateNudge | undefined {
 export function availableUpdate(currentVersion: string = SERVER_VERSION): string | undefined {
   const latest = loadManifest()?.latestVersion;
   return latest !== undefined && isNewerVersion(latest, currentVersion) ? latest : undefined;
+}
+
+/**
+ * What the nudge did this daemon run, for the session summary.
+ *
+ * The nudge has shipped for several releases and emitted nothing, so "did the agent get told about
+ * a release, and did anything happen" was unanswerable — and it is the whole adoption mechanism for
+ * a published fix. `versionChange.nudged` is the half that only ever arrives from machines that DID
+ * update; the pinned cohort never fires `version_changed` at all.
+ *
+ * Reads the same module state the delivery path uses rather than adding a counter beside it, so the
+ * two cannot disagree. `shown` is the one-shot delivery flag: it means "an agent was told", never
+ * how often. `offered` is present whenever a newer release was known, whether or not it was
+ * delivered — without it, `shown: false` would mean "nothing was available" and "something was and
+ * the nudge did not fire" at the same time, and only one of those is a defect.
+ */
+export function updateNudgeState(): { shown: boolean; offered?: string } {
+  return {
+    shown: delivered,
+    ...(pending === undefined ? {} : { offered: pending.latestVersion }),
+  };
 }
 
 /** Tests only — drop the module state so each case starts clean. */

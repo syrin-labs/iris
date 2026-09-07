@@ -134,6 +134,12 @@ export class SessionMetrics {
    * call a tool, and of the sessions that made exactly one call, most bounced on this.
    */
   #noSessionErrors = 0;
+  /** Connection-level MCP POST failures the SSE stream cannot see. See SessionSummary. */
+  #postSocketFailures = 0;
+  #lifetimePostSocketFailures = 0;
+  /** Retries of those POSTs that then delivered. */
+  #postRetriesSaved = 0;
+  #lifetimePostRetriesSaved = 0;
   /** Longest back-to-back run per tool — a retry loop, which `toolCounts` cannot distinguish. */
   readonly #repeatRuns = new Map<string, number>();
   #lastTool: string | undefined;
@@ -335,6 +341,26 @@ export class SessionMetrics {
     });
   }
 
+  /**
+   * The MCP proxy could not POST a tool call because the TCP socket itself failed (`ENOBUFS`,
+   * `EMFILE`, `ECONNREFUSED` before any bytes left). The SSE stream is still up, so this is
+   * invisible to `mcp_connection_lost`, and the handler never ran, so it is invisible to
+   * `tool_refused`. Counted so a dashboard can see it without a new event kind.
+   */
+  recordPostSocketFailure(): void {
+    this.#postSocketFailures += 1;
+    this.#lifetimePostSocketFailures += 1;
+  }
+
+  /**
+   * A bounded retry of an unsent POST then delivered. The pair against `recordPostSocketFailure`:
+   * the retry that quietly saved a call is a different fact from the one that never ran.
+   */
+  recordPostRetrySaved(): void {
+    this.#postRetriesSaved += 1;
+    this.#lifetimePostRetriesSaved += 1;
+  }
+
   /** The agent's recent approach run + the call in flight — context for a crash report. */
   get trail(): { breadcrumb: string[]; inFlight: string | undefined } {
     return { breadcrumb: [...this.#breadcrumb], inFlight: this.#inFlight };
@@ -490,12 +516,16 @@ export class SessionMetrics {
           toolErrors: this.#lifetimeToolErrors,
           verifications: this.#lifetimeVerifications,
           bugsFound: this.#lifetimeBugsFound,
+          postSocketFailures: this.#lifetimePostSocketFailures,
+          postRetriesSaved: this.#lifetimePostRetriesSaved,
         }
       : {
           toolCalls: this.#toolCalls,
           toolErrors: this.#toolErrors,
           verifications: this.#verifications,
           bugsFound: this.#bugsFound,
+          postSocketFailures: this.#postSocketFailures,
+          postRetriesSaved: this.#postRetriesSaved,
         };
     return {
       durationMs: Math.max(0, this.#now() - this.#startedAt),
@@ -509,6 +539,8 @@ export class SessionMetrics {
       bugsFound: scalars.bugsFound,
       ...(this.#bugKinds.size > 0 ? { bugKinds: Object.fromEntries(this.#bugKinds) } : {}),
       ...(this.#noSessionErrors > 0 ? { noSessionErrors: this.#noSessionErrors } : {}),
+      ...(scalars.postSocketFailures > 0 ? { postSocketFailures: scalars.postSocketFailures } : {}),
+      ...(scalars.postRetriesSaved > 0 ? { postRetriesSaved: scalars.postRetriesSaved } : {}),
       ...(this.#repeatRuns.size > 0
         ? { consecutiveRepeats: Object.fromEntries(this.#repeatRuns) }
         : {}),
@@ -610,7 +642,9 @@ export class SessionMetrics {
       0 === this.#verifications &&
       0 === this.#toolErrors &&
       0 === this.#bugsFound &&
-      0 === this.#sdkFailures
+      0 === this.#sdkFailures &&
+      0 === this.#postSocketFailures &&
+      0 === this.#postRetriesSaved
     );
   }
 
@@ -620,6 +654,8 @@ export class SessionMetrics {
     this.#toolErrors = 0;
     this.#verifications = 0;
     this.#noSessionErrors = 0;
+    this.#postSocketFailures = 0;
+    this.#postRetriesSaved = 0;
     this.#repeatRuns.clear();
     this.#lastTool = undefined;
     this.#currentRun = 0;

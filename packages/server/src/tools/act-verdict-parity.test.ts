@@ -23,8 +23,89 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  BlindSpotKind,
+  ReticleCommand,
+  SessionState,
+  Verified,
+  VerifiedReason,
+  type CommandResult,
+  type ReticleEvent,
+} from '@reticlehq/core';
+import { TOOLS, type ToolDef, type ToolDeps } from './tools.js';
+import { ReticleTool } from './tool-names.js';
+import { LastAct } from '../session/last-act.js';
+import { BaselineStore } from '../project/baselines.js';
+import { RecordingStore } from '../flows/recordings.js';
+import { FlowStore } from '../flows/flows.js';
+import { ProjectStore } from '../project/project-store.js';
+import { AnnotationStore } from '../flows/annotation-store.js';
+import { createNodeFileSystem } from '../project/fs-port.js';
+import type { Session, SessionManager } from '../session/session.js';
 
 const src = (file: string): string => readFileSync(join(import.meta.dirname, file), 'utf8');
+
+const tool = (name: string): ToolDef => {
+  const found = TOOLS.find((t) => t.name === name);
+  if (found === undefined) throw new Error(`${name} is not on the surface`);
+  return found;
+};
+
+function createParitySessionDeps(blindSpots: Record<string, number>): ToolDeps {
+  const noEvents: ReticleEvent[] = [];
+  const command = (name: string): Promise<CommandResult> => {
+    if (name === ReticleCommand.MATCH) {
+      return Promise.resolve({
+        kind: 'command_result',
+        id: 'q1',
+        ok: true,
+        result: { matched: false, count: 0, elements: [] },
+      });
+    }
+    return Promise.resolve({
+      kind: 'command_result',
+      id: 'c1',
+      ok: true,
+      result: { dispatched: true, settled: true, effect: { domMutatedWithin: 1 } },
+    });
+  };
+  const session: Partial<Session> = {
+    id: 'demo',
+    url: 'http://localhost:5173/app',
+    elapsed: () => 1000,
+    lastAct: new LastAct(),
+    beginAction: () => 'a1',
+    finishAction: () => undefined,
+    recordAction: () => 'a1',
+    command,
+    queryEvents: () => Promise.resolve(noEvents),
+    eventsSince: () => noEvents,
+    bufferHealth: () => ({ total: 10, dropped: 0 }),
+    lostSince: () => false,
+    blindSpots: () => blindSpots,
+    health: () => ({ lastSeenMs: 0, throttled: false, focused: true }),
+    throttled: () => false,
+    getState: () => SessionState.ACTIVE,
+    drainInbox: () => [],
+    inboxSize: () => 0,
+    onEvent: () => () => undefined,
+    ambientCounts: () => ({}),
+  };
+  const sessions: Partial<SessionManager> = { resolve: () => session as Session };
+  return {
+    sessions: sessions as SessionManager,
+    baselines: new BaselineStore(),
+    recordings: new RecordingStore(),
+    flows: new FlowStore(createNodeFileSystem(), '/tmp/reticle-test/.reticle', { now: () => 0 }),
+    project: new ProjectStore(createNodeFileSystem(), '/tmp/reticle-test/.reticle', {
+      now: () => 0,
+    }),
+    annotations: new AnnotationStore(),
+    fs: createNodeFileSystem(),
+    reticleRoot: '/tmp/reticle-test/.reticle',
+    now: () => 0,
+  };
+}
 
 describe('act_and_wait and assert see the same evidence', () => {
   const act = src('act-tools.ts');
@@ -59,6 +140,8 @@ describe('act_and_wait and assert see the same evidence', () => {
       expect(file).toMatch(/declaredExpectations\(/);
       expect(file).toMatch(/expectedFailures:/);
       expect(file).toMatch(/renderProved:/);
+      expect(file).toMatch(/namedNetIsInFlight\(/);
+      expect(file).toMatch(/namedRequestInFlight:/);
     }
   });
 
@@ -89,6 +172,18 @@ describe('act_and_wait and assert see the same evidence', () => {
     }
   });
 
+  /**
+   * An unread 2xx body is not a veto when the caller already proved the action on a channel the
+   * body does not own. Both verdict paths have to say so, or half the surface still answers
+   * `unknown` to a unique row the caller named and Reticle watched land.
+   */
+  it('both paths tell the rule when that declaration is independent of the response body', () => {
+    for (const file of [act, assert]) {
+      expect(file).toMatch(/declaresBodyIndependentChannel\(/);
+      expect(file).toMatch(/independentOfBody: true/);
+    }
+  });
+
   it('both paths name what kept the page busy when nothing was left in flight', () => {
     for (const file of [act, assert]) expect(file).toMatch(/repeated: repeatedRequestLabels\(/);
   });
@@ -98,5 +193,28 @@ describe('act_and_wait and assert see the same evidence', () => {
     // a finding. Stated in both files because the next person will read only one of them.
     expect(act).toMatch(/[Ll]earning material/);
     expect(assert).toMatch(/LEARNING material/);
+  });
+
+  it('both paths report identical absenceBlindSpot verdicts and notes when an unobserved region is present', async () => {
+    const deps = createParitySessionDeps({ [BlindSpotKind.CLOSED_SHADOW_ROOT]: 1 });
+
+    const assertRes = (await tool(ReticleTool.ASSERT).handler(deps, {
+      predicate: { kind: 'element', query: { by: 'testid', value: 'target-row' }, absent: true },
+      timeout_ms: 0,
+    })) as Record<string, unknown>;
+
+    const actRes = (await tool(ReticleTool.ACT_AND_WAIT).handler(deps, {
+      ref: 'e1',
+      action: 'click',
+      until: { kind: 'element', query: { by: 'testid', value: 'target-row' }, absent: true },
+    })) as Record<string, unknown>;
+
+    expect(assertRes['verified']).toBe(Verified.UNKNOWN);
+    expect(assertRes['verifiedReason']).toBe(VerifiedReason.ABSENCE_BLIND_SPOT);
+
+    expect(actRes['verified']).toBe(Verified.UNKNOWN);
+    expect(actRes['verifiedReason']).toBe(VerifiedReason.ABSENCE_BLIND_SPOT);
+
+    expect(assertRes['because']).toBe(actRes['because']);
   });
 });

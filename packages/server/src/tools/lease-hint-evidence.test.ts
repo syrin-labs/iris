@@ -67,3 +67,38 @@ describe('the lease hint is ranked by evidence, not by a static differential', (
     expect(leaseNotConnectedHint('http://localhost:5173/', 4400)).toContain('PORT MISMATCH');
   });
 });
+
+describe('a project that has connected before is not proof THIS app is wired', () => {
+  /**
+   * Measured: an uninstrumented app was driven in a repo where other apps connect on this port
+   * every day. `previouslyConnected` is scoped to project + port, not to the app, so the hint took
+   * the "wiring is correct" branch and produced four causes — a dev-mode guard, a stale dev server,
+   * a missing peer dependency, a non-localhost page. **Every one of them presupposes the SDK is
+   * already installed**, and the app in question had never been wired at all.
+   *
+   * That is the 90% case in one sentence: the users who do not have an instrumented app get a
+   * diagnosis written for people who do, and `reticle init` — the only thing that would help — is
+   * named nowhere in it. The branch that DOES mention init is the one reached when nothing is
+   * known, which is exactly the case a monorepo or a second app never lands in.
+   */
+  const hint = leaseNotConnectedHint('http://localhost:4320/', 4400, {
+    previouslyConnected: true,
+  });
+
+  it('does not claim the wiring of an app it has never seen connect', () => {
+    expect(hint).not.toMatch(/the port and the wiring are both correct/);
+  });
+
+  it('says the earlier connection may have been a different app', () => {
+    expect(hint).toMatch(/different app|another app/i);
+  });
+
+  it('names `reticle init`, which every listed cause assumes has already happened', () => {
+    expect(hint).toMatch(/reticle init/);
+  });
+
+  /** The port evidence is still real and must survive: that half of the inference is sound. */
+  it('still says the port itself is proven', () => {
+    expect(hint).toMatch(/port/);
+  });
+});

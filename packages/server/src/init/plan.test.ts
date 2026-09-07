@@ -3,9 +3,14 @@ import { buildPlan, StepStatus, type PlanInput } from './plan.js';
 import { Framework, PackageManager, UiLibrary, type Detection } from './detect.js';
 import { NodePlatform } from '../platform.js';
 import { cursorRuleFile } from './agent-rules.js';
+import { McpClient } from './mcp-clients.js';
 
 const CLAUDE_STEP = 'MCP server (Claude, global)';
-const CURSOR_STEP = 'MCP server (Cursor, global)';
+const CURSOR_STEP = 'MCP server (Cursor)';
+
+function cursorClient(existing: string | null = null) {
+  return { id: McpClient.CURSOR, configPath: '/home/u/.cursor/mcp.json', existing };
+}
 const MCP_STEP = 'MCP server (global)';
 const WINDOWS_MCP_STEP = 'Windows MCP spawn';
 const CONFIG_STEP = 'Reticle config';
@@ -30,14 +35,13 @@ function input(partial: Partial<PlanInput>): PlanInput {
     detection: partial.detection ?? detection(Framework.VITE),
     claudeCli: partial.claudeCli ?? true,
     mcpExists: partial.mcpExists ?? false,
-    cursorPresent: partial.cursorPresent ?? false,
     ...(partial.platform === undefined ? {} : { platform: partial.platform }),
     cursorProjectPresent: partial.cursorProjectPresent,
-    cursorConfig: partial.cursorConfig ?? null,
-    cursorConfigPath: partial.cursorConfigPath ?? '/home/u/.cursor/mcp.json',
+    detectedClients: partial.detectedClients,
     viteConfig: partial.viteConfig ?? null,
     astroConfig: partial.astroConfig,
     astroLayout: partial.astroLayout,
+    ...(partial.astroEnvDts === undefined ? {} : { astroEnvDts: partial.astroEnvDts }),
     nextConfigFile: partial.nextConfigFile ?? null,
     nextConfigSource: partial.nextConfigSource,
     nextLayout: partial.nextLayout,
@@ -111,7 +115,9 @@ describe('buildPlan — agent verification rule (makes the agent USE Reticle)', 
 
   it('writes a Cursor .mdc rule when Cursor is present', () => {
     const s = step(
-      buildPlan(input({ claudeCli: false, cursorPresent: true, cursorRuleContent: null })),
+      buildPlan(
+        input({ claudeCli: false, detectedClients: [cursorClient()], cursorRuleContent: null }),
+      ),
       AGENT_RULE_STEP,
     );
     expect(s.status).toBe(StepStatus.APPLY);
@@ -122,7 +128,9 @@ describe('buildPlan — agent verification rule (makes the agent USE Reticle)', 
   it('Cursor rule step is ALREADY only when the .mdc holds the CURRENT rule', () => {
     const current = cursorRuleFile();
     const s = step(
-      buildPlan(input({ claudeCli: false, cursorPresent: true, cursorRuleContent: current })),
+      buildPlan(
+        input({ claudeCli: false, detectedClients: [cursorClient()], cursorRuleContent: current }),
+      ),
       AGENT_RULE_STEP,
     );
     expect(s.status).toBe(StepStatus.ALREADY);
@@ -139,7 +147,7 @@ describe('buildPlan — agent verification rule (makes the agent USE Reticle)', 
       buildPlan(
         input({
           claudeCli: false,
-          cursorPresent: true,
+          detectedClients: [cursorClient()],
           cursorRuleContent: '---\nalwaysApply: true\n---\n\n## Verifying with Reticle\n\nold text',
         }),
       ),
@@ -150,10 +158,7 @@ describe('buildPlan — agent verification rule (makes the agent USE Reticle)', 
   });
 
   it('falls back to AGENTS.md when neither Claude nor Cursor is detected', () => {
-    const s = step(
-      buildPlan(input({ claudeCli: false, cursorPresent: false, agentsMdContent: null })),
-      AGENT_RULE_STEP,
-    );
+    const s = step(buildPlan(input({ claudeCli: false, agentsMdContent: null })), AGENT_RULE_STEP);
     expect(s.status).toBe(StepStatus.APPLY);
     expect(s.write?.path).toBe('AGENTS.md');
   });
@@ -190,7 +195,7 @@ describe('buildPlan — MCP (global, per detected agent)', () => {
   });
 
   it('registers with Cursor by writing its global config when Cursor is present', () => {
-    const plan = buildPlan(input({ claudeCli: false, cursorPresent: true, cursorConfig: null }));
+    const plan = buildPlan(input({ claudeCli: false, detectedClients: [cursorClient()] }));
     const s = step(plan, CURSOR_STEP);
     expect(s.status).toBe(StepStatus.APPLY);
     expect(s.write?.path).toBe('/home/u/.cursor/mcp.json');
@@ -198,21 +203,19 @@ describe('buildPlan — MCP (global, per detected agent)', () => {
   });
 
   it('registers with BOTH agents when both are present', () => {
-    const plan = buildPlan(input({ claudeCli: true, cursorPresent: true, cursorConfig: null }));
+    const plan = buildPlan(input({ claudeCli: true, detectedClients: [cursorClient()] }));
     expect(maybeStep(plan, CLAUDE_STEP)).toBeDefined();
     expect(maybeStep(plan, CURSOR_STEP)).toBeDefined();
   });
 
   it('Cursor step is ALREADY when reticle is already in its config', () => {
     const existing = JSON.stringify({ mcpServers: { reticle: { command: 'x' } } });
-    const plan = buildPlan(
-      input({ claudeCli: false, cursorPresent: true, cursorConfig: existing }),
-    );
+    const plan = buildPlan(input({ claudeCli: false, detectedClients: [cursorClient(existing)] }));
     expect(step(plan, CURSOR_STEP).status).toBe(StepStatus.ALREADY);
   });
 
   it('falls back to a single manual step when no agent is detected', () => {
-    const plan = buildPlan(input({ claudeCli: false, cursorPresent: false }));
+    const plan = buildPlan(input({ claudeCli: false }));
     const s = step(plan, MCP_STEP);
     expect(s.status).toBe(StepStatus.MANUAL);
     expect(s.detail).toContain('-s user');
@@ -262,9 +265,7 @@ describe('buildPlan — MCP (global, per detected agent)', () => {
   });
 
   it('does not duplicate the Windows fallback when the manual step already carries it', () => {
-    const plan = buildPlan(
-      input({ claudeCli: false, cursorPresent: false, platform: NodePlatform.WINDOWS }),
-    );
+    const plan = buildPlan(input({ claudeCli: false, platform: NodePlatform.WINDOWS }));
     expect(maybeStep(plan, WINDOWS_MCP_STEP)).toBeUndefined();
     expect(step(plan, MCP_STEP).detail).toContain('cmd');
   });
@@ -273,8 +274,7 @@ describe('buildPlan — MCP (global, per detected agent)', () => {
     const plan = buildPlan(
       input({
         claudeCli: true,
-        cursorPresent: true,
-        cursorConfig: null,
+        detectedClients: [cursorClient()],
         options: { port: 5000, mcp: true, install: false },
       }),
     );
@@ -438,7 +438,7 @@ describe('buildPlan — install', () => {
  * the file. Same shape as the CRA token notice: a NOTICE beside the write, because `SKILL.md` tells
  * the reader to skip `✓` lines.
  */
-describe('buildPlan — capabilities that will register nothing say so', () => {
+describe('buildPlan — state Reticle cannot reach on its own is named', () => {
   const vitePlan = (partial: Partial<PlanInput> = {}) =>
     buildPlan(
       input({
@@ -448,27 +448,26 @@ describe('buildPlan — capabilities that will register nothing say so', () => {
       }),
     );
 
-  it('raises a NOTICE when the scan found no testids and no store', () => {
-    const plan = vitePlan({ testids: [], storeHints: [] });
+  const capsNotice = (plan: ReturnType<typeof buildPlan>) =>
+    plan.steps.find((s) => s.status === StepStatus.NOTICE && /reticle_state/.test(s.detail));
+
+  /** A module-scope store: nothing in the mounted tree points at it, so only the app can say where. */
+  it('raises a NOTICE for a store the running app cannot reveal', () => {
+    const plan = vitePlan({ testids: [], storeHints: ["registerStore('app', useStore)"] });
     const written = maybeStep(plan, 'Capabilities + store');
     expect(StepStatus.APPLY, 'the step must still WRITE the module').toBe(written?.status);
-
-    const notice = plan.steps.find(
-      (s) => s.status === StepStatus.NOTICE && /capabilit/i.test(s.detail),
-    );
-    expect(
-      notice,
-      'nothing tells the reader that hasCapabilities will stay false until they edit this file',
-    ).toBeDefined();
-    expect(notice?.detail).toMatch(/hasCapabilities/);
+    expect(capsNotice(plan), 'nothing names the one store that will stay invisible').toBeDefined();
   });
 
-  it('stays quiet when the scan actually found something to register', () => {
-    const plan = vitePlan({ testids: ['save-btn', 'row-1'], storeHints: [] });
-    const notice = plan.steps.find(
-      (s) => s.status === StepStatus.NOTICE && /hasCapabilities/.test(s.detail),
-    );
-    expect(notice, 'testids were found — there is nothing to warn about').toBeUndefined();
+  /**
+   * Testids come from the DOM and a context-provided store registers itself, so an app with neither
+   * a detected library nor a scanned testid has nothing anyone needs to be told to go and do.
+   */
+  it('stays quiet when there is nothing only the app could supply', () => {
+    expect(capsNotice(vitePlan({ testids: [], storeHints: [] }))).toBeUndefined();
+    expect(
+      capsNotice(vitePlan({ testids: ['save-btn', 'row-1'], storeHints: [] })),
+    ).toBeUndefined();
   });
 });
 
@@ -482,6 +481,17 @@ describe('buildPlan — CRA pairing token', () => {
         ...partial,
       }),
     );
+
+  it('writes a .js connect module when the CRA app has no TypeScript (#675)', () => {
+    const plan = craPlan({
+      detection: { ...detection(Framework.CRA), typescript: false },
+      craEntry: { path: 'src/index.js', source: "import React from 'react';\n" },
+    });
+    const mod = maybeStep(plan, 'Reticle connect module');
+    expect(mod?.write?.path).toBe('src/reticle-dev.js');
+    expect(mod?.write?.content).not.toContain('export {}');
+    expect(plan.steps.find((s) => 'src/reticle-dev.ts' === s.write?.path)).toBeUndefined();
+  });
 
   it('warns that the env file is gitignored, so a teammate cloning must run init too', () => {
     const written = maybeStep(craPlan({ pairingToken: 'tok-1' }), TOKEN_STEP);
@@ -621,7 +631,7 @@ describe('SvelteKit gets the Vite plugin, not only the client hook', () => {
     const plan = svelteKit({ path: 'vite.config.ts', source: VITE_SRC });
     const step = maybeStep(plan, 'Vite plugin');
     expect(step?.status).toBe(StepStatus.APPLY);
-    expect(step?.write?.content).toContain('reticle({');
+    expect(step?.write?.content).toContain('reticle(');
     expect(step?.detail).toContain('data-reticle-source');
   });
 
@@ -687,19 +697,19 @@ describe('buildPlan — non-React apps are marked unverified', () => {
 
 describe('buildPlan — the Cursor rule is a project file, not a machine-wide one', () => {
   const rule = (partial: Partial<PlanInput>) =>
-    maybeStep(buildPlan(input({ cursorPresent: true, ...partial })), AGENT_RULE_STEP);
+    maybeStep(buildPlan(input({ detectedClients: [cursorClient()], ...partial })), AGENT_RULE_STEP);
 
   it('is not written into a Claude Code project just because ~/.cursor exists', () => {
     expect(rule({ claudeCli: true, cursorProjectPresent: false })?.write?.path).toBe('CLAUDE.md');
     const steps = buildPlan(
-      input({ cursorPresent: true, claudeCli: true, cursorProjectPresent: false }),
+      input({ detectedClients: [cursorClient()], claudeCli: true, cursorProjectPresent: false }),
     ).steps;
     expect(steps.some((s) => '.cursor/rules/reticle.mdc' === s.write?.path)).toBe(false);
   });
 
   it('is written when the repo itself has a .cursor dir', () => {
     const steps = buildPlan(
-      input({ cursorPresent: true, claudeCli: true, cursorProjectPresent: true }),
+      input({ detectedClients: [cursorClient()], claudeCli: true, cursorProjectPresent: true }),
     ).steps;
     expect(steps.some((s) => '.cursor/rules/reticle.mdc' === s.write?.path)).toBe(true);
   });
@@ -738,6 +748,12 @@ describe('buildPlan — Astro', () => {
     expect(layout.status).toBe(StepStatus.APPLY);
     expect(layout.write?.path).toBe('src/layouts/Layout.astro');
     expect(layout.write?.content).toContain('reticle.connect');
+    // #677: without this, create-astro's `astro check && astro build` fails on undeclared defines.
+    const env = step(plan, 'Astro env types (Vite defines)');
+    expect(env.status).toBe(StepStatus.APPLY);
+    expect(env.write?.path).toBe('src/env.d.ts');
+    expect(env.write?.content).toContain('__RETICLE_TOKEN__');
+    expect(env.write?.content).toContain('__RETICLE_ROOT__');
   });
 
   it('falls back to the printed recipe when the layout is ambiguous', () => {
@@ -760,6 +776,8 @@ describe('buildPlan — Astro', () => {
     expect(s.detail).toContain('__RETICLE_TOKEN__');
     expect(s.detail).toContain('es2022');
     expect(s.detail).toContain('<script>');
+    // #677: the manual recipe must name env.d.ts too.
+    expect(s.detail).toContain('src/env.d.ts');
   });
 
   it('installs the kit but no bundler plugin — Astro owns its own Vite', () => {
@@ -922,5 +940,51 @@ describe('the generated Next component is valid JavaScript', () => {
     expect(src).toContain('NEXT_PUBLIC_RETICLE_ROOT');
     expect(src).toContain('root');
     expect(src).not.toContain('globalThis');
+  });
+});
+
+/**
+ * The install talks to a REGISTRY, and the fallback never said so.
+ *
+ * Offline, behind a proxy that blocks npmjs, or pointed at a corporate mirror that is down: the
+ * install fails and the hint talked about version pinning and pnpm's maturity window. Both are real
+ * causes and neither is this one, so the reader goes hunting through their own dependency versions
+ * for a problem that is entirely about reachability.
+ *
+ * The registry is worth naming for every package manager, because every one of them fetches.
+ */
+describe('a failed dependency install names the registry', () => {
+  const installFallback = (pm: PackageManager): string => {
+    const plan = buildPlan(
+      input({
+        detection: { ...detection(Framework.VITE), packageManager: pm },
+        // The fallback only exists on an APPLY step — a manual step prints the command instead.
+        options: { port: undefined, mcp: true, install: true },
+      }),
+    );
+    return plan.steps.find((s) => 'Install dependencies' === s.title)?.exec?.fallback ?? '';
+  };
+
+  it('names the registry whatever the package manager', () => {
+    for (const pm of [PackageManager.NPM, PackageManager.PNPM, PackageManager.YARN]) {
+      expect(installFallback(pm)).toContain('registry');
+    }
+  });
+
+  // Still says the pnpm-specific thing: the maturity hold is a real cause and this does not replace it.
+  it('keeps the pnpm maturity hint beside it', () => {
+    expect(installFallback(PackageManager.PNPM)).toContain('minimumReleaseAge');
+  });
+
+  // #683: a symlinked pnpm store (a git worktree, or an A/B harness) fails with
+  // ERR_PNPM_UNEXPECTED_VIRTUAL_STORE, a cause the hint did not name at all.
+  it('names the symlinked virtual-store cause on pnpm', () => {
+    expect(installFallback(PackageManager.PNPM)).toContain('ERR_PNPM_UNEXPECTED_VIRTUAL_STORE');
+  });
+
+  it('does not hand a non-pnpm project a pnpm virtual-store remedy', () => {
+    for (const pm of [PackageManager.NPM, PackageManager.YARN]) {
+      expect(installFallback(pm)).not.toContain('ERR_PNPM_UNEXPECTED_VIRTUAL_STORE');
+    }
   });
 });

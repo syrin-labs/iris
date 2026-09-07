@@ -36,7 +36,19 @@ export const REPORT_TEXT = {
   TITLE: 'Impact',
   PROJECT: 'This project',
   GLOBAL: 'Everything on this machine',
-  HERO_DEFECTS: 'defects caught before you saw them',
+  /**
+   * What `counts.failed` actually is: a verdict whose declared consequence did not hold.
+   *
+   * It used to read "defects caught before you saw them", which overclaims in the one direction a
+   * verification tool must never overclaim. A failed verdict is not proof of a defect in the app —
+   * it is equally the shape of an assertion that was wrong. Measured in the field: an agent
+   * asserted a clean console on an app with ordinary dev-mode logging, the verdict went red, and
+   * the panel reported a defect nobody had found.
+   *
+   * The honest word is what Reticle DID: it refused to pass them. That is true of the assertion
+   * error and the real bug alike, and it still reads as the tool having done its job.
+   */
+  HERO_DEFECTS: 'checks Reticle refused to pass',
   VERDICTS: 'Verdicts',
   PASSED: 'passed',
   FAILED: 'failed',
@@ -53,6 +65,23 @@ export const REPORT_TEXT = {
   SAVED_MINUTES: 'Time saved',
   ESTIMATE_TAG: 'estimate',
   CHART: 'Verdicts, last 30 days',
+  DEFECTS: 'What broke',
+  DEFECTS_MORE: 'Manage all of them on the dashboard',
+  /**
+   * What an UNLINKED user is told, and the only place the product tells them.
+   *
+   * The dashboard link renders only when `dashboardUrl` exists, which means only once a repo is
+   * already linked — so the person most likely to want one, watching this record climb on their own
+   * machine, was never told it existed. The single mention anywhere else is a daemon log line.
+   *
+   * Stated as a FACT about where the record lives, not as a pitch. It sits at the foot of a panel
+   * somebody opened on purpose, so it informs rather than interrupts, and it appears only once
+   * there is a verdict worth keeping — an offer to preserve nothing is just an advert.
+   */
+  LOCAL_ONLY: 'This record stops at this machine.',
+  LOCAL_ONLY_ACTION: 'reticle login',
+  LOCAL_ONLY_TAIL: 'keeps it, and lets a team see it.',
+  DEFECTS_NONE: 'Nothing has failed a declared consequence yet.',
   EMPTY: 'Nothing recorded yet. Drive the app once and this fills in.',
   SHARE: 'Share',
   COPY: 'Copy',
@@ -93,7 +122,7 @@ export function buildShareText(scope: ImpactScope, projectName?: string): string
   const where = projectName !== undefined && projectName.length > 0 ? ` on ${projectName}` : '';
   const lines = [
     `My agent verified its own work ${String(c.verdicts)} times${where}.`,
-    `${String(c.failed)} defects caught before I looked at any of them.`,
+    `${String(c.failed)} checks it refused to pass before I looked at any of them.`,
   ];
   if (c.unknown > 0) {
     lines.push(

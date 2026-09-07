@@ -59,6 +59,18 @@ export interface ToolDeps<Ext = unknown> {
    */
   artifactRootFor?: (projectId: string | undefined) => ArtifactRoot;
   /**
+   * A verification run just landed — wake cloud sync instead of waiting for its next tick.
+   *
+   * The run itself is pushed immediately on this path, but everything AROUND it — the impact
+   * counters, the flows it exercised, flake and intent — moves only on the timer. That is what
+   * produced a dashboard showing a fresh run beside stale numbers, which reads as a sync bug and is
+   * really just two different clocks. Waking the loop here makes the run and its context arrive
+   * together.
+   *
+   * Optional: absent ⇒ the timer alone, which is exactly today's behaviour.
+   */
+  onRunPersisted?: () => void;
+  /**
    * This daemon's OWN project id, derived from the directory it was started in.
    *
    * Optional because a daemon above an uninitialised directory has none, and because every existing
@@ -133,6 +145,30 @@ export interface ToolDef<Ext = unknown> {
    */
   handler(deps: ToolDeps<Ext>, args: Record<string, unknown>): Promise<unknown>;
 }
+
+/**
+ * The optional inline intent, on every tool that draws a verdict.
+ *
+ * One field, carrying either prose or the id of an intent already declared, because the surface is
+ * the scarce thing and a second field for the reference case would double the cost of the idea to
+ * make one of its two uses marginally more explicit. Told apart by the ledger — see
+ * `intent/inline-intent.ts`.
+ *
+ * The first sentence is what a lean surface advertises, so it carries both readings; the rest is for
+ * the profiles that send the whole description.
+ */
+export const intentArg = z
+  .string()
+  .optional()
+  .describe(
+    'What this change is meant to make true — as a durable statement ABOUT THE PRODUCT, or the id of an intent you already declared. ' +
+      'Write it so a teammate who was not here understands it in six months: name the behaviour, not this run. ' +
+      'GOOD: "a filtered issue queue is a shareable link — the filter is in the URL". ' +
+      'BAD: "P1 step 5", "drive 2 of 2", "same as before the fix", "the board renders cleanly" — these name a session, ' +
+      'a step number or nothing checkable, and the person reading them later has none of that context. ' +
+      'This is shared memory: it is pooled per project and later agents read it back to avoid re-deriving what you just established. ' +
+      'Recorded in .reticle/intent.json, the same ledger reticle_intent writes, and marked proved by this verdict if it passes.',
+  );
 
 export const sessionIdShape = {
   sessionId: z

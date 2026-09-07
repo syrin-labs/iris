@@ -31,6 +31,48 @@ describe('resolveProjectCloud — per-project cloud binding + sync policy', () =
     await writeFile(join(homeDir, '.reticle', CREDENTIALS_FILE), JSON.stringify(obj));
   };
 
+  /**
+   * Two ACCOUNTS on one cloud, which is one machine with a work login and a personal one.
+   *
+   * `link` names every project "default", so both tenants claimed the slot `<url>::default` and the
+   * last writer won. Measured end to end: a brand-new workspace signed in and was handed a stored
+   * key belonging to a different organisation — valid, so every check passed, and its runs would
+   * have been pushed into a stranger's dashboard.
+   */
+  describe('two tenants on one cloud', () => {
+    const URL = 'https://cloud.test';
+    const bothTenants = {
+      [`${URL}::org::org_mine::default`]: 'rk_live_mine',
+      [`${URL}::org::org_theirs::default`]: 'rk_live_theirs',
+      // The ambiguous shim an older link left behind, pointing at the OTHER tenant.
+      [`${URL}::default`]: 'rk_live_theirs',
+      default: { key: 'rk_live_theirs', url: URL },
+    };
+
+    it('sends MY key when the binding names my org, not whoever wrote the shared slot', async () => {
+      await writeLink({ projectId: 'default', orgId: 'org_mine', url: URL });
+      await writeCreds(bothTenants);
+      const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, env);
+      expect(cloud.config?.apiKey).toBe('rk_live_mine');
+    });
+
+    it('keeps the other tenant on their own key from the same keystore', async () => {
+      await writeLink({ projectId: 'default', orgId: 'org_theirs', url: URL });
+      await writeCreds(bothTenants);
+      const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, env);
+      expect(cloud.config?.apiKey).toBe('rk_live_theirs');
+    });
+
+    it('still resolves a binding written before orgs were recorded', async () => {
+      // The compatibility half. A repo linked by an older CLI has no orgId and must keep working
+      // through the ambiguous slot rather than losing its credential to a stricter lookup.
+      await writeLink({ projectId: 'default', url: URL });
+      await writeCreds(bothTenants);
+      const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, env);
+      expect(cloud.config?.apiKey).toBe('rk_live_theirs');
+    });
+  });
+
   it('falls back to env creds when the project has no cloud.json (single-project / CI)', async () => {
     const withEnv = { RETICLE_CLOUD_URL: 'https://cloud.test', RETICLE_CLOUD_KEY: 'rk_live_env' };
     const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, withEnv);
@@ -86,5 +128,80 @@ describe('resolveProjectCloud — per-project cloud binding + sync policy', () =
   it('is fully local when neither a link nor env creds exist (no phone-home)', async () => {
     const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, {});
     expect(cloud.config).toBeNull();
+  });
+
+  describe('a credential belongs to the cloud that minted it', () => {
+    /*
+     * The collision, measured on a real machine: `reticle link` names every project "default", so a
+     * repo on a self-hosted install and a repo on the hosted service both claimed the slot
+     * `default`. The production key overwrote the local one and was then sent to localhost, which
+     * answered 401.
+     *
+     * Same class as sending a session token to a host that did not issue it, and the same answer:
+     * no credential at all beats one belonging to somewhere else.
+     */
+    it('refuses a key stamped with a different cloud, even when the project ids match', async () => {
+      await writeLink({ projectId: 'default', url: 'http://localhost:8890' });
+      await writeCreds({ default: { key: 'rk_live_prod', url: 'https://app.reticle.sh' } });
+
+      const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, env);
+
+      expect(cloud.config, 'the prod key must not be dialled at localhost').toBeNull();
+    });
+
+    it('uses a key stamped with the SAME cloud', async () => {
+      await writeLink({ projectId: 'default', url: 'http://localhost:8890' });
+      await writeCreds({ default: { key: 'rk_live_local', url: 'http://localhost:8890' } });
+
+      const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, env);
+
+      expect(cloud.config?.apiKey).toBe('rk_live_local');
+    });
+
+    it('ignores a trailing slash when comparing clouds', async () => {
+      await writeLink({ projectId: 'default', url: 'https://app.reticle.sh' });
+      await writeCreds({ default: { key: 'rk_live_prod', url: 'https://app.reticle.sh/' } });
+
+      const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, env);
+
+      expect(cloud.config?.apiKey).toBe('rk_live_prod');
+    });
+
+    it('holds TWO clouds that each call their project "default"', async () => {
+      // The collision itself, not just the leak. Stamping stopped the wrong key being sent; only
+      // keying by cloud lets a self-hosted repo and a hosted-service repo both work on one machine.
+      await writeLink({ projectId: 'default', url: 'http://localhost:8890' });
+      await writeCreds({
+        'http://localhost:8890::default': 'rk_live_local',
+        'https://app.reticle.sh::default': 'rk_live_prod',
+      });
+
+      const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, env);
+
+      expect(cloud.config?.apiKey).toBe('rk_live_local');
+    });
+
+    it('prefers the composite slot over an ambiguous legacy one', async () => {
+      await writeLink({ projectId: 'default', url: 'http://localhost:8890' });
+      await writeCreds({
+        'http://localhost:8890::default': 'rk_live_right',
+        default: 'rk_live_ambiguous',
+      });
+
+      const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, env);
+
+      expect(cloud.config?.apiKey).toBe('rk_live_right');
+    });
+
+    it('still honours a LEGACY bare-string credential', async () => {
+      // Refusing these would silently unlink every repo that predates the change — a worse outage
+      // than the collision being fixed. Re-linking upgrades a repo to the stamped shape.
+      await writeLink({ projectId: 'default', url: 'http://localhost:8890' });
+      await writeCreds({ default: 'rk_live_legacy' });
+
+      const cloud = await resolveProjectCloud(fs, reticleRoot, homeDir, env);
+
+      expect(cloud.config?.apiKey).toBe('rk_live_legacy');
+    });
   });
 });

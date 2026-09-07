@@ -18,7 +18,11 @@ export interface ReticleConnectOptions {
    * agent scope to the right app even when its dev server boots on an unexpected port. Optional.
    */
   projectId?: string;
-  /** Browser/bridge pairing token. Required when either endpoint is non-localhost. */
+  /**
+   * Browser/bridge pairing token. Required whenever the daemon has one, which is the ordinary case:
+   * it auto-provisions `~/.reticle/pairing-token` on first start and then refuses a hello without it,
+   * including on localhost. Non-localhost additionally needs `allowNonLocalhost`.
+   */
   token?: string;
   /** Explicitly allow Reticle on a non-localhost page or bridge. Requires token. */
   allowNonLocalhost?: boolean;
@@ -36,6 +40,19 @@ export interface ReticleConnectOptions {
    * sensitive keys redacted, per-body capped). Off by default - bodies cost tokens and can carry PII.
    */
   captureNetworkBodies?: boolean;
+  /**
+   * Make Reticle's OWN presenter visible to snapshots and queries. CONTRIBUTORS ONLY.
+   *
+   * The presenter is hidden from every tool by design, for a good reason: an agent that can drive
+   * Reticle's own interface can fabricate its own impact report, and Reticle chrome in a snapshot is
+   * noise in every other app on earth.
+   *
+   * The cost of that rule is that a HUD change is the only kind of change Reticle cannot be used to
+   * check — the panel rendering it is invisible to everything that could look at it. This hatch
+   * exists for exactly that case: the app under test IS Reticle. It reports itself in the app's
+   * capabilities, so a verdict drawn with it open can never be mistaken for an ordinary one.
+   */
+  exposePresenter?: boolean;
   /**
    * The project root, so source paths report repo-relative instead of absolute.
    *

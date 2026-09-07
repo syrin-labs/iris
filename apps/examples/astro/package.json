@@ -1,14 +1,14 @@
 {
   "name": "@reticlehq/example-astro",
   "private": true,
-  "version": "2.10.0",
+  "version": "2.13.1",
   "type": "module",
   "description": "Minimal Astro app with a React island — verifies Reticle via a dev-only client script.",
   "scripts": {
     "dev": "astro dev --port 5304"
   },
   "dependencies": {
-    "@astrojs/react": "^6.0.2",
+    "@astrojs/react": "^6.0.4",
     "@reticlehq/react": "workspace:*",
     "@reticlehq/vite-plugin": "workspace:*",
     "astro": "7.0.3",

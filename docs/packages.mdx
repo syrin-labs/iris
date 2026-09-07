@@ -11,7 +11,7 @@ Reticle is eleven packages, and most people install two. This page exists so you
   Everything ships together at one version: whatever `npm view @reticlehq/core version` says, every
   other `@reticlehq/*` package says too, and so does the `reticle-tauri` crate on crates.io.
 
-It was versioned independently until 2.11.0, and that turned out to mean _stuck_: the crate sat at `0.1.0` from the day it was written, the publish job skipped it every release because that version already existed, and no Rust-side fix reached anybody. Lockstep costs one line in the bump script and cannot fail that way.
+It was versioned independently until 2.12.0, and that turned out to mean _stuck_: the crate sat at `0.1.0` from the day it was written, the publish job skipped it every release because that version already existed, and no Rust-side fix reached anybody. Lockstep costs one line in the bump script and cannot fail that way.
 
 </Note>
 
@@ -207,7 +207,7 @@ A lint rule makes the signal layer self-enforcing, which is the only way a conve
 
 ```toml
 [dependencies]
-reticle-tauri = "2.11"
+reticle-tauri = "2.13"
 ```
 
 <Warning>

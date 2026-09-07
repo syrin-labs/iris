@@ -10,7 +10,7 @@ import type { SegmentRollup } from './rollups.js';
  */
 
 /** Online mean/variance/max for one metric (Welford's algorithm). Immutable: addStat returns a copy. */
-export interface MetricStats {
+interface MetricStats {
   count: number;
   mean: number;
   /** Sum of squared deviations (Welford M2); variance = m2/(count-1). */
@@ -42,7 +42,7 @@ export function zScore(stats: MetricStats, x: number): number {
 
 /** The metrics an envelope tracks per route. */
 const ENVELOPE_METRICS = ['durationMs', 'net', 'netErrors', 'consoleErrors'] as const;
-export type EnvelopeMetric = (typeof ENVELOPE_METRICS)[number];
+type EnvelopeMetric = (typeof ENVELOPE_METRICS)[number];
 
 export interface RouteEnvelope {
   route: string;

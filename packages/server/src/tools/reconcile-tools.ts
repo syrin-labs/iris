@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { EventType, ReticleCommand, SnapshotMode } from '@reticlehq/core';
+import { EventType, ReticleCommand, SnapshotMode, urlForMatch } from '@reticlehq/core';
 import { ReticleTool } from './tool-names.js';
+import { cursorSchema } from './numeric-bounds.js';
 import { reconcile, type Mismatch } from '../events/reconcile.js';
 import { salvageJson } from '../events/json-salvage.js';
 import { withControl } from '../session/control-envelope.js';
@@ -37,7 +38,7 @@ async function capturedBodies(
   let truncated = 0;
   for (const event of events) {
     if (event.type !== EventType.NET_REQUEST) continue;
-    const url = 'string' === typeof event.data['url'] ? event.data['url'] : '';
+    const url = urlForMatch(event.data);
     if (urlContains !== undefined && !url.includes(urlContains)) continue;
     total += 1;
     const raw = event.data['responseBody'];
@@ -61,8 +62,7 @@ export const RECONCILE_TOOLS: ToolDef[] = [
       'Compare what the API returned against what the page RENDERS. Catches the class no status code and no assertion can: a USD amount shown with a ₹ sign, a record the API calls `on_hold` displayed as "pending". Needs response bodies — enable `captureNetworkBodies` — and says so when they are missing rather than reporting a clean result over data it never read.',
     inputSchema: {
       ...sessionIdShape,
-      since: z
-        .number()
+      since: cursorSchema
         .optional()
         .describe('Cursor from a prior act — scopes to responses received after it. Default: 0.'),
       urlContains: z

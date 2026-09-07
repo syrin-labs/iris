@@ -19,7 +19,7 @@ import {
 import { generateKeyPairSync } from 'node:crypto';
 import { TOOLS } from '../tools/tools.js';
 import { ReticleTool } from '../tools/tool-names.js';
-import { VERIFICATION_TOOLS } from '../tools/feedback-tools.js';
+import { VERDICT_TOOLS } from '../tools/feedback-tools.js';
 import { bugsInResult, type BugCandidate } from './bug-found.js';
 import { describeParam } from './argument-shape.js';
 import { licenseFacts } from './license-activation.js';
@@ -124,18 +124,18 @@ describe('every tool is classified for telemetry', () => {
   });
 
   /**
-   * A verification tool that is not in VERIFICATION_TOOLS produces no `verification_completed` and no
+   * A verification tool that is not in VERDICT_TOOLS produces no `verification_completed` and no
    * human feedback prompt — it silently stops counting toward the metric the product exists to
    * report. The name is the tell, so the check is on the name.
    */
-  it('every tool whose name implies a VERDICT is in VERIFICATION_TOOLS', () => {
+  it('every tool whose name implies a VERDICT is in VERDICT_TOOLS', () => {
     const verdictish = TOOLS.map((t) => t.name).filter(
       (name) => /assert|verify/.test(name) && name !== ReticleTool.FLOW_SAVE_RECORDED,
     );
     for (const name of verdictish) {
       expect(
-        VERIFICATION_TOOLS.has(name),
-        `'${name}' looks like it produces a verdict but is not in VERIFICATION_TOOLS — ` +
+        VERDICT_TOOLS.has(name),
+        `'${name}' looks like it produces a verdict but is not in VERDICT_TOOLS — ` +
           'it will not emit verification_completed. Add it there, or rename it if it does not.',
       ).toBe(true);
     }
@@ -147,7 +147,7 @@ describe('every tool is classified for telemetry', () => {
    * `reticle_act_and_wait` declares `verified` in its outputSchema, returns the full verdict block
    * (verified / because / honesty), and its own description calls it "one hop for the act->observe->
    * assert loop". It matches neither /assert/ nor /verify/, so the tripwire never fired and it was
-   * never added to VERIFICATION_TOOLS — meaning every verification performed through it emitted no
+   * never added to VERDICT_TOOLS — meaning every verification performed through it emitted no
    * `verification_completed` at all.
    *
    * Measured over a day of real telemetry: `reticle_act_and_wait` 14 calls, `reticle_assert` ZERO,
@@ -157,7 +157,7 @@ describe('every tool is classified for telemetry', () => {
    * So the check is on the SHAPE, not the name: a tool that declares a `verified` verdict is a
    * verification tool, whatever it happens to be called.
    */
-  it('every tool that DECLARES a `verified` verdict is in VERIFICATION_TOOLS', () => {
+  it('every tool that DECLARES a `verified` verdict is in VERDICT_TOOLS', () => {
     const declaresVerdict = TOOLS.filter(
       (tool) => tool.outputSchema !== undefined && 'verified' in tool.outputSchema,
     ).map((tool) => tool.name);
@@ -165,9 +165,9 @@ describe('every tool is classified for telemetry', () => {
     expect(declaresVerdict.length).toBeGreaterThan(0);
     for (const name of declaresVerdict) {
       expect(
-        VERIFICATION_TOOLS.has(name),
+        VERDICT_TOOLS.has(name),
         `'${name}' declares a \`verified\` verdict in its outputSchema but is not in ` +
-          'VERIFICATION_TOOLS, so every verdict it returns is invisible to verification_completed.',
+          'VERDICT_TOOLS, so every verdict it returns is invisible to verification_completed.',
       ).toBe(true);
     }
   });

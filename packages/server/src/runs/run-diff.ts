@@ -1,7 +1,7 @@
 import type { ReticleVerificationRun, RunFlowResult } from '@reticlehq/core';
 
 /** A per-flow change between two runs. Only flows with a meaningful change are reported. */
-export interface FlowDelta {
+interface FlowDelta {
   name: string;
   beforeMs: number;
   afterMs: number;

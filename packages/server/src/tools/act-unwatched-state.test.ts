@@ -109,3 +109,30 @@ describe('act_and_wait tells an unwatched state channel from an unchanged one', 
     expect(r.honesty?.coverage.partial).toBe(false);
   });
 });
+
+/**
+ * `partial: true` with nothing beside it is an unanswerable flag, and the verdict prose sends the
+ * reader to `coverage` for what went unobserved. The sentence was built at the call site and
+ * dropped there. Found by driving a one-way IPC send against a real Electron app: the verdict read
+ * `verified: yes` for a send whose outcome is structurally unknowable, and the one sentence that
+ * says so never left the process.
+ *
+ * This pins the WIRING, not the builder — deleting `coverageNote` from the act_and_wait call site
+ * leaves every honesty.ts unit test green.
+ */
+describe('the coverage flag carries the sentence that explains it', () => {
+  it('names a one-way send as the thing that went unobserved', async () => {
+    const deps = fakeDeps(fakeSession({ [BlindSpotKind.VERDICTLESS_SEND]: 1 }));
+    const r = (await tool(ReticleTool.ACT_AND_WAIT).handler(deps, ACT)) as ActResult;
+    expect(r.honesty?.coverage.partial).toBe(true);
+    expect(r.honesty?.coverage.note).toContain('one-way IPC send');
+    expect(r.honesty?.coverage.note).toContain('NO verdict');
+  });
+
+  it('leaves the note off when coverage is full', async () => {
+    const deps = fakeDeps(fakeSession({}));
+    const r = (await tool(ReticleTool.ACT_AND_WAIT).handler(deps, ACT)) as ActResult;
+    expect(r.honesty?.coverage.partial).toBe(false);
+    expect(r.honesty?.coverage.note).toBeUndefined();
+  });
+});

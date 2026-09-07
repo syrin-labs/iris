@@ -18,6 +18,8 @@ import { resolveInstallSource } from './install-source.js';
 export const InitFailure = {
   /** Run outside a project root. The single most common first-run mistake. */
   NO_PACKAGE_JSON: 'no_package_json',
+  /** The manifest exists and is not valid JSON — a trailing comma, usually. Never a stack trace. */
+  MALFORMED_PACKAGE_JSON: 'malformed_package_json',
   /** The package manager failed: offline, a locked registry, a broken install. */
   DEPENDENCY_INSTALL: 'dependency_install',
   /** The `claude mcp add` step failed — the CLI is missing or refused. Reticle installs but is unreachable. */

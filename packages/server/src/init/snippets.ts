@@ -3,7 +3,13 @@
  * so the runner never inlines free strings.
  */
 
-import { RETICLE_DEFAULT_PORT, ReticleDir, bridgeWsUrl } from '@reticlehq/core';
+import {
+  RETICLE_DEFAULT_PORT,
+  ReticleDir,
+  bridgeWsUrl,
+  RETICLE_CLIENT_HOST,
+  RETICLE_WS_PATH,
+} from '@reticlehq/core';
 import { UiLibrary } from './detect.js';
 import type { FoundStore } from './capabilities.js';
 import { SERVER_VERSION } from '../version/server-version.js';
@@ -153,39 +159,52 @@ export function nextReticleDevFile(
   // Same rule as the Vite module: a store we found is registered outright, and the commented hint
   // survives only for the libraries we can name but not wire.
   const storeImports = found.map((s) => `import { ${s.ident} } from '${s.importPath}';`).join('\n');
+  // Eight spaces: nested inside useEffect → .then callback (see multiline shape below for #684).
   const storeBlock =
     found.length > 0
-      ? found.map((s) => `      registerStore('${s.key}', ${s.ident});`).join('\n')
+      ? found.map((s) => `        registerStore('${s.key}', ${s.ident});`).join('\n')
       : 0 === stores.length
-        ? '      // No state library detected. If you add one, register it here — see node_modules/@reticlehq/server/docs/usage.md.'
-        : stores.map((h) => `      // import your store, then: ${h}`).join('\n');
+        ? '        // No state library detected. If you add one, register it here — see node_modules/@reticlehq/server/docs/usage.md.'
+        : stores.map((h) => `        // import your store, then: ${h}`).join('\n');
+  const registerNames = found.length > 0 ? ', registerStore' : '';
+  // Multiline connect + single blank after imports (#684): the one-line connect and the double blank
+  // both fail Prettier on a clean Next install.
   return `'use client';
 import { useEffect } from 'react';
-${storeImports.length > 0 ? storeImports : ''}
-
+${storeImports.length > 0 ? `${storeImports}\n` : ''}
 /** Dev-only: connect Reticle + install the React adapter, after hydration. */
 export function ReticleDev() {
   useEffect(() => {
     if (process.env.NODE_ENV !== 'development') return;
-    void import('@reticlehq/react').then(({ reticle, install, registerCapabilities${found.length > 0 ? ', registerStore' : ''} }) => {
-      install();
-      // Both provided by withReticle() in next.config. The bridge rejects a connect with no token;
-      // the root makes source paths repo-relative instead of absolute.
-      const token = process.env.NEXT_PUBLIC_RETICLE_TOKEN;
-      const root = process.env.NEXT_PUBLIC_RETICLE_ROOT;
-      reticle.connect({ ${fields}...(token ? { token } : {}), ...(root ? { root } : {}) });
+    void import('@reticlehq/react').then(
+      ({ reticle, install, registerCapabilities${registerNames} }) => {
+        install();
+        // Both provided by withReticle() in next.config. The bridge rejects a connect with no token;
+        // the root makes source paths repo-relative instead of absolute.
+        const token = process.env.NEXT_PUBLIC_RETICLE_TOKEN;
+        const root = process.env.NEXT_PUBLIC_RETICLE_ROOT;
+        // withReticle() finds the daemon serving this project on every dev-server start. It wins over
+        // any port written into this file at install time, so moving the daemon needs no edit here.
+        const url = process.env.NEXT_PUBLIC_RETICLE_URL;
+        reticle.connect({
+          ${fields}...(url ? { url } : {}),
+          ...(token ? { token } : {}),
+          ...(root ? { root } : {}),
+        });
 
-      // ── Start with ONE flow. ──────────────────────────────────────────────────────────────────
-      // Registering a store is the highest-value line here: it lets the agent check what the app
-      // BELIEVES, not just what it rendered. Pass the STORE, not \`() => store.getState()\` — the store
-      // form wires \`subscribe\` too, so every mutation emits a diff; the getter form is read-only.
+        // ── Start with ONE flow. ────────────────────────────────────────────────────────────────
+        // Registering a store is the highest-value line here: it lets the agent check what the app
+        // BELIEVES, not just what it rendered. Pass the STORE, not \`() => store.getState()\` — the
+        // store form wires \`subscribe\` too, so every mutation emits a diff; the getter form is
+        // read-only.
 ${storeBlock}
-      registerCapabilities({
-        testids: [${ids}],${0 === testids.length ? ' // none found; add data-testid to your key elements' : ''}
-        signals: [], // names you pass to reticle.signal()
-        stores: [${found.map((s) => `'${s.key}'`).join(', ')}], // the keys you registered above
-      });
-    });
+        registerCapabilities({
+          testids: [${ids}],${0 === testids.length ? ' // none found; add data-testid to your key elements' : ''}
+          signals: [], // names you pass to reticle.signal()
+          stores: [${found.map((s) => `'${s.key}'`).join(', ')}], // the keys you registered above
+        });
+      },
+    );
   }, []);
   return null;
 }
@@ -233,11 +252,51 @@ export function astroManual(
       : '';
   const id =
     projectId !== undefined && projectId.length > 0 ? `\n          projectId: '${projectId}',` : '';
+  // Astro owns its Vite instance, so it has a build-time channel of its own: the same `define` that
+  // already inlines the token can inline the daemon URL, resolved every time the config is read —
+  // that is, on every `astro dev`. The port above is written once at install time and goes stale the
+  // moment the daemon moves; this does not.
+  //
+  // Needs the projectId to know WHICH daemon is ours. Without one there is nothing to match on, and
+  // adopting a daemon serving another project would report its state as this app's, so the whole
+  // block is omitted rather than made to guess.
+  const canDiscover = projectId !== undefined && projectId.length > 0;
+  // Interpolated from core rather than typed into the template: this is the same wire string
+  // `bridgeWsUrl` builds, and a generator that spells it out by hand is exactly how the four call
+  // sites that constant exists to unify drifted apart in the first place.
+  const RETICLE_CLIENT_HOST_LITERAL = `ws://${RETICLE_CLIENT_HOST}:`;
+  const urlHelper = canDiscover
+    ? `
+  // The live daemon serving THIS project, re-read on every \`astro dev\`. Same rule as the Vite and
+  // Next plugins: skip dead daemons, match on projectId, lowest port wins, '' when none matches.
+  function reticleUrl() {
+    const dir = process.env['RETICLE_PAIRING_TOKEN_DIR'] || join(homedir(), '.reticle');
+    let best;
+    try {
+      for (const file of readdirSync(dir)) {
+        if (!file.startsWith('daemon-') || !file.endsWith('.json')) continue;
+        let entry;
+        try { entry = JSON.parse(readFileSync(join(dir, file), 'utf8')); } catch { continue; }
+        if (entry.projectId !== '${projectId}') continue;
+        try { process.kill(entry.pid, 0); } catch { continue; }
+        if (best === undefined || entry.port < best) best = entry.port;
+      }
+    } catch { return ''; }
+    return best === undefined ? '' : '${RETICLE_CLIENT_HOST_LITERAL}' + best + '${RETICLE_WS_PATH}';
+  }
+`
+    : '';
+  const urlDefine = canDiscover ? `\n        __RETICLE_URL__: JSON.stringify(reticleUrl()),` : '';
+  const urlRead = canDiscover
+    ? `\n      const url = typeof __RETICLE_URL__ !== 'undefined' ? __RETICLE_URL__ : '';`
+    : '';
+  // After the baked port, so the discovered one wins: later key in an object literal.
+  const urlSpread = canDiscover ? `\n          ...(url.length > 0 ? { url } : {}),` : '';
   return `Astro renders its own HTML, so the connect goes in a page <script> and the pairing token is inlined by the config.
 
 1. In astro.config.mjs — inline the daemon's token and raise the build target:
 
-  import { readFileSync } from 'node:fs';
+  import { readFileSync, readdirSync } from 'node:fs';
   import { homedir } from 'node:os';
   import { join } from 'node:path';
 
@@ -245,14 +304,14 @@ export function astroManual(
     const dir = process.env['RETICLE_PAIRING_TOKEN_DIR'] || join(homedir(), '.reticle');
     try { return readFileSync(join(dir, 'pairing-token'), 'utf8').trim(); } catch { return ''; }
   }
-
+${urlHelper}
   export default defineConfig({
     vite: {
       // Astro's default target down-levels the modern SDK bundle and fails on a destructuring transform.
       build: { target: 'es2022' },
       optimizeDeps: { esbuildOptions: { target: 'es2022' } },
       define: {
-        __RETICLE_TOKEN__: JSON.stringify(reticleToken()),
+        __RETICLE_TOKEN__: JSON.stringify(reticleToken()),${urlDefine}
         // Without this, source pointers come back as absolute paths from YOUR machine — useless in a
         // report. Every other framework gets it from its build plugin; Astro owns its Vite instance.
         __RETICLE_ROOT__: JSON.stringify(process.cwd()),
@@ -265,15 +324,21 @@ ${layoutHost(layoutPath)}
   <script>
     if (import.meta.env.DEV) {
       const token = typeof __RETICLE_TOKEN__ !== 'undefined' ? __RETICLE_TOKEN__ : '';
-      const root = typeof __RETICLE_ROOT__ !== 'undefined' ? __RETICLE_ROOT__ : '';
+      const root = typeof __RETICLE_ROOT__ !== 'undefined' ? __RETICLE_ROOT__ : '';${urlRead}
       const { reticle, install } = await import('@reticlehq/react');
       install();
-      reticle.connect({${id}${extra}
+      reticle.connect({${id}${extra}${urlSpread}
           ...(token.length > 0 ? { token } : {}),
           ...(root.length > 0 ? { root } : {}),
       });
     }
   </script>
+
+3. In src/env.d.ts — declare the Vite define names so \`astro check\` can see them (create-astro's
+   default build runs check first, and without this it fails with Cannot find name '__RETICLE_TOKEN__'):
+
+  declare const __RETICLE_TOKEN__: string | undefined;
+  declare const __RETICLE_ROOT__: string | undefined;
 
 Start the daemon BEFORE \`astro dev\`, so the token file exists when the config is read. Until it does the token is empty and the page reloads once the daemon is up.`;
 }
@@ -480,6 +545,110 @@ declare const __RETICLE_TOKEN__: string | undefined;
 declare const __RETICLE_ROOT__: string | undefined;
 declare const __RETICLE_SDK_VERSION__: string | undefined;
 `;
+}
+
+/** The react-scripts major below which webpack cannot parse what @reticlehq/browser ships. */
+export const WEBPACK4_REACT_SCRIPTS_MAJOR = 5;
+
+/**
+ * What to do when the bundler cannot parse our SDK at all.
+ *
+ * `@reticlehq/browser` ships untranspiled optional chaining and logical assignment.
+ * react-scripts 4 runs webpack 4, whose parser predates both, AND excludes `node_modules` from
+ * Babel -- so the build dies inside our `dist/` with a syntax error pointing at a file the user did
+ * not write, before any session can exist (#680).
+ *
+ * Nothing else in `init` can catch this. Every check we run passes: the package installs, the entry
+ * import is written, the token is inlined. The app simply does not compile, and the error names
+ * `@reticlehq/browser/dist/index.js` rather than anything about Reticle.
+ *
+ * Two ways out, in the order a reader should consider them, because the second is the one that does
+ * not require editing a bundler config to run a dev-only tool.
+ */
+export function webpack4TranspileNote(reactScriptsMajor: number): string {
+  return `react-scripts ${String(reactScriptsMajor)} runs webpack 4, whose parser predates optional
+  chaining and logical assignment. @reticlehq/browser ships both untranspiled, and react-scripts
+  excludes node_modules from Babel — so \`npm start\` fails with a syntax error inside
+  @reticlehq/browser/dist/index.js and no session is ever possible. Nothing else in this report can
+  see that: the install, the import and the token are all correct.
+
+  Either upgrade to react-scripts 5 (webpack 5 parses both natively, and needs no change on your
+  side), or transpile this one package. With react-app-rewired or craco, add it to Babel's include:
+
+      // config-overrides.js (react-app-rewired)
+      const path = require('path');
+      module.exports = (config) => {
+        const rule = config.module.rules.find((r) => Array.isArray(r.oneOf))
+          .oneOf.find((r) => String(r.test).includes('js') && r.include);
+        rule.include = [rule.include, path.resolve('node_modules/@reticlehq/browser')];
+        return config;
+      };
+
+  Scope it to @reticlehq/browser and nothing else: widening Babel across node_modules costs every
+  rebuild in the project, for a dev-only dependency.`;
+}
+
+/** React Router's client-entry override point, in framework mode. */
+export const REACT_ROUTER_ENTRY_PATH = 'app/entry.client.tsx';
+
+/**
+ * The React Router framework-mode recipe, printed rather than written.
+ *
+ * `app/entry.client.tsx` is an OVERRIDE: React Router supplies a default client entry, and the file
+ * only exists once an app opts out of it. Generating one containing our import and nothing else
+ * would replace that default with a file that never hydrates — an app that connected to Reticle and
+ * rendered nothing. Same judgement `astroSteps` already makes about a layout: a half-written entry
+ * is worse than a documented manual step.
+ *
+ * Two shapes, because the file may or may not be there, and the answer is different:
+ *   - it exists  -> add one line to it, and only that line
+ *   - it does not -> create it from React Router's own default, plus that line
+ */
+export function reactRouterManual(
+  port: number | undefined,
+  projectId?: string,
+  entryExists = false,
+): string {
+  const connect = connectArg(port, projectId);
+  const line = `if (import.meta.env.DEV) void import('/@reticle-connect');`;
+  const head = `React Router framework mode renders HTML through its own request handler, so the Vite
+  plugin's index.html injection never fires and the connect script never reaches the page. The
+  plugin is still required — it stamps data-reticle-source, which is what puts file:line on every
+  verdict — but connect() has to come from the client entry.`;
+  if (entryExists) {
+    return `${head}
+
+  Add this to the TOP of ${REACT_ROUTER_ENTRY_PATH}, above the hydration call:
+
+      ${line}
+
+  The import is the module @reticlehq/vite-plugin serves; it carries the port, the project id and
+  this machine's pairing token already, so there is nothing to fill in${0 === connect.length ? '' : ` (connect args: ${connect})`}.`;
+  }
+  return `${head}
+
+  ${REACT_ROUTER_ENTRY_PATH} does not exist yet. It is an OVERRIDE of React Router's default client
+  entry, so it has to hydrate as well as connect — a file containing only the import would replace
+  the default with one that never hydrates. Create it with React Router's own default plus the
+  import:
+
+      import { HydratedRouter } from 'react-router/dom';
+      import { StrictMode, startTransition } from 'react';
+      import { hydrateRoot } from 'react-dom/client';
+
+      ${line}
+
+      startTransition(() => {
+        hydrateRoot(
+          document,
+          <StrictMode>
+            <HydratedRouter />
+          </StrictMode>,
+        );
+      });
+
+  Check it against your React Router version's documented default entry before saving — this is the
+  v7 shape, and it is the half that must be right whether or not Reticle is in it.`;
 }
 
 /** Where a Nuxt dev-only client plugin belongs. `.client` keeps it out of SSR; Nuxt auto-registers it. */

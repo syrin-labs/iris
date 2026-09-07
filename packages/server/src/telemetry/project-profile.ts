@@ -15,13 +15,14 @@ import { join } from 'node:path';
 import { ProjectSize, ReticleDir, type ProjectProfile } from '@reticlehq/core';
 import { gitFacts } from './git-facts.js';
 import { detectStack } from './feedback-context.js';
+import { readProjectId } from '../cli/cli-port.js';
 
 /**
  * The feature FAMILIES, and the on-disk evidence that a project has adopted each. Named rather than
  * counted so the vocabulary stays stable as tools are added, renamed, or merged into action-dispatched
  * families — a count would silently change meaning the next time the tool surface is reorganized.
  */
-export const FeatureFamily = {
+const FeatureFamily = {
   DETERMINISTIC_REPLAY: 'deterministic_replay',
   VISUAL_BASELINE: 'visual_baseline',
   TEXT_BASELINE: 'text_baseline',
@@ -30,7 +31,7 @@ export const FeatureFamily = {
   BUG_CAPSULES: 'bug_capsules',
   CROSS_RUN_HISTORY: 'cross_run_history',
 } as const;
-export type FeatureFamily = (typeof FeatureFamily)[keyof typeof FeatureFamily];
+type FeatureFamily = (typeof FeatureFamily)[keyof typeof FeatureFamily];
 
 const ALL_FAMILIES = Object.values(FeatureFamily);
 
@@ -51,7 +52,7 @@ const MAX_WALK_DEPTH = 8;
 const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 
 /** Count source files, stopping at the cap (the cap itself lands in the largest bucket, correctly). */
-export function countSourceFiles(root: string, readDir: DirReader = defaultReadDir): number {
+function countSourceFiles(root: string, readDir: DirReader = defaultReadDir): number {
   let count = 0;
   const walk = (dir: string, depth: number): void => {
     if (depth > MAX_WALK_DEPTH || count >= MAX_FILES_SCANNED) return;
@@ -167,7 +168,19 @@ function exists(path: string): boolean {
  * Build the full profile. Best-effort throughout: an unreadable project yields a profile of zeroes
  * rather than an exception, because a telemetry snapshot must never be able to fail a daemon start.
  */
-export function profileProject(cwd: string, now: number): ProjectProfile {
+/**
+ * Facts about the install that the filesystem cannot answer.
+ *
+ * Passed in rather than read here for the same reason `previouslyConnected` is passed to the MCP
+ * server: it needs the daemon's port and the state home, and a profile that reached for those would
+ * stop being a pure function of a directory.
+ */
+export interface InstallFacts {
+  /** Has an app for this project EVER connected to Reticle, from durable state. */
+  appConnectedBefore: boolean;
+}
+
+export function profileProject(cwd: string, now: number, install?: InstallFacts): ProjectProfile {
   const reticleRoot = join(cwd, ReticleDir.ROOT);
   const flowCount = countIn(reticleRoot, ReticleDir.FLOWS_SUBDIR, /\.json$/);
   const baselineCount = countIn(reticleRoot, ReticleDir.BASELINES_SUBDIR);
@@ -187,7 +200,7 @@ export function profileProject(cwd: string, now: number): ProjectProfile {
   if (capsuleCount > 0) featuresUsed.push(FeatureFamily.BUG_CAPSULES);
   if (hasHistory) featuresUsed.push(FeatureFamily.CROSS_RUN_HISTORY);
 
-  const { stack, stackMajor, stackSource } = detectStack(cwd);
+  const { stack, stackMajor, stackSource, stackUnknownReason } = detectStack(cwd);
   const ageWeeks = projectAgeWeeks(cwd, now);
   const git = gitFacts(cwd);
   return {
@@ -196,6 +209,8 @@ export function profileProject(cwd: string, now: number): ProjectProfile {
     ...(stack !== undefined ? { stack } : {}),
     ...(stackSource !== undefined ? { stackSource } : {}),
     ...(stackMajor !== undefined ? { stackMajor } : {}),
+    // Present only when `stack` is absent, so the field's presence marks the unknown bucket.
+    ...(stackUnknownReason !== undefined ? { stackUnknownReason } : {}),
     size: sizeBucket(countSourceFiles(cwd)),
     monorepo: isMonorepo(cwd),
     ...(ageWeeks !== undefined ? { ageWeeks } : {}),
@@ -209,5 +224,11 @@ export function profileProject(cwd: string, now: number): ProjectProfile {
     // Rounded to 2dp: the exact ratio is a function of the counts above, and an unrounded float would
     // just be a higher-cardinality restatement of them.
     featureDepth: Math.round((featuresUsed.length / ALL_FAMILIES.length) * 100) / 100,
+    // WHERE the install stopped, for the daemons that never see an app. `daemon_started` minus
+    // `app_instrumented` says one happened and cannot say why; these two bits split that silence
+    // into "never ran init", "ran it and no page has ever reached us", and "works, just not up
+    // right now". See the fields on ProjectProfileSchema.
+    initialized: readProjectId(cwd) !== undefined,
+    ...(install === undefined ? {} : { appConnectedBefore: install.appConnectedBefore }),
   };
 }

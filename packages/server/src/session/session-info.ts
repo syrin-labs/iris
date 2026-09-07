@@ -17,6 +17,15 @@ export interface SessionInfo {
   title?: string;
   adapters: string[];
   hasCapabilities: boolean;
+  /**
+   * Which shell answered: `web`, `electron` or `tauri`.
+   *
+   * Absent — never defaulted to `web` — on an SDK too old to report one, because the guess is wrong
+   * on exactly the machines this exists to tell apart. Two windows on the same url are otherwise
+   * indistinguishable, and a browser tab is not a desktop app: it has none of its IPC, and it does
+   * not render like it.
+   */
+  runtime?: string;
   /** Present only when the page's SDK version differs from the daemon's — see version-skew.ts. */
   versionSkew?: string;
   /** ms since the SDK last reported anything (silence ⇒ likely throttled). */
@@ -28,6 +37,13 @@ export interface SessionInfo {
   recommendation?: string;
   stale?: boolean;
   cleanup_suggestion?: string;
+  /**
+   * present ONLY when this tab has stopped answering commands — attached, streaming events, and
+   * missing every command budget. Never `false`: absence means "answering, or not asked yet".
+   */
+  unresponsive?: true;
+  /** present with `unresponsive` — the in-protocol way out of a wedged tab. */
+  unresponsive_suggestion?: string;
   /** present only when the human has flagged bugs on this tab — count of pending review marks. */
   pendingMarks?: number;
   /** present with pendingMarks — nudges the agent to drain them with reticle_review. */
@@ -54,11 +70,13 @@ interface SessionView {
   title: string;
   adapters: string[];
   hasCapabilities: boolean;
+  runtime: string | undefined;
   versionSkew: string | undefined;
   hidden: boolean;
   health: () => SessionHealth;
   staleMs: () => number;
   pendingMarkCount: () => number;
+  unresponsive: () => boolean;
 }
 
 /**
@@ -80,6 +98,8 @@ export function buildSessionInfo(session: SessionView): SessionInfo {
     ...('' === session.title.trim() ? {} : { title: session.title }),
     adapters: session.adapters,
     hasCapabilities: session.hasCapabilities,
+    // Omitted when the page never said, so absence stays readable as "unknown" rather than "web".
+    ...(session.runtime === undefined ? {} : { runtime: session.runtime }),
     // On every listing, not buried in a log — skew explains failures that read as app bugs.
     ...(session.versionSkew === undefined ? {} : { versionSkew: session.versionSkew }),
     hidden: session.hidden,
@@ -89,6 +109,15 @@ export function buildSessionInfo(session: SessionView): SessionInfo {
     base.stale = true;
     base.cleanup_suggestion =
       'Call reticle_session{action:"end"} to free this session before starting new work.';
+  }
+  // A tab that is attached and answering nothing. Said out loud because every health field beside it
+  // reads fine — that combination is exactly what made the wedge invisible.
+  if (session.unresponsive()) {
+    base.unresponsive = true;
+    base.unresponsive_suggestion =
+      'This tab is connected but has stopped answering commands, so every call against it will time ' +
+      'out. Ending the session does not revive the page. Reload the tab, or run `reticle open <url>` ' +
+      'to get a fresh one — it will no longer hand this tab back.';
   }
   // Surface human bug reports in reticle_sessions (only when > 0, so a clean session adds nothing).
   const marks = session.pendingMarkCount();

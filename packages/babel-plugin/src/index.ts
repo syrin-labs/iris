@@ -1,8 +1,8 @@
 import { relative } from 'node:path';
 import type { PluginObj, PluginPass, types as BabelTypes } from '@babel/core';
+import { DATA_RETICLE_SOURCE_ATTR } from '@reticlehq/core/source-constants';
 
-/** The attribute this plugin stamps (mirrors DATA_RETICLE_SOURCE_ATTR in @reticlehq/core). */
-const SOURCE_ATTR = 'data-reticle-source';
+const SOURCE_ATTR = DATA_RETICLE_SOURCE_ATTR;
 
 interface PluginApi {
   types: typeof BabelTypes;

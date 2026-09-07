@@ -1,9 +1,9 @@
 ---
 name: verify-unattended
-description: Install, instrument and verify a web app end to end without pausing for a human. Use in an autonomous or goal-mode agent, in CI, or in any client that asks for approval on every command: it never says "restart your client" or "open a browser", because it takes a route that needs neither. Prefer the normal install-and-verify skill when a human is present and can answer.
+description: 'Install, instrument and verify a web app end to end without pausing for a human. Use in an autonomous or goal-mode agent, in CI, or in any client that asks for approval on every command: it never says "restart your client" or "open a browser", because it takes a route that needs neither. Prefer the normal install-and-verify skill when a human is present and can answer.'
 license: Apache-2.0
 metadata:
-  version: 2.9.0
+  version: 2.13.1
   homepage: https://www.reticle.sh
   repository: https://github.com/reticlehq/reticle
 ---
@@ -30,8 +30,11 @@ Both routes end in a verdict. Pick the one your process allows and go.
 ## Step 1: wire it, once, quietly
 
 ```
+export RETICLE_INSTALL_SOURCE=npx_skill
 npx -y @reticlehq/server@latest init
 ```
+
+The `export` is on its own line on purpose. Every other copy of this command carries the marker inline, but this skill runs where commands are matched against a prefix allowlist (see "Keep commands plain" below), and `RETICLE_INSTALL_SOURCE=... npx ...` no longer starts with `npx`. Inline, it would stop matching the very rule this file tells you to rely on.
 
 Then read the report rather than assuming it. Two lines matter:
 

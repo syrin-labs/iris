@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ReticleTool } from '../tools/tool-names.js';
 import { asNumber, asString } from '../tools/tools-helpers.js';
+import { stepCountSchema, timeoutMsSchema } from '../tools/numeric-bounds.js';
 import { crawl, type CrawlOptions } from './crawl.js';
 import type { ToolDef, ToolDeps } from '../tools/tools.js';
 import { routeFromUrl, routesFromEvents } from '../project/learned-routes.js';
@@ -18,9 +19,10 @@ export const CRAWL_TOOLS: ToolDef[] = [
     description:
       'Autonomously click every reachable interactive control (bounded by maxSteps, default 25) and report anomalies WITHOUT a script. Two classes: single-channel faults (console errors, failed requests ≥400, DEAD controls that dispatched but did nothing) and CONTRADICTIONS — two channels disagreeing about the same click, e.g. the UI advanced while its write failed, a success signal fired over a failed request, a write succeeded and nothing changed, the same write fired twice, or the UI moved on over an in-flight request. Contradictions are the false greens a human cannot see, because a human watches one channel (the screen) and it looks correct. DESTRUCTIVE — it really clicks (may navigate/mutate state); use reticle_explore first for a non-destructive list. Returns { interactiveFound, stepsRun, anomalies[{kind,ref,desc,detail}], counts, visited, truncated }.',
     inputSchema: {
-      maxSteps: z.number().optional().describe('Maximum number of controls to click. Default: 25.'),
-      settleMs: z
-        .number()
+      maxSteps: stepCountSchema
+        .optional()
+        .describe('Maximum number of controls to click. Default: 25.'),
+      settleMs: timeoutMsSchema
         .optional()
         .describe('Milliseconds to wait after each click for the app to react. Default: 500.'),
       scope: z

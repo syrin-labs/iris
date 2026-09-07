@@ -11,10 +11,12 @@
  * by init after this daemon started"); `initialized` simply never got it.
  */
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { NoSessionAction } from '@reticlehq/core';
 import { startNoSessionWatch } from './no-session-watch.js';
+import type { NoSessionNextAction } from './no-session-next-action.js';
 import type { SessionManager } from './session-manager.js';
 
 const dirs: string[] = [];
@@ -30,18 +32,33 @@ function projectDir(config: string | undefined): string {
 }
 
 /** The few things the watch asks of a SessionManager, and nothing else. */
-function stubSessions(): { manager: SessionManager; hint: () => string } {
+function stubSessions(): {
+  manager: SessionManager;
+  hint: () => string;
+  next: () => NoSessionNextAction | undefined;
+} {
   let installed: (() => string | undefined) | undefined;
+  let nextAction: (() => NoSessionNextAction | undefined) | undefined;
   const manager = {
     count: () => 0,
     everConnected: () => false,
+    // Nothing has departed in these cases, so the lease branch stays off.
+    lastDeparted: () => undefined,
+    // Registered alongside the hint (#615): the branch code for the same diagnosis.
+    setNoSessionReason: () => {},
     setNoSessionHint: (hint: (() => string | undefined) | undefined) => {
       installed = hint;
     },
-    setNoSessionNextAction: () => undefined,
+    setNoSessionNextAction: (next: (() => NoSessionNextAction | undefined) | undefined) => {
+      nextAction = next;
+    },
     setConnectionRecorder: () => undefined,
   } as unknown as SessionManager;
-  return { manager, hint: () => installed?.() ?? '' };
+  return {
+    manager,
+    hint: () => installed?.() ?? '',
+    next: () => nextAction?.(),
+  };
 }
 
 describe('the no-session diagnosis and a config written after boot', () => {
@@ -79,6 +96,32 @@ describe('the no-session diagnosis and a config written after boot', () => {
     const message = hint();
     stop();
     expect(message).toMatch(/no `\.reticle\.json`/);
+  });
+
+  it('builds the prose and next action from the same config discovered in another app', async () => {
+    const dir = projectDir(undefined);
+    const appDir = join(dir, 'apps', 'client');
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(join(appDir, '.reticle.json'), JSON.stringify({ projectId: 'client-1' }), 'utf8');
+    const { manager, hint, next } = stubSessions();
+    const stop = startNoSessionWatch({
+      sessions: manager,
+      port: 4400,
+      initialized: false,
+      directory: dir,
+      probe: () => Promise.resolve([5173]),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const why = hint();
+    const nextAction = next();
+    stop();
+
+    expect(why).toContain(appDir);
+    expect(nextAction?.action).not.toBe(NoSessionAction.RUN_INIT);
+    expect(nextAction?.reason).toContain(appDir);
+    expect(nextAction?.reason).not.toMatch(/no `\.reticle\.json` was found/i);
   });
 
   it('names a sibling Reticle listener as an observation, not a cause', async () => {

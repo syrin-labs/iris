@@ -12,6 +12,15 @@
 # `text=auto` still detects binary and leaves it alone, so images and fonts are unaffected.
 * text=auto eol=lf
 
+# The exception, and it is cmd.exe's rule rather than a preference. A batch file checked out with
+# LF-only endings is parsed unreliably: multi-line `if ... (` blocks are the usual casualty, and the
+# failure is SILENT — the interpreter runs some prefix of the file and exits without a message, so
+# `setup\reticle.cmd` produced no output at all on a Windows runner and the launcher gate failed with
+# nothing to read. Everything else here stays LF for the reason above; a `.cmd` is not read by any
+# tool but cmd.exe, so there is nothing for CRLF to break.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
 # Genuinely binary, named explicitly so no heuristic has to decide.
 *.png binary
 *.jpg binary
@@ -28,3 +37,18 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+
+# The changelog is append-at-the-top, so every open PR edits the same lines and each merge
+# invalidates every other PR. Measured 2026-08-23: five contributor PRs all reported CONFLICTING
+# against main, and every one of them conflicted on THIS FILE ALONE — their code merged cleanly.
+# With 20+ PRs open that makes the merge order strictly serial and hands each contributor a
+# conflict badge they did not cause.
+#
+# `union` keeps BOTH sides of an overlapping hunk instead of raising a conflict, which is exactly
+# the resolution a maintainer performs by hand here: two entries, both kept. It cannot silently
+# drop an entry — the failure mode is duplicated or out-of-order lines, which is visible in review
+# and harmless to fix, unlike a lost changelog line nobody notices.
+#
+# Deliberately NOT applied to source: union merge on code produces text that compiles and means
+# something nobody wrote. It belongs on append-only prose and nowhere else.
+CHANGELOG.md merge=union

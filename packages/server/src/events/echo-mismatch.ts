@@ -25,12 +25,23 @@ import type { OwnContradiction } from './contradictions.js';
  *    as a half-applied write. The gate was on the RESPONSE being a success and never on the REQUEST
  *    being a write, so every successful call carrying a body read as a save — and the same key name
  *    legitimately means different things on the two sides of a request/response pair;
+ *  - identity keys (`id`, `*_id`) and create sentinels (`0`, `""`, `null`) are not compared. A
+ *    create that sends `sub_category_id: 0` and gets back `19314` assigned the row; two id spaces
+ *    that share a field name were never expected to match. Both used to fire on every healthy POST;
  *  - only keys the request actually SENT are considered;
  *  - only scalars, since deep structural diffing is where the false positives live;
  *  - values are compared NORMALISED (trimmed, case-folded, numbers as numbers), so `FR` vs `fr` and
  *    `1` vs `1.0` stay silent while `fr` vs `en` speaks;
  *  - if the key appears anywhere in the response carrying the requested value, it is treated as
- *    applied — an envelope that echoes both the old and the new value is not a dropped write.
+ *    applied — an envelope that echoes both the old and the new value is not a dropped write;
+ *  - the response must look like a restatement of the request before any key is compared. Reported
+ *    from the field: a command bus POSTed `{command:'chat.send', ...}` and the server answered with
+ *    the current viewer snapshot. The message arrived over the socket and rendered. `id` in the
+ *    snapshot meant the viewer, `id` in the request meant the message, and this kind fired. A
+ *    snapshot that shares a key name is not an echo. A discriminator the request carries that the
+ *    response does not, or a fat body that shares one coincidental key, is skipped. The existing
+ *    single-value / not-echoed-at-all guards still trade false negatives away — this narrows on
+ *    shape, not on value types.
  *
  * The residue after those filters is a field the caller set, the server echoed back, and the echoed
  * value is a genuinely different value. That is worth one line of an agent's attention.
@@ -66,6 +77,25 @@ function normalize(value: unknown): string | undefined {
 }
 
 /**
+ * Values that mean "server, you decide", not a field the caller asked to persist. A create that
+ * sends `0` for the new row's id, or an empty string the backend fills in, is the usual REST shape
+ * — not a dropped write.
+ */
+function isSentinelValue(value: unknown): boolean {
+  return 0 === value || '' === value || null === value;
+}
+
+/**
+ * Keys that name an identity, not a persisted attribute. The server assigns these (create returns a
+ * new id; a public id and an internal row id share a field name). Comparing them as echoes is how
+ * this kind fired on every healthy POST-create and poisoned later asserts in the same window.
+ */
+function isIdentityKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  return 'id' === lower || lower.endsWith('_id');
+}
+
+/**
  * Every scalar value the response carries for each key, at any depth.
  *
  * Depth matters because the echo is usually nested — `{ok:true, saved:{...}}`, `{data:{...}}`,
@@ -76,17 +106,19 @@ function scalarsByKey(
   body: unknown,
   into: Map<string, Set<string>> = new Map(),
   depth = 0,
+  omitSentinels = false,
 ): Map<string, Set<string>> {
   if (depth > 6 || into.size > MAX_ECHO_KEYS) return into;
   if (Array.isArray(body)) {
-    for (const item of body) scalarsByKey(item, into, depth + 1);
+    for (const item of body) scalarsByKey(item, into, depth + 1, omitSentinels);
     return into;
   }
   if (!isRecord(body)) return into;
   for (const [key, value] of Object.entries(body)) {
+    if (omitSentinels && isSentinelValue(value)) continue;
     const scalar = normalize(value);
     if (scalar === undefined) {
-      scalarsByKey(value, into, depth + 1);
+      scalarsByKey(value, into, depth + 1, omitSentinels);
       continue;
     }
     const seen = into.get(key) ?? new Set<string>();
@@ -98,6 +130,64 @@ function scalarsByKey(
 
 const OK_MIN = 200;
 const OK_MAX = 300;
+
+/**
+ * Body keys that name the operation rather than a field being persisted. A command bus puts one of
+ * these on the request; a snapshot of the current viewer does not echo it. Their absence on the
+ * response is the cheapest honest signal that the body is not a restatement of the write.
+ */
+const EchoDiscriminator = {
+  COMMAND: 'command',
+  ACTION: 'action',
+  OP: 'op',
+  PROCEDURE: 'procedure',
+} as const;
+
+/**
+ * A response carrying this many times more scalar keys than the request, overlapping on fewer than
+ * `MIN_SHARED_KEYS`, is a snapshot that happened to reuse a name — not an echo of the write.
+ */
+const SNAPSHOT_KEY_RATIO = 3;
+const MIN_SHARED_KEYS = 2;
+
+/**
+ * True when the response looks like a restatement of the request, so overlapping key names can be
+ * read as an echo rather than a coincidence.
+ *
+ * Half the request's comparable keys must appear in the response. That keeps a partial echo
+ * (`{density, locale}` answered with only `locale`) in scope, and drops a three-field command whose
+ * snapshot shares one name. A request that names an operation the response does not repeat is not
+ * an echo at all, regardless of any other overlap.
+ */
+function responseRestatesRequest(
+  asked: Map<string, Set<string>>,
+  echoed: Map<string, Set<string>>,
+): boolean {
+  const comparable: string[] = [];
+  for (const [key, wanted] of asked) {
+    if (1 === wanted.size) comparable.push(key);
+  }
+  if (0 === comparable.length) return false;
+
+  let present = 0;
+  for (const key of comparable) {
+    if (echoed.has(key)) present += 1;
+  }
+
+  let requestHasDiscriminator = false;
+  let responseHasDiscriminator = false;
+  for (const key of Object.values(EchoDiscriminator)) {
+    if (asked.has(key)) requestHasDiscriminator = true;
+    if (echoed.has(key)) responseHasDiscriminator = true;
+  }
+  if (requestHasDiscriminator && !responseHasDiscriminator) return false;
+
+  if (echoed.size > comparable.length * SNAPSHOT_KEY_RATIO && present < MIN_SHARED_KEYS) {
+    return false;
+  }
+
+  return present * 2 >= comparable.length;
+}
 
 /**
  * Contradictions for writes whose response echoes a different value than the request asked for.
@@ -138,13 +228,15 @@ export function findEchoMismatches(
     if (request === undefined || response === undefined) continue;
 
     const echoed = scalarsByKey(response);
-    const asked = scalarsByKey(request);
+    const asked = scalarsByKey(request, new Map(), 0, true);
+    if (!responseRestatesRequest(asked, echoed)) continue;
     const dropped: string[] = [];
     for (const [key, wanted] of asked) {
       // More than one requested value for a key (a before/after pair, a list of items) makes "what
       // was asked for" ambiguous, and a guess here is exactly how this kind would earn a reputation
       // for crying wolf.
       if (wanted.size !== 1) continue;
+      if (isIdentityKey(key)) continue;
       const values = echoed.get(key);
       // Not echoed at all = no evidence either way. Only a key the server chose to report back can
       // contradict the request, and silence is not a contradiction.
@@ -163,8 +255,8 @@ export function findEchoMismatches(
     found.push({
       kind: ContradictionKind.WRITE_FIELD_IGNORED,
       claim: 'the write returned success and the page treated it as saved',
-      counter: `its own echo shows ${String(dropped.length)} field(s) NOT applied — ${dropped.join('; ')}`,
-      detail: `${method} ${url} — the server answered OK and returned a different value than it was asked to set, so the write half-applied; the UI has no way to know and will show the value the user typed${attribution}`,
+      counter: `its own echo shows ${String(dropped.length)} field(s) that differ from the request — ${dropped.join('; ')}`,
+      detail: `${method} ${url} — the server answered OK and returned a different value than it was asked to set${attribution}`,
     });
   }
   return found;

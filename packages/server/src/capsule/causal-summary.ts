@@ -1,11 +1,12 @@
 import { EventType, PerfMetric, isDevToolingUrl, type ReticleEvent } from '@reticlehq/core';
+import { routeOfEvent } from '../events/predicate-route.js';
 
 /**
  * The causal summary (Tier 1) — the bounded ~50–100 token block on EVERY act, green included: what the
  * app did in the act's window, as counts + a headline, not a raw event dump. Diffs come from the
  * storage/state events; attribution from. Pure composition over the attributed event window.
  */
-export interface StateDiff {
+interface StateDiff {
   path: string;
   from: unknown;
   to: unknown;
@@ -21,7 +22,7 @@ export interface StateDiff {
    */
   atMs: number;
 }
-export interface StorageDiff {
+interface StorageDiff {
   key: string;
   from?: unknown;
   to?: unknown;
@@ -75,7 +76,7 @@ export interface CausalSummary {
 }
 
 /** What only the SESSION knows — level facts the event window cannot contain. See `stateUnwatched`. */
-export interface SummaryContext {
+interface SummaryContext {
   stateUnwatched?: boolean;
 }
 
@@ -204,9 +205,14 @@ export function causalSummary(
         }
         break;
       }
-      case EventType.ROUTE_CHANGE:
-        if ('string' === typeof data['pathname']) route = data['pathname'];
+      case EventType.ROUTE_CHANGE: {
+        // The ROUTER's path. Reporting the document pathname left `route: "/"` on every action of a
+        // hash-routed app — the same reading that made a route predicate unsatisfiable there, and an
+        // agent reasoning off this field would conclude the route never changed. See routeOfEvent.
+        const routed = routeOfEvent(data);
+        if (routed !== undefined) route = routed.routePath;
         break;
+      }
       case EventType.SIGNAL:
         pushUnique(signals, data['name']);
         break;

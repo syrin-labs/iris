@@ -38,7 +38,7 @@ const HOSTED_WORKSPACE_ENV = [
   'REMOTE_CONTAINERS',
 ] as const;
 
-export interface AutomationInput {
+interface AutomationInput {
   env: NodeJS.ProcessEnv;
   fileExists: (path: string) => boolean;
   hasTty: boolean;

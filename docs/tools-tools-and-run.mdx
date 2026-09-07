@@ -6,9 +6,7 @@ icon: boxes-stacked
 
 `reticle_tools` lists every Reticle tool and, on request, returns the full argument grammar for the ones you name. `reticle_run` then invokes any of them. Reach for the pair whenever you need a capability that is not in the default advertised surface, which is most of what Reticle can do.
 
-Reticle ships 46 tools plus these two meta-tools. On the default profile your agent is shown 17 of them plus the meta pair, so 29 sit in the cold tail. These two are how it reaches those 29 without paying for their schemas on every turn.
-
-`reticle_tools` discovers. `reticle_run` invokes. Together they cost two tool definitions instead of twenty-nine.
+`reticle_tools` discovers. `reticle_run` invokes. Together they cost two tool definitions instead of the rest of the catalog.
 
 ## Discovering what exists
 
@@ -41,7 +39,7 @@ The response also tells you which surface is active:
   "profile": {
     "active": "all",
     "source": "RETICLE_ADVERTISE_ALL_TOOLS set in the DAEMON's environment at startup",
-    "note": "The profile is read once at daemon startup: change RETICLE_TOOL_PROFILE and restart the daemon, or it has no effect. Under this profile every unadvertised tool is reachable through reticle_run; under `full` there are no meta-tools because every tool is advertised directly."
+    "note": "The surface is read once at daemon startup: set RETICLE_ADVERTISE_ALL_TOOLS=1 and restart the daemon, or it has no effect. No surface advertises every tool: the advertised count is capped because editors budget tools across all connected MCP servers. Every tool listed here is callable through reticle_run { tool, args } whether or not it is advertised."
   },
   "next": "Load params with reticle_tools { names:[…] }, then call reticle_run { tool, args }."
 }

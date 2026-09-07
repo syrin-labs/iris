@@ -3,7 +3,7 @@ name: replay-user-flows
 description: Turn a user journey you just clicked through into a saved regression check that re-runs deterministically, with no model in the loop and no test code to write. Use when you have driven the same flow twice, when the user wants regression coverage without a Playwright suite, when a refactor needs proving against every existing journey, or when re-verifying by hand is costing a full drive every time.
 license: Apache-2.0
 metadata:
-  version: 2.9.0
+  version: 2.13.1
   homepage: https://www.reticle.sh
   repository: https://github.com/reticlehq/reticle
 ---

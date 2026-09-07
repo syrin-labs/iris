@@ -9,10 +9,13 @@
 // honesty-side imports keep working.
 export { BlindSpotKind } from '@reticlehq/core';
 import {
+  AppRuntime,
   BlindSpotKind,
   EventType,
+  PredicateKind,
   ReticleEnv,
   TRANSPORT_LIMITS,
+  isDesktopBlindSpot,
   type ReticleEvent,
 } from '@reticlehq/core';
 
@@ -142,6 +145,22 @@ export function blindSpotsFromEvents(events: readonly ReticleEvent[]): BlindSpot
 }
 
 /**
+ * Drop Electron-only coverage rows unless this session is actually an Electron renderer.
+ *
+ * The kinds live in the same vocabulary as "no store registered", so listing whatever is present
+ * reported a Vite + React tab as an un-instrumented Electron renderer. The session already knows
+ * the runtime (PAGE_HEALTH). Unknown runtime (older SDK) keeps the rows — dropping them would hide
+ * a real missing-preload warning.
+ */
+export function spotsForRuntime(
+  spots: readonly BlindSpot[],
+  runtime: string | undefined,
+): BlindSpot[] {
+  if (runtime === undefined || AppRuntime.ELECTRON === runtime) return [...spots];
+  return spots.filter((spot) => !isDesktopBlindSpot(spot.kind));
+}
+
+/**
  * Blind spots from the session's remembered LEVEL state rather than from a window of events.
  *
  * The SDK emits BLIND_SPOT only when the count changes, so a page that mounted cross-origin frames at
@@ -149,9 +168,19 @@ export function blindSpotsFromEvents(events: readonly ReticleEvent[]): BlindSpot
  * reports "full" for a page a third of which is unobservable — and the act tool's own description
  * tells harnesses to gate on that block. Ask the session what is true now instead of inferring it
  * from what happened to be said recently.
+ *
+ * `runtime` gates Electron-only kinds (see `spotsForRuntime`) so a web session cannot inherit them
+ * from the coverage vocabulary.
  */
-export function blindSpotsFromState(state: Readonly<Record<string, number>>): BlindSpot[] {
-  return Object.entries(state).map(([kind, count]) => ({ kind: kind as BlindSpotKind, count }));
+export function blindSpotsFromState(
+  state: Readonly<Record<string, number>>,
+  runtime?: string,
+): BlindSpot[] {
+  const spots = Object.entries(state).map(([kind, count]) => ({
+    kind: kind as BlindSpotKind,
+    count,
+  }));
+  return spotsForRuntime(spots, runtime);
 }
 
 /**
@@ -170,7 +199,7 @@ export function blindSpotsFromState(state: Readonly<Record<string, number>>): Bl
  * every real app, and a caveat that is always present is one nobody reads. TRANSPORT_OVERFLOW is the
  * honest "arbitrary events are gone" marker — it cannot say which.
  */
-export function droppedByTransport(events: readonly ReticleEvent[]): number {
+function droppedByTransport(events: readonly ReticleEvent[]): number {
   let dropped = 0;
   for (const e of events) {
     if (e.type !== EventType.TRANSPORT_OVERFLOW) continue;
@@ -178,6 +207,60 @@ export function droppedByTransport(events: readonly ReticleEvent[]): number {
     dropped += 'number' === typeof n ? n : 0;
   }
   return dropped;
+}
+
+/**
+ * The narrow slice of a predicate the absence-blind-spot check needs.
+ *
+ * Kept minimal to avoid pulling the full Predicate type (and its transitive deps) into the
+ * honesty module. Anything that quacks like this works.
+ */
+interface AbsencePredicate {
+  kind: string;
+  absent?: boolean;
+  query?: { scope?: unknown };
+  predicate?: AbsencePredicate;
+}
+
+/**
+ * When an absence assertion targets a page with regions Reticle cannot observe, "the element is
+ * absent" means only "it is absent in what I CAN see". Returns a note when that distinction
+ * matters, undefined otherwise.
+ *
+ * Fires on three blind-spot kinds:
+ *   - CROSS_ORIGIN_IFRAME (only when the predicate is scoped to a frame region)
+ *   - VIRTUALIZED_UNMOUNTED — a row that was never rendered could hold the element
+ *   - CLOSED_SHADOW_ROOT — a subtree Reticle cannot see into
+ */
+export function absenceBlindSpotNote(
+  predicate: AbsencePredicate,
+  spots: readonly BlindSpot[],
+): string | undefined {
+  // `not(element)` is the third spelling of an absence assertion — the `not` wrapper IS the
+  // negation, so the inner predicate will not carry `absent: true`. Unwrap and synthesize it.
+  // `not(element { absent: true })` is a double negative — presence — and a positive match is
+  // not threatened by an unobservable region.
+  if (PredicateKind.NOT === predicate.kind && predicate.predicate !== undefined) {
+    if (PredicateKind.ELEMENT === predicate.predicate.kind) {
+      if (true === predicate.predicate.absent) return undefined;
+      return absenceBlindSpotNote({ ...predicate.predicate, absent: true }, spots);
+    }
+    return undefined;
+  }
+  if (PredicateKind.ELEMENT !== predicate.kind || true !== predicate.absent) return undefined;
+
+  const relevant = spots.filter(
+    (spot) =>
+      spot.count > 0 &&
+      (spot.kind === BlindSpotKind.CROSS_ORIGIN_IFRAME
+        ? undefined !== predicate.query?.scope
+        : spot.kind === BlindSpotKind.VIRTUALIZED_UNMOUNTED ||
+          spot.kind === BlindSpotKind.CLOSED_SHADOW_ROOT),
+  );
+  if (0 === relevant.length) return undefined;
+
+  const statement = buildCoverageStatement(relevant);
+  return `the absence assertion targeted a region Reticle could not observe (${statement.note ?? 'partial coverage'}), so a passing DOM check cannot prove absence`;
 }
 
 /** The impeaching note for a transport gap, or undefined when the window was intact. */
@@ -198,4 +281,36 @@ export function transportGapNote(events: readonly ReticleEvent[]): string | unde
  */
 export function isStateUnwatched(spots: readonly BlindSpot[]): boolean {
   return spots.some((spot) => spot.kind === BlindSpotKind.UNWATCHED_STATE && spot.count > 0);
+}
+
+/**
+ * Does a passing verdict on this predicate REST on the window being complete?
+ *
+ * Only an absence claim does. A positive assertion that passed found its evidence, and events aged
+ * out elsewhere in the buffer do not unmake it. An absence claim concluded "nothing is there" — and
+ * the thing the buffer dropped is precisely the disproof, so "absent" degrades to "absent in what I
+ * still hold".
+ *
+ * The distinction is not optional. Scarce-loss is recorded for AGE eviction too, so `lostSince(0)`
+ * is true on any session older than the 60s cutoff; impeaching every verdict over a caller-chosen
+ * window would make `unknown` the answer to everything, which this repo has already paid for once.
+ */
+export function restsOnCompleteWindow(predicate: {
+  kind: string;
+  absent?: boolean;
+  count?: number;
+  predicate?: unknown;
+}): boolean {
+  if (PredicateKind.NOT === predicate.kind) return true;
+  // An exact cardinality of ZERO is the third spelling of an absence claim, and reading only
+  // `absent` missed it: `{ kind: "net", urlContains: "/api/auth/sign-in", count: 0 }` says "this
+  // request was never made", and the call the buffer evicted is precisely the disproof. It was
+  // graded `yes` over a window known to have lost scarce evidence — the exact false green the two
+  // clauses above exist to prevent, reached by the one spelling they did not cover (#668).
+  //
+  // Only zero. `count: 2` asserts calls were MADE and found them; events aged out elsewhere in the
+  // buffer do not unmake a positive finding, which is the same reason a plain presence assertion is
+  // left alone here.
+  if (0 === predicate.count) return true;
+  return true === predicate.absent;
 }

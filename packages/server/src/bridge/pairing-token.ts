@@ -1,4 +1,5 @@
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -74,6 +75,30 @@ export async function readOrCreatePairingToken(
     if (0 === token.length) return undefined;
     await deps.mkdir(dir);
     await deps.writeFile(path, token);
+    return token;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Sync twin of `readOrCreatePairingToken`. `reticle init` and Next's `withReticle` are both
+ * synchronous, and a snippet printed with no token is a page that can never authenticate.
+ */
+export function readOrCreatePairingTokenSync(dir: string): string | undefined {
+  const path = pairingTokenPath(dir);
+  try {
+    const existing = readFileSync(path, 'utf8').trim();
+    if (existing.length > 0) return existing;
+  } catch {
+    /* missing or unreadable — fall through and create one */
+  }
+  try {
+    const token = randomBytes(TOKEN_BYTES).toString('hex');
+    if (0 === token.length) return undefined;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(path, token, { encoding: 'utf8', mode: 0o600 });
+    chmodSync(path, 0o600);
     return token;
   } catch {
     return undefined;

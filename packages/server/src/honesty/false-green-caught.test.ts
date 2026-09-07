@@ -94,14 +94,21 @@ describe('the refusals of a passing assertion, and which of them answers NO', ()
     expect(answeredNo).toEqual([VerifiedReason.CONTRADICTED]);
   });
 
-  it('a green that proved nothing because the condition already held is still `unknown`', () => {
+  it('a green that proved nothing because the condition already held is neither a pass nor a failure', () => {
     // Named separately because it is the one most easily mistaken for a caught false green: the
     // assertion held, the action is unproven, and the pre-act check that finds it exists precisely
     // to catch that. It is a refusal of a passing assertion — and it is not a `no`.
+    //
+    // Reads `no-fault` over a settled window since the regrade. The load-bearing invariant was never
+    // the word `unknown`; it is that this answer is NEITHER of the two that decide anything, and
+    // both halves are asserted below so the guard cannot go vacuous if the word moves again.
+    // `no-fault` is the more useful of the two here because the remedy is "assert something", not
+    // "look harder" — see the branch in `verified.ts`.
     const v = decideVerified(
       refusalsOfAPassingAssertion[VerifiedReason.ALREADY_TRUE] ?? { honesty: honesty() },
     );
-    expect(v.verified).toBe(Verified.UNKNOWN);
+    expect(v.verified).toBe(Verified.NO_FAULT);
     expect(v.verified).not.toBe(Verified.NO);
+    expect(v.verified).not.toBe(Verified.YES);
   });
 });

@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { statusPayload } from './status-payload.js';
+import { statusPayload, verifyEndpointMismatch } from './status-payload.js';
 import { summarizeStatus } from './cli/cli-launch.js';
 
 const session = {
@@ -39,6 +39,38 @@ describe('the status payload', () => {
 
   it('omits it when the daemon has nothing to say', () => {
     expect(statusPayload(0, [], undefined).why).toBeUndefined();
+  });
+
+  it('carries the verify endpoint port when one is being served', () => {
+    expect(statusPayload(0, [], undefined, 4401).verifyPort).toBe(4401);
+  });
+
+  it('omits verifyPort when no endpoint is up', () => {
+    expect('verifyPort' in statusPayload(0, [], undefined)).toBe(false);
+  });
+});
+
+describe('serve --http against an already-running daemon', () => {
+  // The reported shape of the bug: `serve --http --http-port N` found a daemon already on the
+  // bridge port, said "already running", exited 0, and nothing ever listened on N.
+  it('refuses when the daemon serves no verify endpoint at all', () => {
+    const message = verifyEndpointMismatch(statusPayload(0, []), 4401);
+    expect(message).toContain('without the verify HTTP endpoint');
+    expect(message).toContain('`reticle stop`');
+  });
+
+  it('refuses when the daemon serves it on a different port, naming both ports', () => {
+    const message = verifyEndpointMismatch(statusPayload(0, [], undefined, 7331), 4401);
+    expect(message).toContain(':7331');
+    expect(message).toContain(':4401');
+  });
+
+  it('is satisfied when the daemon already serves the wanted port', () => {
+    expect(verifyEndpointMismatch(statusPayload(0, [], undefined, 4401), 4401)).toBeUndefined();
+  });
+
+  it('treats a daemon that did not answer /status as not honouring the flag', () => {
+    expect(verifyEndpointMismatch(undefined, 4401)).toBeDefined();
   });
 });
 

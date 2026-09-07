@@ -37,6 +37,7 @@ describe('instrumentation gaps', () => {
     expect(fixForGap(InstrumentationGapKind.NO_STORE_REGISTERED)).toContain('registerStore');
     expect(fixForGap(InstrumentationGapKind.NO_SIGNAL_ON_MUTATION)).toContain('reticle.signal');
     expect(fixForGap(InstrumentationGapKind.UNDECLARED_CONTROL)).toContain('reticle.describe');
+    expect(fixForGap(InstrumentationGapKind.MISSING_TESTID)).toContain('data-testid');
   });
 
   /**

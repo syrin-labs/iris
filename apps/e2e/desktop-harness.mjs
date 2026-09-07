@@ -179,22 +179,52 @@ export async function bootDesktopSession({
 
 /** Spawn Electron against the smoke app's Vite dev server, which this also starts. */
 export async function spawnElectronSmoke(env, { port = 5174 } = {}) {
+  // Whether ANYTHING answers is not the question — whether OURS does is. This waited for a 200 on
+  // the port and took it as readiness, so a stranger already serving there answered instantly, the
+  // strictPort vite we had just spawned died on the conflict unnoticed, and the spec drove somebody
+  // else's app: no window.api, no todos, and a run of assertions failing for reasons that had
+  // nothing to do with Reticle. A ten-hour-old scratch server from an unrelated experiment cost a
+  // full debugging pass. The same rule the daemon already follows: a port held by a stranger is
+  // reported as one.
+  if (await answers(port)) {
+    throw new Error(
+      `port ${String(port)} is already serving something, and it is not this app. Free it before ` +
+        `running the desktop battery: lsof -nP -iTCP:${String(port)} -sTCP:LISTEN`,
+    );
+  }
   const vite = spawn(
     'pnpm',
     ['--filter', '@reticlehq/electron-smoke', 'exec', 'vite', '--port', String(port), '--strictPort'],
     { cwd: ROOT, env, stdio: 'ignore' },
   );
+  let exited;
+  vite.on('exit', (code) => {
+    exited = code ?? 0;
+  });
   const deadline = Date.now() + 120_000;
   for (;;) {
-    try {
-      if ((await fetch(`http://localhost:${String(port)}`)).ok) break;
-    } catch {
-      /* not up yet */
+    if (await answers(port)) break;
+    // A strictPort vite that loses the race exits rather than relocating, and its death is the
+    // whole signal. Waiting out the deadline after it would report a timeout for a conflict.
+    if (exited !== undefined) {
+      throw new Error(
+        `the electron-smoke vite server exited (code ${String(exited)}) before serving port ` +
+          `${String(port)} — most likely the port was taken`,
+      );
     }
     if (Date.now() > deadline) throw new Error('the electron-smoke vite server never came up');
     await sleep(500);
   }
   return { vite, electronBin: resolveElectronBinary() };
+}
+
+/** Whether anything at all is serving this port. */
+async function answers(port) {
+  try {
+    return (await fetch(`http://localhost:${String(port)}`)).ok;
+  } catch {
+    return false;
+  }
 }
 
 /**

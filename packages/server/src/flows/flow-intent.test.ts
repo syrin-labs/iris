@@ -3,6 +3,8 @@ import { FLOW_FILE_VERSION, IntentState, type FlowFile } from '@reticlehq/core';
 import { createMemoryFs } from '../project/memory-fs.js';
 import { IntentStore } from '../intent/intent-store.js';
 import { FlowStore, type FlowAnnotations } from './flows.js';
+import { flowIntentGap } from './flow-intent.js';
+import { InstrumentationGapKind } from '@reticlehq/core';
 import { ReticleTool } from '../tools/tool-names.js';
 import { dischargeFlowIntent, flowIntentId, flowIntentStatement } from './flow-intent.js';
 import type { CompiledProgram } from './recordings.js';
@@ -165,5 +167,41 @@ describe('a flow carries the business intent it discharges', () => {
     expect(intent?.id).toBe('checkout-works');
     expect(intent?.statement).toBe('checkout still works');
     expect(intent?.state).toBe(IntentState.BOUND);
+  });
+});
+
+describe('a blank intent is not an intent', () => {
+  /** A minimal well-typed flow — vitest transpiles without typechecking, so a bare literal runs and
+   *  fails `tsc` at commit time. */
+  const flowWith = (extra: Partial<FlowFile>): FlowFile => ({
+    name: 'checkout',
+    version: FLOW_FILE_VERSION,
+    createdAt: 0,
+    steps: [],
+    ...extra,
+  });
+  /**
+   * Found by measuring the seam rather than by reading it: `flowIntentGap` accepted `intent: "   "`
+   * and reported no gap, so a flow whose stated goal is whitespace looks identical on disk to one
+   * somebody thought about.
+   *
+   * Exactly the class this product exists to catch, in our own code — nothing renders wrong, nothing
+   * errors, a guard simply stops guarding. And it is the worse direction of the two: the gap is the
+   * only thing that would ever tell anyone the flow has no goal, so suppressing it wrongly means the
+   * flow replays for months and the day it goes red the report can name the broken step and nothing
+   * else, which is the precise failure the gap was written to prevent.
+   */
+  it('reports the gap for an intent that is only whitespace', () => {
+    expect(flowIntentGap(flowWith({ intent: '   ' }))?.kind).toBe(
+      InstrumentationGapKind.NO_FLOW_INTENT,
+    );
+    expect(flowIntentGap(flowWith({ intent: '' }))?.kind).toBe(
+      InstrumentationGapKind.NO_FLOW_INTENT,
+    );
+  });
+
+  it('still accepts a real sentence, and an id from the ledger', () => {
+    expect(flowIntentGap(flowWith({ intent: 'A user can check out' }))).toBeUndefined();
+    expect(flowIntentGap(flowWith({ intentId: 'inline:checkout-abc' }))).toBeUndefined();
   });
 });

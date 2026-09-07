@@ -23,7 +23,7 @@ import { getSessionMetrics } from './session-metrics.js';
 import { getTelemetry } from './telemetry.js';
 
 /** The tool name reported for this path, so CI runs are distinguishable from agent-driven ones. */
-export const VERIFY_SURFACE = 'reticle_verify';
+const VERIFY_SURFACE = 'reticle_verify';
 
 /**
  * Report one completed verification run: the verdict, and one bug per failing flow.

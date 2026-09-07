@@ -57,7 +57,7 @@ export function decideDriveMode(presence: PortPresence): DriveMode {
 }
 
 /** A driveable session the daemon opened on our behalf. */
-export interface DriveSession {
+interface DriveSession {
   sessionId: string;
   /** Whether the tab's SDK actually registered — false ⇒ the app may not embed @reticlehq/core. */
   ready: boolean;
@@ -67,10 +67,10 @@ export interface DriveSession {
   hint?: string;
 }
 
-export type DriveAttachResult = { ok: true; session: DriveSession } | { ok: false; reason: string };
+type DriveAttachResult = { ok: true; session: DriveSession } | { ok: false; reason: string };
 
 /** POST the drive request. Injected so the decision logic is tested without a socket. */
-export type DrivePost = (
+type DrivePost = (
   port: number,
   path: string,
   body: string,
@@ -189,6 +189,27 @@ export function describeAttached(port: number, url: string, session: DriveSessio
   return (
     `attached to the Reticle daemon on :${String(port)} — it is driving ${url} as session ` +
     `${session.sessionId}, which every Reticle tool can address.${life}`
+  );
+}
+
+/**
+ * What an attach cannot honour: the window.
+ *
+ * `drive` documents a HEADED browser and parses `--headless` as the opt-out, but the attach path
+ * POSTs a url and nothing else — the daemon answers from a pool it launched headless at boot, and no
+ * per-request flag can change a browser that is already running. So the run is invisible, which is
+ * the half of the field report that reads "the app starts to run headlessly".
+ *
+ * Saying so is the honest half. The other half is that the run is no longer unwatchable: the HUD
+ * feed is mirrored to every other tab of the same app (see Session.setViewers), so a tab the human
+ * already has open shows the narration and the counters as the leased context is driven.
+ */
+export function driveHeadlessOnAttach(port: number, url: string): string {
+  return (
+    `note: this session runs inside the daemon on :${String(port)}, whose browser was launched ` +
+    'headless — there is no window to show, and `--headless` is not a per-drive choice. Open ' +
+    `${url} in your own browser to watch: any tab of that app mirrors this session's HUD. To get a ` +
+    'window instead, stop the daemon and run `reticle drive` again with the port free.'
   );
 }
 

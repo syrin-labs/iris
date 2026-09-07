@@ -17,13 +17,22 @@ export function CommandPalette(): React.ReactElement | null {
   const setNewDeploy = useApp((s) => s.setNewDeploy);
   const [q, setQ] = useState('');
 
-  const go = (v: ViewId): void => {
-    setView(v);
-    setPalette(false);
-  };
-
-  const cmds: Cmd[] = useMemo(
-    () => [
+  /*
+   * `go` lives INSIDE the memo on purpose.
+   *
+   * It used to be defined in the component body and captured by a `useMemo([])`, which lint flagged
+   * as a missing dependency. Adding it to the deps would have been the wrong fix here: `go` is a new
+   * function on every render, so the memo would recompute every render — and this app is the
+   * BENCHMARK fixture, where render cost is the quantity being measured. Moving it inside leaves the
+   * dependencies as the three store setters, which zustand keeps stable, so the array is built once
+   * and the lint rule is satisfied by construction rather than silenced.
+   */
+  const cmds: Cmd[] = useMemo(() => {
+    const go = (v: ViewId): void => {
+      setView(v);
+      setPalette(false);
+    };
+    return [
       {
         id: 'overview',
         label: 'Go to Overview',
@@ -63,9 +72,8 @@ export function CommandPalette(): React.ReactElement | null {
           setPalette(false);
         },
       },
-    ],
-    [],
-  );
+    ];
+  }, [setView, setPalette, setNewDeploy]);
 
   if (!open) return null;
   const filtered = cmds.filter((c) => c.label.toLowerCase().includes(q.toLowerCase()));

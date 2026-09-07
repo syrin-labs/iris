@@ -5,9 +5,9 @@
     "rootDir": "./src",
     // Babel loads plugins with require(), so this package emits CommonJS — then a standard CJS
     // babel.config.js can require() it on ANY Node version, with no require(esm) dependency. It has
-    // zero runtime deps and imports only node:path, so CJS is clean.
-    "module": "CommonJS",
-    "moduleResolution": "Node10",
+    // one runtime dep (@reticlehq/core/source-constants, a generated CJS file) and imports node:path.
+    "module": "Node16",
+    "moduleResolution": "Node16",
     "verbatimModuleSyntax": false,
     "lib": ["ES2023"],
     "types": ["node"]

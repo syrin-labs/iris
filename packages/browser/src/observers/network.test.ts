@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { EventType, RETICLE_WS_PATH } from '@reticlehq/core';
-import { extractTiming, firstAppFrame, installNetwork, redactUrl } from './network.js';
+import { EventType, RETICLE_WS_PATH, URL_RAW } from '@reticlehq/core';
+import {
+  extractTiming,
+  firstAppFrame,
+  installNetwork,
+  redactUrl,
+  netUrlFields,
+} from './network.js';
 import type { Emit, Teardown } from './types.js';
 import { requireCapturedMethod } from '../util/captured-method.js';
 
@@ -78,6 +84,22 @@ describe('redactUrl', () => {
   it('leaves short non-token segments after a sensitive name alone', () => {
     expect(redactUrl('/reset/form')).toBe('/reset/form');
     expect(redactUrl('/password/reset')).toBe('/password/reset');
+  });
+
+  it('still redacts a public-looking segment after a sensitive name — that is the reported miss', () => {
+    // These are ordinary REST paths, not tokens. Redaction rewrites them; the grader matches
+    // `urlRaw` instead. Pinning the rewrite so a later heuristic change cannot silently drop the
+    // companion field.
+    expect(redactUrl('/auth/token/refresh-context')).toBe('/auth/token/[REDACTED]');
+    expect(redactUrl('/verify/CERT_INFY_10')).toBe('/verify/[REDACTED]');
+  });
+
+  it('keeps the raw URL beside the redacted one for the grader', () => {
+    expect(netUrlFields('/auth/token/refresh-context')).toEqual({
+      url: '/auth/token/[REDACTED]',
+      [URL_RAW]: '/auth/token/refresh-context',
+    });
+    expect(netUrlFields('/api/users')).toEqual({ url: '/api/users' });
   });
   it('redacts credentials embedded in the URL authority (user:pass@host)', () => {
     expect(redactUrl('https://alice:s3cr3t@api.example.com/data')).toBe(
@@ -719,6 +741,7 @@ describe('installNetwork (XMLHttpRequest)', () => {
     expect(done?.data['initiator']).toBe('xhr');
     expect(String(done?.data['url'])).toContain('access_token=%5BREDACTED%5D');
     expect(String(done?.data['url'])).not.toContain('SECRETXHR');
+    expect(done?.data[URL_RAW]).toBe('/api/data?access_token=SECRETXHR&page=1');
   });
 
   it('a REUSED XHR emits exactly one completion per send (no accumulated listeners)', () => {

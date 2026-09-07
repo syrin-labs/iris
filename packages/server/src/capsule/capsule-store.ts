@@ -21,7 +21,7 @@ import { reticleDirPaths } from '../project/reticle-dir.js';
  */
 export const CAPSULE_VERSION = 1;
 
-export const CapsuleSchema = z.object({
+const CapsuleSchema = z.object({
   version: z.literal(CAPSULE_VERSION),
   id: z.string(),
   /** The flow the failure happened in, when it came from one (a bare assert has no flow). */

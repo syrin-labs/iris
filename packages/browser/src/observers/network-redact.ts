@@ -1,4 +1,4 @@
-import { REDACTED_VALUE } from '@reticlehq/core';
+import { REDACTED_VALUE, URL_RAW } from '@reticlehq/core';
 import { isSensitiveKey } from '../security/serialization.js';
 
 /** A path segment name that is typically followed by a single-use secret token in the NEXT segment. */
@@ -77,4 +77,16 @@ export function redactUrl(raw: string): string {
   if (!changed) return raw;
   const queryOut = -1 === queryStart ? '' : `?${newQuery}`;
   return `${segments.join('/')}${queryOut}${newHash}`;
+}
+
+/**
+ * Displayed URL plus, when redaction rewrote it, the raw request for graders.
+ *
+ * `url` is what the agent reads. `urlRaw` exists only so `urlContains` can still match a public
+ * path segment that the heuristic rewrote (`/auth/token/refresh-context`). Omitted when nothing
+ * changed, so an ordinary request pays nothing.
+ */
+export function netUrlFields(raw: string): { url: string } | { url: string; urlRaw: string } {
+  const url = redactUrl(raw);
+  return url === raw ? { url } : { url, [URL_RAW]: raw };
 }

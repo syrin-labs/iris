@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { InstrumentationGapKind, proposeInstrumentation } from './self-instrument.js';
+import { InstrumentationGapKind } from '@reticlehq/core';
+import { proposeInstrumentation } from './self-instrument.js';
 
 describe('proposeInstrumentation', () => {
-  it('proposes a signal call for a missing-signal gap, at the located file:line', () => {
+  it('proposes a signal call for a no-signal-on-mutation gap, at the located file:line', () => {
     const [proposal] = proposeInstrumentation([
       {
-        kind: InstrumentationGapKind.MISSING_SIGNAL,
+        kind: InstrumentationGapKind.NO_SIGNAL_ON_MUTATION,
         file: 'src/Checkout.tsx',
         line: 114,
         name: 'order:placed',
@@ -23,7 +24,7 @@ describe('proposeInstrumentation', () => {
   it('proposes a registerStore call (PascalCased hook) for an unregistered store', () => {
     const [proposal] = proposeInstrumentation([
       {
-        kind: InstrumentationGapKind.UNREGISTERED_STORE,
+        kind: InstrumentationGapKind.NO_STORE_REGISTERED,
         file: 'src/store.ts',
         line: 1,
         name: 'cart',

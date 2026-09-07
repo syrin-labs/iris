@@ -17,6 +17,7 @@ import { buildDynamicTools } from '../tools/dynamic-tools.js';
 import { runTool, SESSION_BOUND_TOOLS } from '../tools/invoke-tool.js';
 import { sessionEnvelopeShape } from '../tools/tool-kit.js';
 import { buildErrorPayload } from '../tools/error-recovery.js';
+import { takeVersionSkewOnto } from '../version/version-nudge.js';
 import { resultIsError } from './mcp-is-error.js';
 import { buildServerInstructions } from './server-instructions.js';
 import { unadvertisedToolHelp } from '../tools/unadvertised-help.js';
@@ -296,7 +297,13 @@ export function advertisedConfig(
   // `verify` is lean for the same reason `default` is, and more so: it exists to make a verdict
   // cheap, and it was serving FULL descriptions plus outputSchema because the check named only the
   // default. That put 8,207 bytes on the wire for three tools.
-  const lean = profile === TOOL_SURFACE.DEFAULT || profile === TOOL_SURFACE.VERIFY;
+  // `lean` here is the ADJECTIVE (terse descriptions, no output schemas), which every trimmed surface
+  // wants — including TOOL_SURFACE.LEAN, the profile that borrows the word. A trimmed surface serving
+  // full prose plus output schemas is the exact defect that put 8,207 bytes on `verify`'s three tools.
+  const lean =
+    profile === TOOL_SURFACE.DEFAULT ||
+    profile === TOOL_SURFACE.VERIFY ||
+    profile === TOOL_SURFACE.LEAN;
   const terse = lean && !isMetaTool;
   // The first advertised tool carrying a predicate spells the grammar out; the rest point at it.
   const anchor = advertised.find((t) =>
@@ -608,7 +615,12 @@ export function createMcpServer(
         // Every error the agent hits should answer "what next?", not just "what broke".
         return {
           isError: true as const,
-          content: [{ type: 'text' as const, text: JSON.stringify(buildErrorPayload(message)) }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(takeVersionSkewOnto(buildErrorPayload(message))),
+            },
+          ],
         };
       }
     });

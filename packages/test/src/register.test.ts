@@ -72,7 +72,8 @@ function memoryFs(files: Record<string, string>): FileSystemPort {
       store.delete(norm(path));
       return Promise.resolve();
     },
-    stat: () => Promise.resolve({ mtimeMs: 0 }),
+    stat: () => Promise.resolve({ mtimeMs: 0, size: 0 }),
+    realpath: (path: string) => Promise.resolve(path),
     isNotFound: (error) => 'ENOENT' === (error as { code?: string } | undefined)?.code,
   };
 }

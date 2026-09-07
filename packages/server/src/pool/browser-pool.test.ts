@@ -123,6 +123,20 @@ describe('BrowserPool', () => {
     expect(pool.activeCount()).toBe(2);
   });
 
+  it('leaseIdOnOrigin names the public id of a lease already on that origin', async () => {
+    const { launch } = fakeLauncher();
+    const pool = new BrowserPool(launch, { maxContexts: 4, genSessionId: counterIds() });
+
+    const a = await pool.acquire('http://localhost:3000/a');
+    await pool.acquire('http://localhost:4000/other');
+    expect(pool.leaseIdOnOrigin('http://localhost:3000')).toBe(a.sessionId);
+    expect(pool.leaseIdOnOrigin('http://localhost:4000')).toBe('s2');
+    expect(pool.leaseIdOnOrigin('http://localhost:9999')).toBeUndefined();
+
+    pool.alias('app-name', a.sessionId);
+    expect(pool.leaseIdOnOrigin('http://localhost:3000')).toBe('app-name');
+  });
+
   it('release frees the slot and closes the context', async () => {
     const { launch, browsers } = fakeLauncher();
     const pool = new BrowserPool(launch, { maxContexts: 4, genSessionId: counterIds() });

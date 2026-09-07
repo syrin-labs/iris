@@ -12,8 +12,10 @@ import {
   StorageArea,
 } from '@reticlehq/core';
 import { ReticleTool } from './tool-names.js';
+import { advanceMsSchema, depthSchema } from './numeric-bounds.js';
 import { proposeConsequences } from '../oracles/propose-consequences.js';
 import type { CompiledProgram } from '../flows/recordings.js';
+import { recordingBacktrackWarning, routesFromRecording } from '../flows/recording-backtrack.js';
 import { replayProgram } from '../flows/replay.js';
 import { diffLines } from '../project/baselines.js';
 import { selectPath, capDepth, projectComponentState } from '../session/state-select.js';
@@ -22,6 +24,22 @@ import { buildReactionReport, summarizeReaction } from '../events/reaction.js';
 import { asString, asNumber, parseInteractive } from './tools-helpers.js';
 import { type ToolDef, sessionIdShape, commandOrThrow, snapshotTree } from './tool-kit.js';
 import { bufferEnvelope } from '../session/session-health.js';
+import { routeOfUrl } from '../events/predicate-route.js';
+
+/** The route part of a session URL. A host belongs to the machine, not to the journey. */
+/**
+ * The page a recording started on, as a NAVIGABLE path: pathname + hash.
+ *
+ * The hash matters and the pathname alone is not enough. Under a hash router every page has the
+ * document pathname `/`, so a recording made on `#/posts/12` stored `/`, the replay's start-path
+ * comparison saw `/` on both sides and never warned about drift, and the navigate it suggests
+ * pointed at the default route rather than the recorded one.
+ */
+function pathnameOf(url: string | undefined): string | undefined {
+  if (url === undefined) return undefined;
+  const parts = routeOfUrl(url);
+  return parts === undefined ? undefined : `${parts.docPath}${parts.hash}`;
+}
 
 /**
  * What record-stop says about a step that compiled to no anchor at all.
@@ -163,14 +181,17 @@ export const READ_TOOLS: ToolDef[] = [
       const session = deps.sessions.resolve(asString(args['sessionId']));
       const name = asString(args['recordingName']) ?? 'default';
       const cursor = session.elapsed();
-      deps.recordings.start(name, cursor);
+      // Where the journey begins, so a saved flow can navigate here before step 1 instead of
+      // replaying from wherever the page happens to be. Pathname only: a host or port belongs to
+      // the machine that recorded it, not to the journey.
+      deps.recordings.start(name, cursor, pathnameOf(session.url));
       return Promise.resolve({ recordingName: name, since: cursor });
     },
   },
   {
     name: ReticleTool.RECORD_STOP,
     description:
-      'Stop the recording identified by `recordingName` and return both the reaction report for the span and a compiled, replayable { program: { version, steps:[{tool,args,stable}] } } of the agent acts captured during it.',
+      'Stop the recording identified by `recordingName` and return both the reaction report for the span and a compiled, replayable { program: { version, steps:[{tool,args,stable}] } } of the agent acts captured during it. `warning` is present when the window left a page and returned to it — replay has no navigation steps, so the next click will look for a control on a page the tab is no longer on.',
     inputSchema: {
       recordingName: z
         .string()
@@ -204,10 +225,13 @@ export const READ_TOOLS: ToolDef[] = [
         );
       }
       const events = session.eventsSince(rec.cursor);
+      const routes = routesFromRecording(rec.startPath, events);
       const program: CompiledProgram = {
         name,
         version: REPLAY_PROGRAM_VERSION,
         steps: rec.steps,
+        ...(rec.startPath === undefined ? {} : { startPath: rec.startPath }),
+        ...(0 === routes.length ? {} : { routes }),
       };
       deps.recordings.saveCompiled(program);
       const unstable = rec.steps.filter((s) => !s.stable).length;
@@ -227,15 +251,14 @@ export const READ_TOOLS: ToolDef[] = [
               timeline_omitted: `${String(events.length)} event(s) were recorded and are not included here. Call reticle_observe { since: ${String(rec.cursor)} } for the raw timeline.`,
             }
           : {};
+      const unanchored = 0 < unstable ? unanchoredWarning(unstable) : undefined;
+      const backtrack = recordingBacktrackWarning(routes);
+      const warning = [unanchored, backtrack].filter((part): part is string => part !== undefined);
       const body = {
         recordingName: name,
         program,
         ...timeline,
-        ...(unstable > 0
-          ? {
-              warning: unanchoredWarning(unstable),
-            }
-          : {}),
+        ...(0 === warning.length ? {} : { warning: warning.join(' ') }),
         ...(proposedConsequences.length > 0 ? { proposedConsequences } : {}),
         ...digest,
       };
@@ -323,8 +346,7 @@ export const READ_TOOLS: ToolDef[] = [
         .boolean()
         .optional()
         .describe('Freeze the fake clock. Time stops advancing until advanceMs or reset.'),
-      advanceMs: z
-        .number()
+      advanceMs: advanceMsSchema
         .optional()
         .describe(
           'Fast-forward time by this many milliseconds — triggers debounces, toasts, auto-dismiss timers.',
@@ -367,11 +389,10 @@ export const READ_TOOLS: ToolDef[] = [
         .describe(
           "Dot-path into the store (e.g. 'captionCache.v3'). Numeric array indices are supported.",
         ),
-      depth: z
-        .number()
+      depth: depthSchema
         .optional()
         .describe(
-          'Collapse anything deeper than N levels to a size marker — avoids huge outputs for large stores.',
+          'Collapse anything deeper than N levels to a size marker — avoids huge outputs for large stores. A whole number of levels, 1 or more.',
         ),
       ...sessionIdShape,
     },

@@ -20,7 +20,7 @@
  */
 
 /** The contradiction kinds — cross-channel disagreement, as opposed to a single-channel fault. */
-export const CONTRADICTION_KINDS: readonly string[] = [
+const CONTRADICTION_KINDS: readonly string[] = [
   'ui-advanced-request-failed',
   'signal-contradicted',
   'response-ignored',

@@ -11,7 +11,7 @@ interface DeclaredSurface {
   flows: readonly string[];
 }
 
-export interface CoverageDimension {
+interface CoverageDimension {
   total: number;
   covered: number;
   /**
@@ -45,11 +45,11 @@ export const NO_FLOWS = 'no_flows';
  * that errors is a second dead end on top of the first (see suggested-commands-exist.test.ts). Same
  * wording as the empty-suite verdict, which is the same situation reached from `reticle verify`.
  */
-export const NO_FLOWS_NOTE =
+const NO_FLOWS_NOTE =
   'no flows recorded — nothing was checked. Record one with reticle_record { action: "start" }, then reticle_flow_save.';
 
 /** The gate's flow-coverage line. `pct` and `outcome` are mutually exclusive by construction. */
-export interface FlowCoverageReport {
+interface FlowCoverageReport {
   covered: number;
   total: number;
   pct?: number;

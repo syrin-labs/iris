@@ -72,6 +72,45 @@ export const TOOL_SURFACE = {
    * supplies the evidence the surface would otherwise have to go and find.
    */
   VERIFY: 'verify',
+  /**
+   * EXPERIMENTAL, opt-in, and UNDER MEASUREMENT. Not a recommendation, and not on a path to becoming
+   * the default until it has a number of its own.
+   *
+   * It exists because of the finding recorded on VERIFY above, read forwards instead of backwards.
+   * That surface cut the bill 37% and TRIPLED false alarms, and the five new false alarms were not
+   * scattered: every one of them was a defect whose evidence lives in `reticle_state`,
+   * `reticle_network` or `reticle_observe`. So the token saving and the accuracy loss came from two
+   * different cuts, and only one of them has to be paid for. `lean` keeps every observation tool and
+   * cuts the rest.
+   *
+   * What stays, and why each one is not a candidate for removal:
+   *   SNAPSHOT / QUERY   look. Without them the agent cannot name an element it did not already know.
+   *   STATE / NETWORK / CONSOLE / OBSERVE   the four evidence tools. Dropping these is the MEASURED
+   *                      cause of the tripled false-alarm rate. They are the point of the profile.
+   *   ACT_AND_WAIT       the only tool that acts AND returns a verdict. Omitting `until` makes it
+   *                      act-then-settle, which is what `reticle_act` does, so `act` is redundant here.
+   *   ASSERT             the only way to get a verdict WITHOUT acting. `act_and_wait` requires an
+   *                      `action`, so this is a capability it genuinely cannot express, not a synonym.
+   *
+   * What goes, and what it costs (one `reticle_run` hop each — `unadvertisedToolHelp` hands the agent
+   * the exact call, so a dropped name never comes back as "not found"):
+   *   ACT                subsumed: `act_and_wait` with `until` omitted is act-then-settle.
+   *   WAIT_FOR           subsumed: `act_and_wait { until }` takes the same PredicateSchema.
+   *   ACT_SEQUENCE       batching is a cost optimisation on top of a surface built to be cheap.
+   *   NAVIGATE           once per run, not once per turn — the wrong thing to pay for every turn.
+   *   SESSIONS           the CLI answers this (`reticle status`) without spending any turn budget.
+   *   INSPECT            fix-side, not verdict-side: it is called once a bug is FOUND, so its hop is
+   *                      paid once per finding rather than once per turn. Nothing else maps a node to
+   *                      a source file, which is why it is a hop and not a deletion.
+   *   SESSION            the lease block and the pause hint name it in prose, which is what made it
+   *                      load-bearing on the default surface. Under a trimmed surface the
+   *                      unadvertised-tool help turns that into a working `reticle_run` call.
+   *   FEEDBACK           the one drop with a KNOWN CEILING: an unadvertised feedback channel collects
+   *                      little to nothing, so a long-lived profile must not ship without it. Acceptable
+   *                      only because this profile is opt-in and short-lived by construction; if it
+   *                      ever stops being an experiment, feedback comes back first.
+   */
+  LEAN: 'lean',
 } as const;
 export type ToolSurface = (typeof TOOL_SURFACE)[keyof typeof TOOL_SURFACE];
 
@@ -84,7 +123,7 @@ export type ToolSurface = (typeof TOOL_SURFACE)[keyof typeof TOOL_SURFACE];
 export const ADVERTISE_ALL_ENV = 'RETICLE_ADVERTISE_ALL_TOOLS';
 
 /** Opt into the smallest verdict-capable surface. Read by the DAEMON at startup, like the others. */
-export const VERIFY_SURFACE_ENV = 'RETICLE_VERIFY_SURFACE';
+const VERIFY_SURFACE_ENV = 'RETICLE_VERIFY_SURFACE';
 
 /**
  * The retired setting, still read so nobody's shell profile breaks.
@@ -193,6 +232,17 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
  * 48 by itself can push a user's other servers out or be dropped wholesale. The budget is a count,
  * so no amount of trimming parameter prose buys anything back — only advertising fewer names does.
  *
+ * That is true of the COUNT cap and false of everything else, which is worth separating here before
+ * somebody reads it as "prose is free". Measured against two competitor MCP servers on the same
+ * agent loop: this server advertises the FEWEST tools of the three and ships the HEAVIEST schema
+ * block, and 83% of that weight is parameter descriptions, not tool descriptions. The block is
+ * re-sent every turn, so it is multiplied by turn count before one byte of evidence is counted, and
+ * it was most of the gap in that run.
+ *
+ * Which does NOT license trimming by eye. Those descriptions are what make a tool get called
+ * correctly, and one malformed call costs a whole extra turn — more than the bytes saved. The
+ * outcome to measure is turn count and error rate, not size.
+ *
  * Everything omitted stays in the registry, stays catalogued by `reticle_tools`, and stays callable
  * by name through `reticle_run { tool, args }`. The cost is one discovery hop on the cold tail, which
  * is the same trade the default surface has always made, applied one level further out.
@@ -236,7 +286,54 @@ export const EXTENDED_TOOL_NAMES: ReadonlySet<string> = new Set([
  * everything else. `act_and_wait` can resolve its own target, so no query tool is needed to name an
  * element — that round trip was half the token cost of a verification.
  */
-export const VERIFY_TOOL_NAMES: ReadonlySet<string> = new Set([ReticleTool.ACT_AND_WAIT]);
+const VERIFY_TOOL_NAMES: ReadonlySet<string> = new Set([ReticleTool.ACT_AND_WAIT]);
+
+/**
+ * The lean surface: look, observe, act-with-a-verdict, assert. Pinned by lean-surface.test.ts,
+ * because an experiment whose independent variable drifts mid-flight measures nothing. Every
+ * inclusion and every exclusion is argued at TOOL_SURFACE.LEAN.
+ *
+ * ## MEASURED: it is cheaper and less correct. Do not promote it to the default.
+ *
+ * Run as its own arm of the fix-and-verify benchmark — same five bugs, same model, same budget, the
+ * full surface as its control:
+ *
+ * | | full surface | lean |
+ * |---|---|---|
+ * | bugs fixed | **5/5** | **3/5** |
+ * | FALSE GREENS | **0** | **1** |
+ *
+ * The false green is the finding, and it is the first this benchmark has ever produced. On
+ * `broken-form-validation` the lean agent finished in SIX turns and 62k tokens — the cheapest cell
+ * of the whole run, a fifth of what the full surface spent — edited the file, took one snapshot,
+ * and ended with a hypothetical walkthrough: "Enter spaces + valid name -> spaces are trimmed,
+ * valid part is used. VERDICT: FIXED". The submit button was still enabled for a whitespace-only
+ * service. It reasoned about what its own code would now do instead of driving it, which is exactly
+ * the failure this product exists to catch, produced by our own surface.
+ *
+ * The other loss has the same root from the other side. On `cross-component-regression` the agent
+ * called `reticle_tools` three times and `reticle_run` eight, saying "since Reticle isn't
+ * connecting, let me see what reticle_tools offers" — it spent the run hunting for capabilities
+ * this surface does not advertise instead of using them, and never fixed the bug.
+ *
+ * That is the same result the `verify` surface already recorded — dropping the observation tools
+ * TRIPLED false alarms — arriving from the other direction: strip the surface and the agent stops
+ * verifying, then claims anyway. The known ceiling written here was that `reticle_feedback` goes
+ * uncollected. This is a bigger one and it was not predicted.
+ *
+ * It stays opt-in and it stays measured. The one thing it genuinely bought — the ceiling-bound cell
+ * halved, 30 turns to 14 — is not worth a verdict that lies, because the product is the verdict.
+ */
+export const LEAN_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ReticleTool.SNAPSHOT,
+  ReticleTool.QUERY,
+  ReticleTool.ACT_AND_WAIT,
+  ReticleTool.ASSERT,
+  ReticleTool.OBSERVE,
+  ReticleTool.NETWORK,
+  ReticleTool.CONSOLE,
+  ReticleTool.STATE,
+]);
 
 /** Is the truthy form of a boolean env var set? `1`, `true`, `yes` — anything else is off. */
 function envFlagOn(raw: string | undefined): boolean {
@@ -252,11 +349,17 @@ function envFlagOn(raw: string | undefined): boolean {
  * switch decides, and the retired setting is honoured last so an old shell profile still works.
  */
 export function resolveToolSurface(explicit?: string): ToolSurface {
+  if (explicit === TOOL_SURFACE.LEAN) return TOOL_SURFACE.LEAN;
   if (explicit === TOOL_SURFACE.VERIFY) return TOOL_SURFACE.VERIFY;
   if (explicit === TOOL_SURFACE.ALL) return TOOL_SURFACE.ALL;
   if (explicit === TOOL_SURFACE.DEFAULT) return TOOL_SURFACE.DEFAULT;
   const retiredExplicit = explicit === undefined ? undefined : RETIRED_PROFILE_VALUES[explicit];
   if (retiredExplicit !== undefined) return retiredExplicit;
+  // The one LIVE value of the otherwise-retired setting. It rides there rather than on a switch of
+  // its own because the experiment is an A/B between two surfaces, and a boolean cannot name an arm.
+  if (TOOL_SURFACE.LEAN === process.env[TOOL_PROFILE_ENV]?.trim().toLowerCase()) {
+    return TOOL_SURFACE.LEAN;
+  }
   if (envFlagOn(process.env[VERIFY_SURFACE_ENV])) return TOOL_SURFACE.VERIFY;
   if (envFlagOn(process.env[ADVERTISE_ALL_ENV])) return TOOL_SURFACE.ALL;
   const retiredEnv = RETIRED_PROFILE_VALUES[process.env[TOOL_PROFILE_ENV] ?? ''];
@@ -280,6 +383,14 @@ export interface ToolSurfaceOrigin {
  */
 export function describeToolSurface(active: ToolSurface, requested?: string): ToolSurfaceOrigin {
   const retired = requested ?? process.env[TOOL_PROFILE_ENV];
+  // `lean` is the one value of this setting that is NOT retired. Reporting it as retired would tell
+  // an agent its arm did not take, which on an A/B is worse than saying nothing.
+  if (TOOL_SURFACE.LEAN === active) {
+    return {
+      active,
+      source: `${TOOL_PROFILE_ENV}=${TOOL_SURFACE.LEAN} — an EXPERIMENTAL surface under measurement; unadvertised tools stay callable via ${ReticleTool.RUN}`,
+    };
+  }
   if (retired !== undefined && retired in RETIRED_PROFILE_VALUES) {
     return {
       active,
@@ -311,6 +422,7 @@ export function filterTools(tools: ToolDef[], surface: ToolSurface): ToolDef[] {
   // CORE_TOOL_NAMES is what it always really was: the set advertised directly. It was never the
   // interesting thing about the `core` PROFILE, whose only distinction was a second name for this.
   if (surface === TOOL_SURFACE.VERIFY) return tools.filter((t) => VERIFY_TOOL_NAMES.has(t.name));
+  if (surface === TOOL_SURFACE.LEAN) return tools.filter((t) => LEAN_TOOL_NAMES.has(t.name));
   if (surface === TOOL_SURFACE.DEFAULT) return tools.filter((t) => CORE_TOOL_NAMES.has(t.name));
   // `all` is the extended surface, not the whole registry — the cap is a hard budget shared with
   // every other MCP server the user has connected. surface-sizes.test.ts enforces it.

@@ -40,12 +40,30 @@ export const DRIVE_PATH = '/drive';
 export const RETICLE_PROTOCOL_VERSION = 1;
 
 /**
+ * The host a CLIENT names when it dials the bridge, as opposed to the address the bridge BINDS.
+ *
+ * They are deliberately different values and both are correct. The daemon binds `127.0.0.1` so it can
+ * never be reached off-host; a client says `localhost`, which is the readable name every doc, log
+ * line and error message uses. The gap between them is covered by the IPv6 loopback alias
+ * (`loopback-alias.ts`), which serves `[::1]` too, so `localhost` reaches the daemon whichever family
+ * a platform resolves first.
+ *
+ * Named rather than inlined because it was inlined, and three generators then wrote their own: CRA
+ * emitted `127.0.0.1`, the Astro helper and the Next plugin each spelled out `localhost`. A default
+ * argument is not a single source of truth if it can be bypassed by typing the value.
+ */
+export const RETICLE_CLIENT_HOST = 'localhost';
+
+/**
  * The one place the bridge WebSocket URL is built. The SDK connect default, the vite/next snippet
  * generators, and the CLI's inject-connect all call this instead of hand-writing `ws://…${path}` —
  * so the wire string can never drift across the four call sites. Host defaults to `localhost` (the
  * dev app connects from the browser); pass it only for a non-default bind.
  */
-export function bridgeWsUrl(port: number = RETICLE_DEFAULT_PORT, host = 'localhost'): string {
+export function bridgeWsUrl(
+  port: number = RETICLE_DEFAULT_PORT,
+  host: string = RETICLE_CLIENT_HOST,
+): string {
   return `ws://${host}:${String(port)}${RETICLE_WS_PATH}`;
 }
 
@@ -243,6 +261,24 @@ export const ReticleDir = {
   AMBIENT_FILE: 'ambient.json',
   /** per-flow flake ledger — replay outcomes that decide intermittent-failure quarantine. */
   FLAKE_FILE: 'flake.json',
+  /**
+   * the project's cloud binding — .reticle/cloud.json, written by `reticle link`. Git-checked and
+   * non-secret: the project id, the API origin, and where its dashboard lives. The KEY lives in
+   * ~/.reticle/credentials.json instead, because that one must never reach a repository.
+   */
+  CLOUD_LINK_FILE: 'cloud.json',
+  /**
+   * local sync bookkeeping — .reticle/cloud-state.json. The pull cursor, when each half last ran,
+   * and the last error. NOT git-checked: it describes this machine's conversation with the server,
+   * and committing one machine's cursor would make every other machine skip what it had not seen.
+   */
+  CLOUD_STATE_FILE: 'cloud-state.json',
+  /**
+   * triage decisions pulled BACK from the dashboard — .reticle/issues.json. What a human said about
+   * a defect ("resolved", "not a bug"), so the HUD stops showing it and the next run does not
+   * re-report it as though nobody had looked.
+   */
+  ISSUES_FILE: 'issues.json',
   /** Per-flow assertion tiers recorded on each PASSING replay — the gate's anti-downgrade baseline. */
   TIERS_FILE: 'assertion-tiers.json',
   /**
@@ -367,6 +403,12 @@ export const EventType = {
   STORAGE_CHANGE: 'storage.change',
   /** page-level visibility/focus health (distinct from element-level VISIBLE_*). */
   PAGE_HEALTH: 'page.health',
+  /**
+   * synthetic: the page called window.open, so the consequence of what was just clicked may live in
+   * another browsing context this one cannot observe (an OAuth popup is the archetype).
+   * `data: { href }` — the URL the page asked to open, when it named one.
+   */
+  CONTEXT_OPENED: 'context.opened',
   /** aggregated React commits over a throttle window (dev builds) — `data: { commits }`. Commit storms /
    * wasted re-renders show up here without a per-render flood. */
   RENDER_COMMIT: 'render.commit',

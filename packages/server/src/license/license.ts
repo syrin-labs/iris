@@ -213,7 +213,7 @@ function resolveIssuerPublicKeyPem(
 }
 
 /** The human-facing state of enterprise activation on this machine (what `reticle license status` shows). */
-export interface LicenseReport {
+interface LicenseReport {
   /**
    * Typed against core's closed list rather than re-listing the strings here: this status is reported
    * on every telemetry event, so a member added in one place and not the other is a silently

@@ -1,4 +1,5 @@
 import { healthEnvelope } from '../session/session-health.js';
+import { verifyNextBaton, SUPPRESS_VERIFY_NEXT_ENV } from './verify-next-baton.js';
 import {
   type BrowserBrand,
   TelemetryActor,
@@ -10,22 +11,28 @@ import { getSessionMetrics } from '../telemetry/session-metrics.js';
 import { getTelemetry } from '../telemetry/telemetry.js';
 import { takeUpdateNudge } from '../update/update-nudge.js';
 import { takeVersionSkew } from '../version/version-nudge.js';
+import { rewriteClosedAsSkew } from '../version/version-skew.js';
 import { noteToolCall } from '../daemon/daemon-usefulness.js';
 import { bugsInResult, routeOf } from '../telemetry/bug-found.js';
 import { noteToolServed, reportToolRefused } from '../telemetry/tool-refused.js';
 import { buildErrorPayload, refusalReasonFor } from './error-recovery.js';
 import { resultIsError } from '../mcp/mcp-is-error.js';
 import { verificationOf } from '../telemetry/verification-of.js';
-import { asString } from './tools-helpers.js';
+import { asString, sessionIdFromArgs, spentRefFromArgs } from './tools-helpers.js';
 import { EnvelopeKey } from './tool-kit.js';
 import { ReticleTool } from './tool-names.js';
 import { takeFeedbackPrompt } from './feedback-tools.js';
 import { takeFeedbackUndelivered } from '../telemetry/feedback-delivery.js';
 import type { Session } from '../session/session.js';
 import { noteRefsMinted, wrongTabRefusal } from '../session/ref-provenance.js';
-import { CAPTURED_TOOLS, noteCapturedCall } from '../honesty/feature-capture.js';
+import {
+  CAPTURED_TOOLS,
+  noteCapturedCall,
+  noteToolDispatched,
+} from '../honesty/feature-capture.js';
 import { span } from '../trace.js';
 import {
+  defectForToolResult,
   deltaForToolResult,
   impactSnapshot,
   initImpact,
@@ -49,6 +56,21 @@ const ACTION_TOOLS: ReadonlySet<string> = new Set([
   ReticleTool.ACT,
   ReticleTool.ACT_SEQUENCE,
   ReticleTool.ACT_AND_WAIT,
+]);
+
+/**
+ * Tools that go through Playwright CDP rather than the page SDK.
+ *
+ * Under version skew these fail with "Target page, context or browser has been closed" while every
+ * DOM tool against the same tab still works (#688). They are session-EXEMPT (own result contracts),
+ * so the bound-tool resolve above never runs for them — resolve again here so we can refuse with
+ * the skew sentence before Playwright lies about a closed page.
+ */
+const CDP_TOOLS: ReadonlySet<string> = new Set([
+  ReticleTool.SCREENSHOT,
+  ReticleTool.VISUAL_DIFF,
+  ReticleTool.NETWORK_MOCK,
+  ReticleTool.VIEWPORT,
 ]);
 
 /**
@@ -119,6 +141,10 @@ export const SESSION_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
   ReticleTool.INTENT, // reads/writes .reticle/intent.json; sessionId only picks the project
   ReticleTool.CONTEXT, // folds the journal + intent ledger; must still answer when nothing is connected
   ReticleTool.PROJECT, // reads .reticle/project.json
+  // Reads the team's shared memory over HTTP; sessionId only resolves WHICH project's link file to
+  // use. It must answer with no tab connected — "what does this project know?" is a question an
+  // agent asks before it has opened anything.
+  ReticleTool.MEMORY,
   ReticleTool.RUN_EXPORT, // reads .reticle/runs/<id>.json (verification-run artifact)
   ReticleTool.SESSION, // merged lifecycle/human-channel family (tune/yield/end/resume/messages/review/narrate)
   ReticleTool.SCREENSHOT, // own contract; provider-driven, not a live-DOM-health read
@@ -314,7 +340,7 @@ export async function runTool<Ext>(
   if (ACTION_TOOLS.has(tool.name)) getSessionMetrics().recordAction();
   const settleTiming = getSessionMetrics().startToolCall(tool.name, args);
   const startedAt = Date.now();
-  const rawSessionId = asString(args['sessionId']);
+  const rawSessionId = sessionIdFromArgs(args);
   const bound = SESSION_BOUND_TOOLS.has(tool.name);
 
   // Resolve the session identity ONCE, up front, for a live-session tool. The lease heartbeat must
@@ -324,12 +350,19 @@ export async function runTool<Ext>(
   // before the handler so a long ACT_AND_WAIT is protected for its whole duration; on failure leave it
   // to the handler to throw the canonical no-session error.
   let session: Session | undefined;
-  if (bound) {
+  if (bound || CDP_TOOLS.has(tool.name)) {
     try {
       session = deps.sessions.resolve(rawSessionId);
     } catch {
       session = undefined;
     }
+  }
+  // CDP tools against a skewed session: refuse with the sentence reticle_sessions already knows,
+  // before Playwright invents a closed page. ready:true leases still hit this path.
+  if (session?.versionSkew !== undefined && CDP_TOOLS.has(tool.name)) {
+    const message = session.versionSkew;
+    reportRefusal(tool.name, message);
+    throw new Error(message);
   }
   // The read-only calls the journal never keeps, recorded HERE because this is the one dispatch
   // point every call routes through — a second recording site is a second thing to forget, and this
@@ -339,7 +372,15 @@ export async function runTool<Ext>(
   // `reticle_context` is session-EXEMPT, so `session` above is undefined for it and it needs its own
   // lenient resolve. Failing that resolve is silent by design: a call made with nothing connected
   // has no per-session ledger to land in, and an instrument must never be why a tool call fails.
-  if (CAPTURED_TOOLS.has(tool.name)) {
+  //
+  // EVERY tool is counted here, not just the read set: which of the 70-odd names in the table an
+  // agent actually reaches for is the question a decision about cutting or consolidating the surface
+  // turns on, and it had no answer. `reticle_run` is the one exclusion, for the same reason
+  // `reportRefusal` and `bugsInResult` exclude it — its handler calls `runTool` on the real tool, so
+  // the inner call is already counted under the name that RAN, and counting the wrapper too would
+  // both double the total and hide the run-only tier behind a single wrapper name. That tier is
+  // precisely the one the decision hinges on. See honesty/tool-hit-rate.ts.
+  if (ReticleTool.RUN !== tool.name) {
     let target = session;
     if (target === undefined) {
       try {
@@ -349,11 +390,14 @@ export async function runTool<Ext>(
       }
     }
     if (target !== undefined) {
-      const subject = asString(args['ref']) ?? asString(args['target']);
-      noteCapturedCall(target, {
-        tool: tool.name,
-        ...(subject === undefined ? {} : { subject }),
-      });
+      noteToolDispatched(target, tool.name);
+      if (CAPTURED_TOOLS.has(tool.name)) {
+        const subject = asString(args['ref']) ?? asString(args['target']);
+        noteCapturedCall(target, {
+          tool: tool.name,
+          ...(subject === undefined ? {} : { subject }),
+        });
+      }
     }
   }
   // A ref that was handed out by a DIFFERENT tab, on a call that named no session. Refused here, at
@@ -363,7 +407,7 @@ export async function runTool<Ext>(
   // the guessed tab and return a green about a page nobody asked about.
   if (session !== undefined) {
     const wrongTab = wrongTabRefusal({
-      ref: asString(args['ref']),
+      ref: spentRefFromArgs(args),
       explicitSessionId: rawSessionId,
       chosenSessionId: session.id,
       connected: () => deps.sessions.list(),
@@ -391,7 +435,21 @@ export async function runTool<Ext>(
     // to the agent by the MCP boundary, and discarded. Reported here rather than at that boundary
     // because there are two of them (mcp.ts and the reticle_run hatch) and this is the one place both
     // go through — a third would otherwise be invisible from the day it was added.
-    const message = error instanceof Error ? error.message : String(error);
+    //
+    // Under version skew, Playwright's "Target page has been closed" is the wrong cause (#688): the
+    // page is still dialled in. Prefer the session's skew sentence when we already know the pair is
+    // mismatched — including for tools that are not in CDP_TOOLS (real-input fallbacks that throw).
+    let skewText = session?.versionSkew;
+    if (skewText === undefined) {
+      try {
+        skewText = deps.sessions.resolve(rawSessionId).versionSkew;
+      } catch {
+        skewText = undefined;
+      }
+    }
+    const rewritten = rewriteClosedAsSkew(error, skewText);
+    const toThrow = rewritten ?? error;
+    const message = toThrow instanceof Error ? toThrow.message : String(toThrow);
     reportRefusal(tool.name, message);
     // The invitation on THIS path is the one `buildErrorPayload` attaches when it does not recognise
     // the error, and it was never counted — so the denominator excluded the commonest friction there
@@ -400,7 +458,7 @@ export async function runTool<Ext>(
     if (tool.name !== ReticleTool.RUN && buildErrorPayload(message).feedback !== undefined) {
       getSessionMetrics().recordFeedbackPrompt();
     }
-    throw error;
+    throw toThrow;
   } finally {
     // In a `finally` so a THROWN call still settles: otherwise every failing tool would leak a
     // concurrency slot and peakConcurrentTools would climb forever on an unhealthy session.
@@ -425,11 +483,24 @@ export async function runTool<Ext>(
   // The user's own record of what Reticle did for them. Same chokepoint as everything else that
   // counts, for the same reason: a second recording site is a second thing to forget. Separate
   // store from telemetry - this one never leaves the machine.
-  recordImpact(deltaForToolResult(raw, Date.now() - startedAt, resultIsError(raw)));
+  const finishedAt = Date.now();
+  const defect = defectForToolResult(raw, finishedAt);
+  // Which project's ledger this call belongs to. Resolved from the SESSION being driven, not from
+  // wherever the daemon happens to stand: one daemon serves many projects, and recording every
+  // call against its own cwd is how one app's verdicts ended up on another account's dashboard.
+  // Falls back to the daemon root when no session can be named, which is the old behaviour.
+  const artifactRoot = session?.artifactRoot ?? deps.reticleRoot;
+  recordImpact(
+    deltaForToolResult(raw, finishedAt - startedAt, resultIsError(raw)),
+    { ...(defect === undefined ? {} : { defect }) },
+    artifactRoot,
+  );
   // ...and the tab being driven is told, so the report is live rather than a thing you reload.
   // Optional-call, not optional-chain-on-the-object: a test double is a partial Session, and a
   // courtesy push must never be the reason a tool call throws.
-  session?.pushImpact?.(impactSnapshot);
+  // Bound to THIS session's root: a tab must be shown its own project's numbers, not whichever
+  // project the daemon was started in.
+  session?.pushImpact?.(() => impactSnapshot(artifactRoot));
   if (resultIsError(raw)) reportRefusal(tool.name, (raw as { error: string }).error);
   else {
     noteToolServed();
@@ -501,7 +572,30 @@ export async function runTool<Ext>(
   // verdict-less session in the field never called a verdict-producing tool ONCE;
   // the counter behind this already existed and was reported only to us. One-shot per abandoned
   // run, same discipline as the pool lease — a hint on every call is noise that gets tuned out.
+  // The A/B control, and the reason it exists as an env flag rather than a code edit.
+  //
+  // `verify_next` is described in this repo's own changelog as "the largest known lever on whether a
+  // session produces a verdict at all", and it has never been measured — it was once built, fired
+  // and silently dropped by schema-strict clients for a whole release, which is exactly what an
+  // unmeasured lever looks like from the inside. "The payload now arrives" and "the agent acts on
+  // it" are different claims and only the first was ever verified.
+  //
+  // Suppressing it for a control arm has to leave the ONLY difference being the baton: same build,
+  // same surface, same counters. So the nudge is still TAKEN (the counter still resets, so the
+  // one-shot cadence is identical) and only the envelope key is withheld.
+  const suppressBaton = '1' === process.env[SUPPRESS_VERIFY_NEXT_ENV];
   const unverified = getSessionMetrics().takeUnverifiedNudge();
-  if (unverified !== undefined) envelope[EnvelopeKey.VERIFY_NEXT] = unverified;
+  // Carry the CALL, not just the sentence. The prose has to be translated back into arguments, and
+  // that translation is where agents were already going wrong — `until` omitted, action arguments
+  // flat instead of nested under `args`. `ref` and `action` come from the act that actually
+  // dispatched, so the suggestion is about the element the agent touched. See verify-next-baton.
+  if (unverified !== undefined && !suppressBaton)
+    // `lastAct` read defensively: this envelope is built on EVERY tool call, so a session shape
+    // without it would turn a missing field into a crash on the whole surface rather than a missing
+    // suggestion. The baton degrades to prose, which is what it carried before.
+    envelope[EnvelopeKey.VERIFY_NEXT] = verifyNextBaton(
+      unverified,
+      resolved.lastAct?.effect() ?? {},
+    );
   return Object.keys(envelope).length > 0 ? { ...result, ...envelope } : result;
 }

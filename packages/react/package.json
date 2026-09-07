@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/react",
-  "version": "2.11.0",
+  "version": "2.13.1",
   "description": "Reticle React adapter — maps a DOM ref to its component stack and source file via the fiber tree.",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,7 +22,7 @@
     "lint": "eslint src",
     "test:unit": "vitest run src --passWithNoTests",
     "test:coverage": "vitest run src --passWithNoTests --coverage.enabled --coverage.provider=v8 --coverage.reporter=text-summary --coverage.include='src/**/*.ts' --coverage.exclude='src/**/*.test.ts'",
-    "prepack": "tsc -b && find dist -name \"*.test.*\" -delete && node ../../scripts/strip-maps.mjs dist"
+    "prepack": "tsc -b && node ../../scripts/prepare-dist.mjs dist"
   },
   "dependencies": {
     "@reticlehq/browser": "workspace:*",

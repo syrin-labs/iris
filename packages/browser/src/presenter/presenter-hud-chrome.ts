@@ -35,7 +35,7 @@ export const HUD_LOG_WELL_CLASS = 'reticle-hud-log-well';
  * the panel read as a container rather than as one card. It also grew and shrank with its content,
  * so the panel resized on every row; the height is fixed now and the feed scrolls inside it.
  */
-export const HUD_LOG_WELL_CSS = `
+export const HUD_LOG_WELL_CSS: string = `
 .${HUD_LOG_WELL_CLASS}{
   /* A settled height, but still allowed to shrink: pinned with flex:none it pushed the composer
      off the bottom of the panel the moment the rest of the content grew. */

@@ -14,11 +14,14 @@ function tool() {
   return t;
 }
 
-function depsWith(realInput: RealInputProvider | undefined): ToolDeps {
+function depsWith(
+  realInput: RealInputProvider | undefined,
+  pool?: { setMocksLease: (id: string, rules: MockRule[]) => Promise<boolean> },
+): ToolDeps {
   const sessions: Partial<SessionManager> = {
-    resolve: () => ({ url: 'http://localhost:5173/checkout' }) as never,
+    resolve: () => ({ id: 'lease-1', url: 'http://localhost:5173/checkout' }) as never,
   };
-  return { sessions: sessions as SessionManager, realInput } as unknown as ToolDeps;
+  return { sessions: sessions as SessionManager, realInput, pool } as unknown as ToolDeps;
 }
 
 interface MockResult {
@@ -38,6 +41,64 @@ describe('reticle_network_mock tool', () => {
     // NOT the visual code: this tool mocks requests / resizes windows, and an agent gating on
     // "no-visual-provider" here would be matching on a false statement about what it asked for.
     expect(res.reason).toBe(CDP_NO_PROVIDER_REASON);
+  });
+
+  /**
+   * A lease IS a Playwright-owned page. The tool used to look only at `realInput` (reticle drive /
+   * RETICLE_CDP_URL) and refuse the isolated context the docs point agents at. Screenshot and hover
+   * already fall through to the pool; mocking has to as well.
+   */
+  it('applies the rules to a leased page when no drive provider is attached', async () => {
+    let captured: { id: string; rules: MockRule[] } | undefined;
+    const res = (await tool().handler(
+      depsWith(undefined, {
+        setMocksLease: (id, rules) => {
+          captured = { id, rules };
+          return Promise.resolve(true);
+        },
+      }),
+      { mocks: [{ urlContains: '/api/pay', status: 500 }] },
+    )) as MockResult;
+    expect(res.applied).toBe(true);
+    expect(res.count).toBe(1);
+    expect(captured?.id).toBe('lease-1');
+    expect(captured?.rules).toEqual([{ urlContains: '/api/pay', status: 500 }]);
+  });
+
+  it('does not consult the pool when the driven provider already applied', async () => {
+    const setMocksLease = (): Promise<boolean> => {
+      throw new Error('lease must not run when drive applied');
+    };
+    const provider = {
+      isAvailableFor: () => Promise.resolve(true),
+      perform: () => Promise.resolve({ performed: true, center: { cx: 0, cy: 0 } }),
+      setMocks: () => Promise.resolve(true),
+    } as unknown as RealInputProvider;
+    const res = (await tool().handler(depsWith(provider, { setMocksLease }), {
+      mocks: [{ urlContains: '/api/pay', status: 500 }],
+    })) as MockResult;
+    expect(res.applied).toBe(true);
+  });
+
+  it('falls through to the lease when the driven provider is attached but cannot match this URL', async () => {
+    let leased = false;
+    const provider = {
+      isAvailableFor: () => Promise.resolve(true),
+      perform: () => Promise.resolve({ performed: true, center: { cx: 0, cy: 0 } }),
+      setMocks: () => Promise.resolve(false),
+    } as unknown as RealInputProvider;
+    const res = (await tool().handler(
+      depsWith(provider, {
+        setMocksLease: () => {
+          leased = true;
+          return Promise.resolve(true);
+        },
+      }),
+      { mocks: [{ urlContains: '/api/pay', status: 500 }] },
+    )) as MockResult;
+    expect(leased).toBe(true);
+    expect(res.applied).toBe(true);
+    expect(res.count).toBe(1);
   });
 
   it('applies the rules to the driven page and reports the count', async () => {
@@ -123,5 +184,9 @@ describe('the mocks description names the rule shape (#345)', () => {
 
   it('still says how to clear, which is the other half of the contract', () => {
     expect(mocksDescription()).toMatch(/clear/i);
+  });
+
+  it('says a leased tab is a driven context, not only reticle drive', () => {
+    expect(tool().description).toMatch(/lease/i);
   });
 });

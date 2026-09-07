@@ -58,75 +58,89 @@ export const FlowAnchorSchema = z.discriminatedUnion('kind', [
 ]);
 export type FlowAnchor = z.infer<typeof FlowAnchorSchema>;
 
-/** A post-condition a step asserts (compiled from a structured annotation; optional). */
-export const FlowExpectSchema = z.object({
-  signal: z.string().optional(),
-  /**
-   * Optional payload shape an `assert-signal` annotation requires the signal
-   * to match (the predicate DSL's signal.dataMatches). Additive/optional — a flow file with a
-   * bare `signal` still parses, and the on-disk version stays FLOW_FILE_VERSION 1.
-   */
-  signalData: z.record(z.unknown()).optional(),
-  /**
-   * Exact number of times the signal must have fired — the signal-side twin of `net.count`, and the
-   * only way a saved flow can keep a cardinality the agent actually asserted. Without it a
-   * `count: 1` drive would be recorded as bare presence, which is a strictly WEAKER claim than the
-   * one made: the replayed flow then goes green on the double-fire it was recorded to catch.
-   * Additive/optional — a flow file with a bare `signal` still parses, and FLOW_FILE_VERSION stays 1.
-   */
-  signalCount: z.number().int().nonnegative().optional(),
-  net: z
-    .object({
-      method: z.string().optional(),
-      urlContains: z.string().optional(),
-      status: z.number().optional(),
-      /**
-       * Exact number of matching requests since the action — turns presence into a cardinality
-       * assertion. Catches the double-submit / useEffect-double-fire / retry-storm regression class:
-       * the request fired (presence passes) but fired the WRONG number of times. Omit = presence (≥1).
-       */
-      count: z.number().int().nonnegative().optional(),
-    })
-    .optional(),
-  /**
-   * Console golden end-condition: assert the action logged (or, with absent:true, did NOT log) a
-   * console message at `level` (default 'error'). `absent:true` is the common case — "the action
-   * completed with a clean console" — catching the regression where an action throws a caught error
-   * / logs an uncaught rejection while the UI still renders fine (a presence check passes it).
-   */
-  console: z
-    .object({
-      level: z.string().optional(),
-      absent: z.boolean().optional(),
-    })
-    .optional(),
-  element: z
-    .object({
-      testid: z.string().optional(),
-      role: z.string().optional(),
-      name: z.string().optional(),
-    })
-    .optional(),
-  /**
-   * Assert a registered store's value — the source of truth no DOM/network read can reach. Compiles
-   * to the predicate engine's `state` predicate. Additive/optional — a flow without it still parses
-   * and the on-disk version stays FLOW_FILE_VERSION 1. `equals` accepts a literal, omitted = presence,
-   * or a `{ $gte | $contains | $length }` operator pattern.
-   */
-  state: z
-    .object({
-      store: z.string().optional(),
-      path: z.string(),
-      equals: z.unknown().optional(),
-      /**
-       * Treat this as an INVARIANT that must still hold AFTER the action settles, rather than a
-       * condition to wait for. Set it for a blast-radius check ("this unrelated path must NOT have
-       * moved") — without it a wait-until-true read passes before an over-reaching side-effect lands.
-       */
-      hold: z.boolean().optional(),
-    })
-    .optional(),
-});
+/**
+ * A post-condition a step asserts (compiled from a structured annotation; optional).
+ *
+ * Strict, at every nesting level: an unrecognized key (a typo, or a predicate kind this schema
+ * doesn't model, e.g. `allOf`, or a typo'd `net`/`console`/`element`/`state` sub-field) must fail
+ * to parse instead of being silently dropped. A loose z.object() here would quietly discard the
+ * extra key and leave the step with a weaker (or empty) assertion than its author wrote — the
+ * flow then replays green against nothing, having proved no real regression.
+ */
+export const FlowExpectSchema = z
+  .object({
+    signal: z.string().optional(),
+    /**
+     * Optional payload shape an `assert-signal` annotation requires the signal
+     * to match (the predicate DSL's signal.dataMatches). Additive/optional — a flow file with a
+     * bare `signal` still parses, and the on-disk version stays FLOW_FILE_VERSION 1.
+     */
+    signalData: z.record(z.unknown()).optional(),
+    /**
+     * Exact number of times the signal must have fired — the signal-side twin of `net.count`, and the
+     * only way a saved flow can keep a cardinality the agent actually asserted. Without it a
+     * `count: 1` drive would be recorded as bare presence, which is a strictly WEAKER claim than the
+     * one made: the replayed flow then goes green on the double-fire it was recorded to catch.
+     * Additive/optional — a flow file with a bare `signal` still parses, and FLOW_FILE_VERSION stays 1.
+     */
+    signalCount: z.number().int().nonnegative().optional(),
+    net: z
+      .object({
+        method: z.string().optional(),
+        urlContains: z.string().optional(),
+        status: z.number().optional(),
+        /**
+         * Exact number of matching requests since the action — turns presence into a cardinality
+         * assertion. Catches the double-submit / useEffect-double-fire / retry-storm regression class:
+         * the request fired (presence passes) but fired the WRONG number of times. Omit = presence (≥1).
+         */
+        count: z.number().int().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
+    /**
+     * Console golden end-condition: assert the action logged (or, with absent:true, did NOT log) a
+     * console message at `level` (default 'error'). `absent:true` is the common case — "the action
+     * completed with a clean console" — catching the regression where an action throws a caught error
+     * / logs an uncaught rejection while the UI still renders fine (a presence check passes it).
+     */
+    console: z
+      .object({
+        level: z.string().optional(),
+        absent: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    element: z
+      .object({
+        testid: z.string().optional(),
+        role: z.string().optional(),
+        name: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+    /**
+     * Assert a registered store's value — the source of truth no DOM/network read can reach. Compiles
+     * to the predicate engine's `state` predicate. Additive/optional — a flow without it still parses
+     * and the on-disk version stays FLOW_FILE_VERSION 1. `equals` accepts a literal, omitted = presence,
+     * or a `{ $gte | $contains | $length }` operator pattern.
+     */
+    state: z
+      .object({
+        store: z.string().optional(),
+        path: z.string(),
+        equals: z.unknown().optional(),
+        /**
+         * Treat this as an INVARIANT that must still hold AFTER the action settles, rather than a
+         * condition to wait for. Set it for a blast-radius check ("this unrelated path must NOT have
+         * moved") — without it a wait-until-true read passes before an over-reaching side-effect lands.
+         */
+        hold: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 export type FlowExpect = z.infer<typeof FlowExpectSchema>;
 
 /** One step of a flow: an anchored action (+ optional expectation). */
@@ -321,6 +335,21 @@ export interface FlowReplayResult {
    * envelope, or a fall-back note below N=3 runs). Additive; present when segments were observed.
    */
   deviation?: unknown;
+  /**
+   * What the project already knows about this flow, fetched from shared memory on the agent's
+   * behalf.
+   *
+   * Present only when the project is linked, memory sync is on, and the team has actually captured
+   * something about this flow. Consulting shared memory used to be a separate act an agent had to
+   * remember to perform — measured across a real corpus, every subject showed zero reads, not
+   * because the knowledge was useless but because nothing ever asked for it. A verification that
+   * asks on the agent's behalf is the difference between memory the platform stores and memory the
+   * platform uses.
+   *
+   * Deliberately additive and deliberately small: a verdict whose own result has been pushed below
+   * a wall of statements is a worse verdict.
+   */
+  knows?: { statement: string; status: string }[];
 }
 
 /**

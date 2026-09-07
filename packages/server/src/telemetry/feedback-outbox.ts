@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { ReticleDir } from '@reticlehq/core';
 
 /** One queued report: the payload, plus what is needed to find and remove it again. */
-export interface OutboxEntry {
+interface OutboxEntry {
   id: string;
   t: string;
   payload: unknown;

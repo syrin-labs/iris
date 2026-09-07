@@ -212,7 +212,7 @@ export const FEEDBACK_PROMPT = {
  * calls, assert ZERO, verification_completed 2. Agents were verifying the entire time and the metric
  * could not see it. The contract test now checks the SHAPE instead.
  */
-export const VERIFICATION_TOOLS: ReadonlySet<string> = new Set([
+export const VERDICT_TOOLS: ReadonlySet<string> = new Set([
   ReticleTool.ACT_AND_WAIT,
   ReticleTool.ASSERT,
   // Merged: `flow_verify` and `verify_change` are actions on this tool now. Naming the merged tool
@@ -248,7 +248,7 @@ let verificationsSincePrompt = 0;
  * collect is worse than not asking: it spends their attention on a message with nowhere to go.
  */
 export function takeFeedbackPrompt(toolName: string): typeof FEEDBACK_PROMPT | undefined {
-  if (!VERIFICATION_TOOLS.has(toolName)) return undefined;
+  if (!VERDICT_TOOLS.has(toolName)) return undefined;
   if (feedbackDisabled() || !getTelemetry().enabled) return undefined;
   if (promptsDelivered >= MAX_PROMPTS_PER_PROCESS) return undefined;
   // The very first verification asks immediately; later ones only after another run of work, so the

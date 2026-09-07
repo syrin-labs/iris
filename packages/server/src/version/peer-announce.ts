@@ -13,7 +13,7 @@
  */
 import { CONTRACT_FINGERPRINT } from '@reticlehq/core';
 import { SERVER_VERSION } from './server-version.js';
-import { describeSkew, DAEMON_FIX, SkewPair } from './version-skew.js';
+import { daemonFix, describeSkew, SkewPair } from './version-skew.js';
 import { noteVersionSkew } from './version-nudge.js';
 
 export const PEER_VERSION_PARAM = 'peerVersion';
@@ -26,7 +26,9 @@ export function noteAgentPeer(version: string | null, contract: string | null): 
       what: "the agent's MCP server",
       version: version ?? undefined,
       contract: contract ?? undefined,
-      fix: DAEMON_FIX,
+      // Inverted from cli-launch: here THIS process is the daemon and the peer is the agent's
+      // MCP server, so the daemon is the newer half whenever the announcing agent is behind.
+      fix: daemonFix(SERVER_VERSION, version ?? undefined),
     },
     { version: SERVER_VERSION, contract: CONTRACT_FINGERPRINT },
   );

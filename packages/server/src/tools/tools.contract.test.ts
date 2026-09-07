@@ -87,7 +87,10 @@ function memoryFs(): FileSystemPort {
       return Promise.resolve();
     },
     stat() {
-      return Promise.resolve({ mtimeMs: 0 });
+      return Promise.resolve({ mtimeMs: 0, size: 0 });
+    },
+    realpath(path: string) {
+      return Promise.resolve(path);
     },
     isNotFound(error) {
       return 'ENOENT' === (error as NodeJS.ErrnoException | undefined)?.code;

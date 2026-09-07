@@ -1,3 +1,4 @@
+import { carryReticleIdentity } from './lease-tools.js';
 import { z } from 'zod';
 import { navigateResult } from './navigate-result.js';
 import { awaitArrival } from './navigate-arrival.js';
@@ -69,11 +70,15 @@ export const BROWSER_TOOLS: ToolDef[] = [
         // likely to need it. See reload-result.
         return reloadResult(back);
       }
-      const url = asString(args['url']);
-      if (url === undefined || 0 === url.length) return { ok: false, reason: 'url required' };
+      const requested = asString(args['url']);
+      if (requested === undefined || 0 === requested.length)
+        return { ok: false, reason: 'url required' };
       // Record navigate as an action. Its window is usually empty (the page unloads and the SDK
       // reconnects), but the action record itself — "navigated to X" — is the causal fact worth keeping.
       const session = deps.sessions.resolve(asString(args['sessionId']));
+      // A leased tab is addressed by a URL param, so navigating away from it used to strand the
+      // lease — see carryReticleIdentity. A tab that claims no identity is untouched.
+      const url = carryReticleIdentity(session.url, requested);
       session.beginAction(ReticleTool.NAVIGATE, { url });
       // Same floor as the reload path above, for the same reason: going to a new URL replaces the
       // document just as thoroughly. `beginAction` attributes events to this action; it does not move
@@ -94,27 +99,6 @@ export const BROWSER_TOOLS: ToolDef[] = [
       } finally {
         session.finishAction();
       }
-    },
-  },
-  {
-    name: ReticleTool.REFRESH,
-    description:
-      'Reload the connected browser tab. Pass { hard: true } to bypass the browser cache (equivalent to Cmd+Shift+R). The SDK reconnects automatically after the reload.',
-    inputSchema: {
-      hard: z
-        .boolean()
-        .optional()
-        .describe('Set true to bypass the browser cache. Default: false (normal reload).'),
-      ...sessionIdShape,
-    },
-    outputSchema: {
-      ok: z.boolean(),
-    },
-    handler: async (deps, args) => {
-      await commandOrThrow(deps, asString(args['sessionId']), ReticleCommand.REFRESH, {
-        hard: true === args['hard'],
-      });
-      return { ok: true };
     },
   },
 ];

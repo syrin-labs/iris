@@ -12,12 +12,17 @@
  * would find policy strings in test fixtures and documentation.
  */
 
-import { cspConnectSrcProblem, devCspAddition } from './csp-check.js';
+import {
+  cspConnectSrcProblem,
+  cspInlineScriptProblem,
+  devCspAddition,
+  externalScriptRemedy,
+} from './csp-check.js';
 
 /** Read a project-relative file, or undefined when it is absent/unreadable. */
 type ReadFile = (relative: string) => string | undefined;
 
-export interface CspDiagnosis {
+interface CspDiagnosis {
   /** Which file to look at. */
   file: string;
   /** What is wrong, in one line. */
@@ -32,7 +37,7 @@ export interface CspDiagnosis {
  * Next config and middleware cover `headers()` and the edge-middleware style; the layouts and the
  * plain `index.html` cover the `<meta http-equiv>` style. Both reported cases were in this list.
  */
-const CSP_FILES: readonly string[] = [
+export const CSP_FILES: readonly string[] = [
   'next.config.js',
   'next.config.mjs',
   'next.config.ts',
@@ -45,15 +50,32 @@ const CSP_FILES: readonly string[] = [
   'pages/_document.js',
   'index.html',
   'public/index.html',
+  // Vite puts the entry HTML at the project root; electron-vite and Tauri put the RENDERER's one
+  // under src/. MarkText declares its policy in `src/renderer/index.html`, and a desktop app is the
+  // likeliest place to meet a strict CSP at all — Electron's own security guidance asks for one.
+  'src/index.html',
+  'src/renderer/index.html',
   'vercel.json',
   'netlify.toml',
 ];
 
-export function diagnoseWebCsp(read: ReadFile, port: number): CspDiagnosis[] {
+export function diagnoseWebCsp(
+  read: ReadFile,
+  port: number,
+  alsoCheck: readonly string[] = [],
+): CspDiagnosis[] {
   const findings: CspDiagnosis[] = [];
-  for (const file of CSP_FILES) {
+  for (const file of [...alsoCheck, ...CSP_FILES]) {
     const source = read(file);
     if (source === undefined) continue;
+    // `script-src` first, because it is the earlier failure. A policy that blocks the inline
+    // snippet means there is no SDK at all, so a `connect-src` finding on the same file would be
+    // describing a socket that is never opened -- true, and the wrong thing to fix first (#679).
+    const inline = cspInlineScriptProblem(source, port);
+    if (inline !== undefined) {
+      findings.push({ file, problem: inline, fix: externalScriptRemedy() });
+      continue;
+    }
     const problem = cspConnectSrcProblem(source, port);
     if (problem === undefined) continue;
     findings.push({ file, problem, fix: devCspAddition(port) });

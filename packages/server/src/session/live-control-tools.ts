@@ -9,14 +9,8 @@ import {
 } from '@reticlehq/core';
 import { ReticleTool } from '../tools/tool-names.js';
 import { sessionIdShape } from '../tools/tool-kit.js';
-import { asNumber, asString } from '../tools/tools-helpers.js';
-import { waitForReady, RETICLE_LOOP_GUIDE } from './session-readiness.js';
-import { recoveryFor } from '../tools/error-recovery.js';
+import { asString } from '../tools/tools-helpers.js';
 import type { ToolDef } from '../tools/tools.js';
-
-/** Default + ceiling for the readiness wait — keep it short so a truly-missing app fails fast. */
-const WAIT_READY_DEFAULT_MS = 5000;
-const WAIT_READY_MAX_MS = 30000;
 
 /**
  * Is this a turn ending with nothing attached, rather than a call about a specific tab?
@@ -248,43 +242,6 @@ export const LIVE_CONTROL_TOOLS: ToolDef[] = [
       if (resolved !== undefined) out.resolved = resolved;
       if (resolvedNote !== undefined) out.resolvedNote = resolvedNote;
       return Promise.resolve(out);
-    },
-  },
-  {
-    name: ReticleTool.WAIT_READY,
-    description:
-      'Block until the app is connected, then continue — call this once right after init so your ' +
-      'first real tool call does not lose the race with the SDK connecting its WebSocket. Returns as ' +
-      'soon as a session exists (no latency if one already does), or after `timeoutMs` with a ' +
-      'recovery hint if none appears.',
-    inputSchema: {
-      timeoutMs: z
-        .number()
-        .optional()
-        .describe('How long to wait for a session (ms). Default 5000, max 30000.'),
-    },
-    outputSchema: {
-      ready: z.boolean(),
-      sessionCount: z.number(),
-      loop: z.string().optional(),
-      recovery: z.string().optional(),
-    },
-    handler: async (deps, args) => {
-      const requested = asNumber(args['timeoutMs']) ?? WAIT_READY_DEFAULT_MS;
-      const timeoutMs = Math.max(0, Math.min(requested, WAIT_READY_MAX_MS));
-      const ready = await waitForReady({
-        count: () => deps.sessions.count(),
-        timeoutMs,
-        now: deps.now,
-        sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
-      });
-      // The first response a fresh agent gets — carry the loop guide so it learns how to drive Reticle.
-      if (ready)
-        return { ready: true, sessionCount: deps.sessions.count(), loop: RETICLE_LOOP_GUIDE };
-      const recovery = recoveryFor('no browser session connected');
-      return recovery !== undefined
-        ? { ready: false, sessionCount: 0, recovery }
-        : { ready: false, sessionCount: 0 };
     },
   },
 ];

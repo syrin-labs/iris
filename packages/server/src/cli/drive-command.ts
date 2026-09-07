@@ -19,6 +19,7 @@ import {
   decideDriveMode,
   describeAttached,
   driveForeignHolder,
+  driveHeadlessOnAttach,
   driveRaceLost,
   requestDriveSession,
 } from './drive-attach.js';
@@ -59,7 +60,7 @@ async function driveWithHonestConflict(parsed: {
     return;
   }
   if (DriveMode.ATTACH === mode) {
-    await attachToRunningDaemon(parsed.port, parsed.driveUrl);
+    await attachToRunningDaemon(parsed.port, parsed.driveUrl, parsed.headless);
     return;
   }
   // The probe cannot close the race: something can take the port between here and the bind, and the
@@ -96,7 +97,7 @@ async function driveWithHonestConflict(parsed: {
  * against it renews its lease), and a foreground hold here could only keep it alive by faking tool
  * calls at it.
  */
-async function attachToRunningDaemon(port: number, url: string): Promise<void> {
+async function attachToRunningDaemon(port: number, url: string, headless: boolean): Promise<void> {
   const result = await requestDriveSession(port, url);
   if (!result.ok) {
     log('reticle_drive_attach_failed', { port, url, reason: result.reason });
@@ -111,6 +112,9 @@ async function attachToRunningDaemon(port: number, url: string): Promise<void> {
     ready: result.session.ready,
   });
   process.stderr.write(`${describeAttached(port, url, result.session)}\n`);
+  // The command's own default is headed, and this path cannot deliver that. Said out loud rather
+  // than left for the user to discover by watching a window that never opens.
+  if (!headless) process.stderr.write(`${driveHeadlessOnAttach(port, url)}\n`);
   // A tab that never connected is not a drive session, and reporting one is the false green this
   // command exists to avoid.
   if (!result.session.ready) process.exit(1);

@@ -159,7 +159,7 @@ export async function probeDevServerStates(
  * still seen at its best — the same "either, not both" rule `anyFamilyServes` follows, extended to
  * three states.
  */
-export async function anyFamilyState(
+async function anyFamilyState(
   port: number,
   probe: (port: number, host: string) => Promise<PortState> = probeState,
 ): Promise<PortState> {

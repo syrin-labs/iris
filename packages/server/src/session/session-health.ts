@@ -61,6 +61,33 @@ export function refuseIfThrottled(session: Session, refuse: unknown): void {
   }
 }
 
+/**
+ * The sentence appended to a FAILED predicate verdict waited out on a throttled tab.
+ *
+ * A starved tab and a missing element read identically as a bare near-miss: after a hard reload a
+ * backgrounded tab can sit on its loading state forever (hydration starved, nothing painted), and
+ * `wait_for { text }` timing out there looks exactly like "the code did not render" (#521). The
+ * health envelope already rode alongside saying `throttled:true`, but nothing connected it to the
+ * verdict an agent actually gates on. Appended, not replacing: the original diagnosis still leads,
+ * and on a healthy tab the failure says exactly what it always said.
+ */
+const STARVED_WAIT_NOTE =
+  ' (the tab was throttled during this wait, so starvation can look exactly like absence: bring it to the front and re-check before concluding this is genuinely missing)';
+
+/**
+ * Suffix the starvation note onto a FAILED predicate verdict when the tab is throttled. A pass is
+ * returned untouched — starvation is context for a failure, not a reason to doubt a hold. Pure and
+ * generic over the verdict shape so assert/wait_for/act_and_wait share one rule.
+ */
+export function annotateStarvedFailure<V extends { pass?: boolean; failureReason?: string }>(
+  session: Session,
+  verdict: V,
+): V {
+  if (true === verdict.pass || verdict.failureReason === undefined) return verdict;
+  if (true !== session.throttled()) return verdict;
+  return { ...verdict, failureReason: `${verdict.failureReason}${STARVED_WAIT_NOTE}` };
+}
+
 /** The page's own visibility/runtime report, narrowed out of an untrusted PAGE_HEALTH payload. */
 interface HealthReport {
   hidden: boolean | undefined;

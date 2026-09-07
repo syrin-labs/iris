@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decideOpen, openCommand, openInBrowser } from './cli-launch.js';
+import { decideOpen, openCommand, openInBrowser, launcherFailure } from './cli-launch.js';
 
 describe('decideOpen', () => {
   it('with no url + a connected tab → reuse it (do not spawn a duplicate)', () => {
@@ -99,5 +99,39 @@ describe('openInBrowser', () => {
       Promise.resolve('spawn xdg-open ENOENT'),
     );
     expect(failure).toBe('spawn xdg-open ENOENT');
+  });
+});
+
+/**
+ * A launcher that STARTS and then fails is the headless case, and it reported success.
+ *
+ * `defaultRun` resolved on the child's `spawn` event, so it answered "did the command begin", not
+ * "did it work". On a box with no browser — CI, a container, an SSH session, WSL with no host
+ * browser — `xdg-open` spawns perfectly well and exits non-zero because there is nothing to open.
+ * Setup then waited out its entire connect budget for a tab that was never going to appear, and
+ * blamed the SDK wiring: the one thing that was fine.
+ *
+ * The exit code is the signal. A launcher hands off and exits immediately on every platform we
+ * support, so waiting for it costs nothing on the path where it works.
+ */
+describe('the browser launcher reports what actually happened', () => {
+  it('treats a clean exit as opened', () => {
+    expect(launcherFailure(0, null)).toBeNull();
+  });
+
+  it('names a non-zero exit, and says what that means on a headless box', () => {
+    const failure = launcherFailure(1, null);
+    expect(failure).toContain('exited 1');
+    expect(failure).toContain('no browser');
+  });
+
+  it('names a signal when one killed it', () => {
+    expect(launcherFailure(null, 'SIGTERM')).toContain('SIGTERM');
+  });
+
+  // Nothing to report: some desktop launchers stay attached rather than handing off, and a wait
+  // that times out must not invent a failure.
+  it('treats an unknown outcome as opened rather than inventing a failure', () => {
+    expect(launcherFailure(null, null)).toBeNull();
   });
 });

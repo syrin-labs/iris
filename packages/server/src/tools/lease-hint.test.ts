@@ -48,3 +48,48 @@ describe('leaseNotConnectedHint', () => {
     expect(hint).toMatch(/check|run |restart|match/i);
   });
 });
+
+/**
+ * The one cause the hint could never name, because it was the one thing it never asked about.
+ *
+ * A leased page that dials a DIFFERENT port than the daemon it was leased by produces no refusal
+ * here — the dial never arrives, so `lastClosure()` is silent and every ranked branch falls through
+ * to a differential that lists the port mismatch last, or not at all. Driven on the bench fixture:
+ * the app dialled 4460, the daemon was on 4400, and the hint answered with four causes, all of which
+ * presuppose the port is right. It cost a quarter of an hour to find by hand.
+ *
+ * The page already knows. Its own unreachable warning names the URL it tried, and the pool owns that
+ * browser — so the daemon can read the address off the page's console and compare it with the port
+ * it is bound to. Neither half can diagnose this alone: the page cannot tell an absent daemon from
+ * an unreachable one, and the daemon cannot see a dial that never arrived.
+ */
+describe('a page that dialled somewhere else', () => {
+  it('names both ports instead of listing causes that assume the port is right', () => {
+    const hint = leaseNotConnectedHint('http://localhost:4312/', 4400, {
+      dialledUrl: 'ws://localhost:4460/reticle',
+      previouslyConnected: true,
+      initialized: true,
+      sdkMarker: true,
+    });
+    expect(hint).toContain('4460');
+    expect(hint).toContain('4400');
+  });
+
+  it('outranks every inferred cause, because it is the only one with proof', () => {
+    const hint = leaseNotConnectedHint('http://localhost:4312/', 4400, {
+      dialledUrl: 'ws://localhost:4460/reticle',
+      previouslyConnected: true,
+      initialized: true,
+    });
+    // The four-cause differential presupposes the dial reached this daemon. It did not.
+    expect(hint).not.toContain('dev-mode guard');
+  });
+
+  it('says nothing when the page dialled this very daemon — then the port is exonerated', () => {
+    const hint = leaseNotConnectedHint('http://localhost:4312/', 4400, {
+      dialledUrl: 'ws://localhost:4400/reticle',
+      initialized: true,
+    });
+    expect(hint).not.toMatch(/dialled a different|different port/i);
+  });
+});

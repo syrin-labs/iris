@@ -2444,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "reticle-tauri"
-version = "0.1.0"
+version = "2.13.1"
 dependencies = [
  "block2",
  "cairo-rs",

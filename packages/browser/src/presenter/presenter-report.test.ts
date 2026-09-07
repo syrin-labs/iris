@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { emptyImpactCounts, emptyImpactRecords, estimateImpactSavings } from '@reticlehq/core';
-import type { ImpactScope } from '@reticlehq/core';
-import { reportBodyHtml } from './presenter-report.js';
+import type { ImpactDefect, ImpactScope, ImpactSnapshot } from '@reticlehq/core';
+import { PresenterReport, reportBodyHtml, reportPanelHtml } from './presenter-report.js';
 import {
   buildLinkedInShareUrl,
   buildShareText,
@@ -10,7 +10,10 @@ import {
   compactNumber,
 } from './presenter-report-copy.js';
 
-function scope(over: Partial<ReturnType<typeof emptyImpactCounts>> = {}): ImpactScope {
+function scope(
+  over: Partial<ReturnType<typeof emptyImpactCounts>> = {},
+  defects: ImpactDefect[] = [],
+): ImpactScope {
   const counts = { ...emptyImpactCounts(), ...over };
   return {
     counts,
@@ -18,15 +21,25 @@ function scope(over: Partial<ReturnType<typeof emptyImpactCounts>> = {}): Impact
     records: { ...emptyImpactRecords(), longestRunMs: 92_000 },
     savings: estimateImpactSavings(counts),
     since: 0,
+    defects,
   };
 }
 
+const defect = (over: Partial<ImpactDefect> = {}): ImpactDefect => ({
+  at: 1,
+  title: 'Sign In',
+  ...over,
+});
+
 describe('the impact report', () => {
-  it('leads with defects caught and shows unknowns rather than hiding them', () => {
+  it('leads with what it refused to pass, and shows unknowns rather than hiding them', () => {
     const html = reportBodyHtml(
       scope({ calls: 40, verdicts: 12, passed: 9, failed: 2, unknown: 1 }),
     );
-    expect(html).toContain('defects caught');
+    // Not "defects caught": a failed verdict is equally the shape of a wrong assertion, and a
+    // verification tool must not overclaim in that direction. What is true of both is that Reticle
+    // refused to pass them.
+    expect(html).toContain('refused to pass');
     expect(html).toContain('unknown');
   });
 
@@ -47,6 +60,41 @@ describe('the impact report', () => {
 });
 
 /**
+ * The only place the product tells an unlinked user a dashboard exists.
+ *
+ * Before this, every dashboard mention in the HUD was gated on `dashboardUrl`, which is read from a
+ * repo's cloud.json — so the person who had never linked, the only one who needed telling, was the
+ * one person never told. The rest of these tests exist because the fix for that is one line away
+ * from being a nag, and a nag in a verification tool costs more trust than the conversion is worth.
+ */
+describe('what an UNLINKED user is told about the dashboard', () => {
+  const withVerdicts = scope({ calls: 40, verdicts: 12, passed: 9, failed: 2, unknown: 1 });
+
+  it('names the one command, once, when there is a record worth keeping', () => {
+    const html = reportBodyHtml(withVerdicts);
+    expect(html).toContain('This record stops at this machine.');
+    expect(html).toContain('reticle login');
+    // Once. A second mention in the same panel is where a line becomes a nag.
+    expect(html.split('reticle login').length - 1).toBe(1);
+  });
+
+  it('goes silent the moment the repo is linked', () => {
+    // A linked user is already reporting; telling them to log in is noise that reads as a bug.
+    const html = reportBodyHtml(withVerdicts, 'https://app.reticle.sh/o/acme');
+    expect(html).not.toContain('This record stops at this machine.');
+  });
+
+  it('offers nothing when there is nothing yet to keep', () => {
+    // Gated on a VERDICT, not on tool calls: somebody who has driven the app but proved nothing has
+    // not yet received the thing this offers to preserve, and an offer to keep nothing is an advert.
+    expect(reportBodyHtml(scope({ calls: 40 }))).not.toContain(
+      'This record stops at this machine.',
+    );
+    expect(reportBodyHtml(scope())).not.toContain('This record stops at this machine.');
+  });
+});
+
+/**
  * The public card is a different audience from the private report.
  *
  * Estimated savings are the most-mocked class of number in AI tooling, and a percentile without a
@@ -57,7 +105,7 @@ describe('the share text', () => {
   it('leads with verdicts and defects, and never carries an estimate', () => {
     const text = buildShareText(scope({ verdicts: 217, failed: 9, unknown: 14 }), 'checkout-app');
     expect(text).toContain('217');
-    expect(text).toContain('9 defects');
+    expect(text).toContain('9 checks it refused to pass');
     expect(text).toContain('unknown');
     expect(text).toContain('checkout-app');
     expect(text).not.toMatch(/saved|estimate/i);
@@ -122,7 +170,9 @@ describe('the pushed impact record reaches the panel', () => {
     const btn = document.querySelector('[data-reticle-report-btn]');
     (btn as HTMLElement | null)?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     const body = document.querySelector('[data-reticle-report-body]');
-    expect(body?.textContent, 'the pushed record is what the panel shows').toContain('defects');
+    expect(body?.textContent, 'the pushed record is what the panel shows').toContain(
+      'refused to pass',
+    );
     expect(body?.textContent).toContain('1');
     p.destroy();
   });
@@ -266,5 +316,165 @@ describe('paused and ended keep the status colour', () => {
     expect(SHELL_CSS, 'the accent follows the state colour').toContain(
       '--reticle-accent:var(--reticle-state)',
     );
+  });
+});
+
+/**
+ * The short list of what broke.
+ *
+ * The hero number says HOW MANY; this says WHICH ONES, which is the difference between a statistic
+ * and something a person can act on. The link is the only place the free tool points at the paid
+ * one, so it must appear exactly when there IS one and never nag when there is not.
+ */
+describe('what broke', () => {
+  it('names the defects, not just how many there were', () => {
+    const html = reportBodyHtml(scope({ calls: 5, failed: 1 }, [defect({ title: 'Sign In' })]));
+    expect(html).toContain('Sign In');
+    expect(html).toContain('What broke');
+  });
+
+  it('shows the reason and the source line beside the name', () => {
+    const html = reportBodyHtml(
+      scope({ calls: 5, failed: 1 }, [
+        defect({ detail: 'the route never changed', source: 'src/login.tsx:42' }),
+      ]),
+    );
+    expect(html).toContain('the route never changed');
+    expect(html).toContain('src/login.tsx:42');
+  });
+
+  it('escapes text that came from the app under test', () => {
+    // The title is an element's accessible name — the CONTENT of somebody else's page, rendered
+    // into this panel's innerHTML. It is the first app-derived string the report has ever shown.
+    const html = reportBodyHtml(
+      scope({ calls: 5, failed: 1 }, [defect({ title: '<img src=x onerror=alert(1)>' })]),
+    );
+    expect(html).not.toContain('<img src=x');
+    expect(html).toContain('&lt;img src=x');
+  });
+
+  it('shows NO link when the project is not linked to a workspace', () => {
+    // The free tool is complete on its own. An unlinked project gets its list and no advertisement.
+    const html = reportBodyHtml(scope({ calls: 5, failed: 1 }, [defect()]));
+    expect(html).not.toContain('dashboard');
+  });
+
+  it('links to the dashboard when there is one', () => {
+    const html = reportBodyHtml(
+      scope({ calls: 5, failed: 1 }, [defect()]),
+      'https://console.test/issues?project=web',
+    );
+    expect(html).toContain('https://console.test/issues?project=web');
+    expect(html).toContain('Manage all of them on the dashboard');
+  });
+
+  it('counts the rest only when there IS a rest — 3 shown of 3 is not "and more"', () => {
+    const three = [defect({ title: 'a' }), defect({ title: 'b' }), defect({ title: 'c' })];
+    const exact = reportBodyHtml(scope({ calls: 9, failed: 3 }, three), 'https://console.test/i');
+    expect(exact).not.toContain('(3)');
+    const more = reportBodyHtml(scope({ calls: 9, failed: 40 }, three), 'https://console.test/i');
+    expect(more).toContain('(40)');
+  });
+
+  it('renders nothing at all when nothing has broken', () => {
+    const html = reportBodyHtml(scope({ calls: 5, passed: 5 }));
+    expect(html).not.toContain('What broke');
+  });
+});
+
+/**
+ * The JOIN: a snapshot arriving from the daemon, through the real controller, into painted DOM.
+ *
+ * Every test above checks the render FUNCTION. This one mounts the panel the user actually opens,
+ * hands it the shape the daemon really pushes, and reads what ends up on screen — because a correct
+ * renderer wired to the wrong field paints nothing, and a function test cannot tell you that.
+ *
+ * It exists because this hop turned out to be the one an agent cannot drive: Reticle deliberately
+ * hides its own presenter chrome from the tool surface, so `reticle_query` cannot see the toolbar
+ * button and no verdict can be drawn against this panel. Mounted DOM is the strongest check left.
+ */
+describe('a snapshot from the daemon, painted', () => {
+  const mountPanel = (): { root: HTMLElement; report: PresenterReport } => {
+    const root = document.createElement('div');
+    root.innerHTML = reportPanelHtml();
+    document.body.appendChild(root);
+    const report = new PresenterReport();
+    report.mount(root);
+    return { root, report };
+  };
+
+  const snapshotWith = (defects: ImpactDefect[], dashboardUrl?: string): ImpactSnapshot => ({
+    schemaVersion: 1,
+    project: scope({ calls: 12, verdicts: 4, passed: 2, failed: 2 }, defects),
+    global: scope({ calls: 99, verdicts: 9, passed: 7, failed: 2 }, defects),
+    ...(dashboardUrl === undefined ? {} : { dashboardUrl }),
+  });
+
+  it('paints the defects the daemon sent into the open panel', () => {
+    const { root, report } = mountPanel();
+    report.setSnapshot(
+      snapshotWith([
+        { at: 1, title: 'Sign in', detail: "expected '/billing'", source: 'src/Login.tsx:81' },
+      ]),
+    );
+    report.open();
+    const body = root.querySelector('[data-reticle-report-body]')?.textContent ?? '';
+    expect(body).toContain('Sign in');
+    expect(body).toContain("expected '/billing'");
+    expect(body).toContain('src/Login.tsx:81');
+  });
+
+  it('renders the link as a real anchor pointing at the dashboard', () => {
+    const { root, report } = mountPanel();
+    report.setSnapshot(snapshotWith([{ at: 1, title: 'Sign in' }], 'https://console.test/issues'));
+    report.open();
+    const link = root.querySelector<HTMLAnchorElement>('.reticle-report-defects-more');
+    expect(link?.getAttribute('href')).toBe('https://console.test/issues');
+    // Opening someone else's origin from inside their app: both, or the new tab can reach back.
+    expect(link?.getAttribute('rel')).toContain('noopener');
+    expect(link?.getAttribute('target')).toBe('_blank');
+  });
+
+  it('paints no link at all when the project is not linked', () => {
+    const { root, report } = mountPanel();
+    report.setSnapshot(snapshotWith([{ at: 1, title: 'Sign in' }]));
+    report.open();
+    expect(root.querySelector('.reticle-report-defects-more')).toBeNull();
+  });
+
+  it('escapes app-derived text on the way into the live DOM, not just in the string', () => {
+    const { root, report } = mountPanel();
+    report.setSnapshot(snapshotWith([{ at: 1, title: '<img src=x onerror=alert(1)>' }]));
+    report.open();
+    // The payload must have landed as TEXT: no element created, and the characters still readable.
+    expect(root.querySelector('.reticle-report-defects img')).toBeNull();
+    expect(root.querySelector('.reticle-report-defect-title')?.textContent).toBe(
+      '<img src=x onerror=alert(1)>',
+    );
+  });
+
+  it('repaints in place when a later snapshot arrives while the panel is open', () => {
+    // The daemon pushes on every tool call, so a panel left open must follow the record rather than
+    // freeze on whatever it held when it was opened.
+    const { root, report } = mountPanel();
+    report.setSnapshot(snapshotWith([{ at: 1, title: 'first' }]));
+    report.open();
+    report.setSnapshot(
+      snapshotWith([
+        { at: 2, title: 'second' },
+        { at: 1, title: 'first' },
+      ]),
+    );
+    const body = root.querySelector('[data-reticle-report-body]')?.textContent ?? '';
+    expect(body).toContain('second');
+  });
+
+  it('switches to the machine-wide scope when the toggle is pressed', () => {
+    const { root, report } = mountPanel();
+    report.setSnapshot(snapshotWith([{ at: 1, title: 'Sign in' }]));
+    report.open();
+    root.querySelector<HTMLButtonElement>('[data-reticle-report-scope]')?.click();
+    const body = root.querySelector('[data-reticle-report-body]')?.textContent ?? '';
+    expect(body).toContain('Sign in');
   });
 });

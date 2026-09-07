@@ -3,7 +3,8 @@ import { NoSessionAction, QueryBy, ReticleCommand, SnapshotMode } from '@reticle
 import { ReticleTool } from './tool-names.js';
 import { withSizeCost } from '../session/output-budget.js';
 import { applySnapshotDelta, SnapshotCache } from './snapshot-delta.js';
-import { asString, asNumber } from './tools-helpers.js';
+import { asRecord, asString, asNumber } from './tools-helpers.js';
+import { countSchema } from './numeric-bounds.js';
 import { normalizeQueryArgs } from './query-shape.js';
 import { paginateQueryResult } from './query-paginate.js';
 
@@ -25,10 +26,11 @@ import { FLOW_TOOLS } from '../flows/flow-tools.js';
 import { INTENT_TOOLS } from '../intent/intent-tools.js';
 import { CONTEXT_TOOLS } from '../runs/context-tools.js';
 import { PROJECT_TOOLS } from '../project/project-tools.js';
+import { MEMORY_TOOLS } from '../memory/memory-tools.js';
 import { RUN_TOOLS } from '../runs/run-tools.js';
 import { VISUAL_TOOLS } from '../visual/visual-tools.js';
 import { AFFECTED_TOOLS } from '../flows/affected-tools.js';
-import { COVERAGE_TOOLS } from './coverage-tools.js';
+import { buildCoverageTools } from './coverage-tools.js';
 import { VERIFY_CHANGE_TOOLS } from '../flows/verify-change-tools.js';
 import { CRAWL_TOOLS } from '../crawl/crawl-tools.js';
 import { SCROLL_TOOLS } from '../input/scroll-tools.js';
@@ -52,11 +54,12 @@ export type { ToolDef, ToolDeps } from './tool-kit.js';
 /** Per-server last-snapshot cache backing reticle_snapshot's diff:true delta mode (route-invalidated). */
 const SNAPSHOT_CACHE = new SnapshotCache();
 
-const RAW_TOOLS: ToolDef[] = [
+/** Every handler, including tools retired from the advertised MCP surface. */
+export const RAW_TOOLS: ToolDef[] = [
   {
     name: ReticleTool.SESSIONS,
     description:
-      'List connected browser sessions (tab url/title, sessionId, last-seen, health: hidden/focused/throttled, and `realInputAvailable` — true when native CDP/launched real input is driving this tab), plus a `recommendation` pointing to `reticle drive` when a tab is hidden/throttled and may be un-scriptable from here.',
+      'List connected browser sessions (tab url/title, sessionId, last-seen, health: hidden/focused/throttled, and `realInputAvailable` — true when native CDP/launched real input is driving this tab), plus a `recommendation` naming the in-protocol escape hatch (`reticle_run { tool: "reticle_lease" }`, with `reticle drive` as the human-side equivalent) when a tab is hidden/throttled and may be un-scriptable from here.',
     inputSchema: {},
     outputSchema: {
       sessions: z
@@ -70,6 +73,12 @@ const RAW_TOOLS: ToolDef[] = [
             title: z.string().optional(),
             adapters: z.array(z.string()),
             hasCapabilities: z.boolean(),
+            runtime: z
+              .string()
+              .optional()
+              .describe(
+                "Which shell answered: web, electron or tauri. Absent on an SDK too old to report one — never defaulted, because a browser tab and a desktop window on the same url are otherwise indistinguishable and only one of them has the app's IPC.",
+              ),
             versionSkew: z
               .string()
               .optional()
@@ -84,9 +93,30 @@ const RAW_TOOLS: ToolDef[] = [
             leased: z.boolean().optional(),
             stale: z.boolean().optional(),
             cleanup_suggestion: z.string().optional(),
+            unresponsive: z
+              .literal(true)
+              .optional()
+              .describe(
+                'Present only when this tab is attached but has stopped answering commands: every call against it will time out. The other health fields still look fine, which is what makes this state invisible without the flag.',
+              ),
+            unresponsive_suggestion: z.string().optional(),
             pendingMarks: z.number().optional(),
             review_suggestion: z.string().optional(),
             recommendation: z.string().optional(),
+            // Attached by SessionManager.list() (#117): whether this tab ever dropped and came back,
+            // how often, and how long the last drop lasted. Undeclared here, a validating client
+            // stripped the outage history while the row still looked complete — a verdict over a
+            // window with a four-second blind gap read as trustworthy.
+            attachment: z
+              .object({
+                connectedSinceMs: z.number(),
+                outages: z.number(),
+                lastOutage: z.object({ startedMs: z.number(), durationMs: z.number() }).optional(),
+              })
+              .optional()
+              .describe(
+                'Present only when this tab has dropped and reconnected at least once: how long it has been attached in total, how many outages occurred, and when the last one started and how long it lasted. A verdict over this window spans a gap where nothing was observed.',
+              ),
           }),
         )
         .describe(
@@ -107,7 +137,7 @@ const RAW_TOOLS: ToolDef[] = [
         })
         .optional()
         .describe(
-          "Present ONLY when `sessions` is empty: the same answer as `why`, executable. `command` is the LITERAL command to run, sourced from this project's own package.json scripts and lockfile — it is absent, never guessed, when the project declares no dev script. `action` is one of start_dev_server | run_init | open_app | reopen_app.",
+          "Present ONLY when `sessions` is empty: the same answer as `why`, executable. `command` is the LITERAL command to run, sourced from this project's own package.json scripts and lockfile — it is absent, never guessed, when the project declares no dev script. `action` is one of daemon_split | start_dev_server | run_init | open_app | reopen_app. `daemon_split` outranks the rest and means the app IS running and instrumented, on a DIFFERENT daemon than the one you are attached to — do not start or re-init anything, read `reason`.",
         ),
     },
     handler: async (deps) => {
@@ -244,15 +274,21 @@ const RAW_TOOLS: ToolDef[] = [
         mode,
       }).then((raw) =>
         withSizeCost(
-          applySnapshotDelta(
-            raw,
-            {
-              sessionId: resolved.id,
-              scope: asString(args['scope']) ?? '',
+          noteHiddenPage(
+            noteEmptyLeanTree(
+              applySnapshotDelta(
+                raw,
+                {
+                  sessionId: resolved.id,
+                  scope: asString(args['scope']) ?? '',
+                  mode,
+                  diff: true === args['diff'],
+                },
+                SNAPSHOT_CACHE,
+              ),
               mode,
-              diff: true === args['diff'],
-            },
-            SNAPSHOT_CACHE,
+            ),
+            mode,
           ),
         ),
       );
@@ -261,7 +297,7 @@ const RAW_TOOLS: ToolDef[] = [
   {
     name: ReticleTool.QUERY,
     example: { by: 'testid', value: 'todo-list' },
-    description: `Find elements by Testing-Library semantics, INCLUDING open shadow roots — \`count_only:true\` gives just the count (~30x smaller); \`limit\` caps descriptors. Pass \`by\` (${QUERY_BY_LIST}) and \`value\` (the query string). Returns matching refs + descriptors + visibility. Pass \`attrs:["href"]\` to project attributes (link/image URLs) onto each match. Pass \`limit\` to cap descriptors (broad role queries can be large) or \`count_only:true\` for just the match count — both cut tokens. On zero matches, also returns hint:{ route, presentRegions[], knownEmptyState } so you can distinguish an empty state from a missing element WITHOUT taking a snapshot.`,
+    description: `Find elements by Testing-Library semantics, INCLUDING open shadow roots — \`count_only:true\` gives just the count (~30x smaller); \`limit\` caps descriptors. Pass \`by\` (${QUERY_BY_LIST}) and \`value\` (the query string). Returns matching refs + descriptors + visibility. Pass \`attrs:["href"]\` to project attributes (link/image URLs) onto each match. Pass \`limit\` to cap descriptors (broad role queries can be large) or \`count_only:true\` for just the match count — both cut tokens. On zero matches, also returns hint:{ route, presentRegions[], knownEmptyState } so you can distinguish an empty state from a missing element WITHOUT taking a snapshot. ASKING SEVERAL QUESTIONS ABOUT THE PAGE? One reticle_snapshot answers them all at once — a run of queries costs a round trip each and returns what the snapshot already held.`,
     inputSchema: {
       // Constrained to the enum, NOT z.string(). A free string let `by:'css'` through to the
       // browser's `default: return []`, so an unsupported strategy answered "0 matches" — which
@@ -296,9 +332,7 @@ const RAW_TOOLS: ToolDef[] = [
         .describe(
           "Attribute names to return per match, e.g. ['href'] to inventory links or ['src'] for images. Absent attributes are omitted; credential-bearing names are redacted.",
         ),
-      limit: z
-        .number()
-        .nonnegative()
+      limit: countSchema
         .optional()
         .describe(
           'Cap the returned descriptors to the first N (cuts tokens on broad queries). If more matched, the result carries total + truncated:true so the trim is never silent — narrow with name/scope.',
@@ -391,6 +425,17 @@ const RAW_TOOLS: ToolDef[] = [
             .describe('Structural clusters on the page — what IS here, to diagnose the miss.'),
           presentTestids: z.array(z.string()).optional(),
           knownEmptyState: z.boolean(),
+          splitText: z
+            .object({
+              ref: z.string().optional(),
+              role: z.string().optional(),
+              name: z.string().optional(),
+            })
+            .passthrough()
+            .optional()
+            .describe(
+              "Present when a TEXT search missed but the string IS on the page, split across this container's children. Retry as { scope: <ref>, self: true } — no text query can match a string no single element owns.",
+            ),
         })
         .optional()
         .describe(
@@ -534,6 +579,7 @@ const RAW_TOOLS: ToolDef[] = [
   ...FLOW_TOOLS,
   // reticle_project (read history + diff-vs-last) / reticle_run_record. See project-tools.ts.
   ...PROJECT_TOOLS,
+  ...MEMORY_TOOLS,
   // reticle_run_export — export the verification-run verdict artifact (.reticle/runs/). See run-tools.ts.
   ...RUN_TOOLS,
   // reticle_screenshot / reticle_visual_diff — opt-in, CDP-driven. See visual-tools.ts.
@@ -552,7 +598,9 @@ const RAW_TOOLS: ToolDef[] = [
   // reachable through reticle_run. See affected-tools.ts.
   ...AFFECTED_TOOLS,
   // reticle_coverage — which controls were driven vs never touched. Unadvertised; via reticle_run.
-  ...COVERAGE_TOOLS,
+  // The table is passed as a thunk so the coverage tool can report which of it was called without
+  // importing it back — see buildCoverageTools. Called from the handler, long after TOOLS exists.
+  ...buildCoverageTools(() => TOOLS.map((t) => t.name)),
   // reticle_verify_change — "did my change break anything" in one call. See verify-change-tools.ts.
   ...VERIFY_CHANGE_TOOLS,
   // Live-control: reticle_end_session / reticle_resume / reticle_messages. See live-control-tools.ts.
@@ -652,5 +700,66 @@ export const RETIRED_FROM_SURFACE: string[] = [
   ReticleTool.REFRESH, // absorbed into reticle_navigate { reload: true }
   ReticleTool.WAIT_READY, // server-internal: the first live call already blocks for the session
 ];
+
+/**
+ * An empty `interactive` tree is a claim, and it is usually the wrong one.
+ *
+ * `mode:"interactive"` filters on ARIA role, and a large share of production UI carries none. On
+ * MarkText — a shipped Electron editor — it returns NOTHING while `mode:"full"` returns 47 nodes,
+ * because its whole block picker is `<div>`s with no role, no testid and no pointer cursor. This
+ * tool's own description recommends the lean mode, so an agent takes the cheap look, is handed `""`,
+ * and reads it as an empty page. It is the one shape of answer this product must never invent.
+ *
+ * The browser counts what leanness passed over, so the tool can say which of the two it is.
+ */
+function noteEmptyLeanTree(result: unknown, mode: string): unknown {
+  if (SnapshotMode.INTERACTIVE !== mode) return result;
+  const row = asRecord(result);
+  if (0 !== asNumber(row['nodes'])) return result;
+  const skipped = asNumber(row['leanSkipped']) ?? 0;
+  if (0 === skipped) return result;
+  return {
+    ...row,
+    note:
+      `no element on this page carries an interactive ARIA role, so this mode found nothing — ` +
+      `${String(skipped)} element(s) were passed over for leanness and this is NOT an empty page. ` +
+      `Take reticle_snapshot { mode: "full" } instead; the controls here are addressed by text or ` +
+      `by testid rather than by role.`,
+  };
+}
+
+/**
+ * An empty tree on a page full of elements is the same claim, from the other cause.
+ *
+ * `noteEmptyLeanTree` covers leanness and returns early for every other mode, so a `full` snapshot
+ * that comes back `{ tree: "", nodes: 0 }` says nothing at all — and that is the shape #672 was
+ * reported as: 44 buttons and 12 textboxes on the page, every one computing hidden, both modes
+ * empty. The reporter spent about six tool calls and a large console dump establishing the page was
+ * fine and the snapshot was wrong, then drove the flow off `reticle_query` refs, which is a
+ * workaround no tool description mentions.
+ *
+ * So the note names the count, says plainly that this is not an empty page, and hands over the path
+ * that does work. It does NOT diagnose why the page is hidden: the walk knows what it skipped and
+ * cannot know why, and a note that guessed would be the same kind of overconfident answer as the
+ * empty tree it replaces.
+ */
+function noteHiddenPage(result: unknown, mode: string): unknown {
+  if (SnapshotMode.STATUS === mode) return result;
+  const row = asRecord(result);
+  if (0 !== asNumber(row['nodes'])) return result;
+  // A note already there is the more specific one (leanness), and two explanations for one empty
+  // tree is worse than the better of them alone.
+  if (row['note'] !== undefined) return result;
+  const skipped = asNumber(row['hiddenSkipped']) ?? 0;
+  if (0 === skipped) return result;
+  return {
+    ...row,
+    note:
+      `this is NOT an empty page: ${String(skipped)} subtree(s) were skipped because their root ` +
+      `computed hidden (aria-hidden, the hidden attribute, or display:none), which is what left the ` +
+      `tree empty. If the page is plainly rendered, the visibility computation is the thing that is ` +
+      `wrong rather than the app — drive it by reticle_query refs, which do not depend on this walk.`,
+  };
+}
 
 export const TOOLS: ToolDef[] = applyMerges(RAW_TOOLS, MERGE_PLANS, RETIRED_FROM_SURFACE);

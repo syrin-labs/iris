@@ -53,9 +53,32 @@ const STORE_LIBRARIES: readonly (readonly [dep: string, hint: string])[] = [
   ['svelte', "registerStore('cart', svelteStore(cartStore))"],
 ];
 
-/** The store libraries this app depends on, as ready-to-uncomment registration lines. */
+/**
+ * Libraries that hand their store to React through a context provider, and therefore need no hint.
+ *
+ * `<Provider store>` and `<QueryClientProvider client>` put the store instance in the fiber tree as
+ * a prop, so the React adapter finds and registers it on the first commit — see `auto-stores.ts` in
+ * `@reticlehq/react`. Offering a commented `registerStore` line for these was asking someone to do
+ * by hand, and be nagged about, work that is already done by the time they read the report.
+ *
+ * Everything absent from this set is module-scope (Zustand, Valtio, a MobX singleton) or needs an
+ * argument only the source supplies (Jotai atoms, an XState actor). Nothing in the running app
+ * points at those, so they still need the app to hand them over, and the hint still earns its place.
+ */
+const AUTO_DISCOVERED_DEPS: ReadonlySet<string> = new Set([
+  '@tanstack/react-query',
+  '@reduxjs/toolkit',
+  'redux',
+]);
+
+/**
+ * The store libraries this app depends on AND the running app cannot reveal on its own, as
+ * ready-to-uncomment registration lines.
+ */
 export function storeHints(deps: ReadonlySet<string>): string[] {
-  return STORE_LIBRARIES.filter(([dep]) => deps.has(dep)).map(([, hint]) => hint);
+  return STORE_LIBRARIES.filter(([dep]) => deps.has(dep) && !AUTO_DISCOVERED_DEPS.has(dep)).map(
+    ([, hint]) => hint,
+  );
 }
 
 /** A store instance we found in the app's own source, with everything needed to import and register it. */
@@ -119,7 +142,7 @@ function importPathFor(storePath: string, fromDir: string): string {
 }
 
 /** Where the generated dev module lives, for Vite. Next passes its own. */
-export const DEFAULT_DEV_MODULE_DIR = 'src';
+const DEFAULT_DEV_MODULE_DIR = 'src';
 
 /**
  * Store instances declared in the app's own source, ready to import and register.

@@ -22,6 +22,29 @@ export const ContradictionKind = {
   SIGNAL_CONTRADICTED: 'signal-contradicted',
   /** A write succeeded on the server and nothing on the client moved — the response went nowhere. */
   RESPONSE_IGNORED: 'response-ignored',
+  /**
+   * The app fired a success signal and NOTHING else in the window moved — no DOM, no store, no
+   * route, no request. The only evidence that anything happened is the app's own claim.
+   *
+   * `DEAD_CONTROL` describes almost exactly this and deliberately excludes it: its definition is
+   * "dispatched but the app did NOTHING (no DOM/net/route/signal)", so firing a signal was enough to
+   * rescue a control that did nothing at all. That is the hole. An app whose signal is emitted from
+   * the value it was ASKED for rather than the one it COMMITTED gets a verdict at signal grade —
+   * the strongest we award — for a click that changed nothing. Measured on the bench fixture: a
+   * modal that never opened came back `verified: "yes" / proved`.
+   *
+   * Absence-derived on purpose (see below). "Nothing corroborated it" is not "it did not happen":
+   * a signal about genuinely non-visual state is legitimate. This downgrades the verdict to UNKNOWN
+   * so the false green cannot stand, without asserting a fault nobody proved.
+   */
+  SIGNAL_WITHOUT_CONSEQUENCE: 'signal-without-consequence',
+  /**
+   * A write succeeded on the server and nothing moved in THIS document — because the page opened
+   * another browsing context (an OAuth popup is the archetype) and the consequence lives there,
+   * where an in-page SDK cannot follow. Reported instead of response-ignored, which would read as
+   * "the client ignored the response" about a client that did no such thing.
+   */
+  CONSEQUENCE_ELSEWHERE: 'consequence-elsewhere',
   /** The same write fired more than once in one action — double-submit / retry storm. */
   DUPLICATE_REQUEST: 'duplicate-request',
   /**
@@ -182,6 +205,13 @@ export type ContradictionKind = (typeof ContradictionKind)[keyof typeof Contradi
 export const ABSENCE_DERIVED_CONTRADICTIONS: ReadonlySet<ContradictionKind> = new Set([
   ContradictionKind.REQUEST_NEVER_SETTLED,
   ContradictionKind.RESPONSE_IGNORED,
+  // The app said something happened and nothing corroborated it. That is an absence of agreement,
+  // never proof the app is wrong — a signal about non-visual state has nothing to corroborate it by
+  // construction. UNKNOWN removes the false green; NO would invent a fault.
+  ContradictionKind.SIGNAL_WITHOUT_CONSEQUENCE,
+  // The consequence is not missing, it is somewhere this document's SDK cannot look — a claim about
+  // the reach of the observation, never a positive fault in the app.
+  ContradictionKind.CONSEQUENCE_ELSEWHERE,
   ContradictionKind.ROUTE_RENDERED_NOTHING,
   ContradictionKind.ACTION_HAD_NO_EFFECT,
   ContradictionKind.DUPLICATE_REQUEST,

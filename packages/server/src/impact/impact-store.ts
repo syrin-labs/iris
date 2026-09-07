@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import {
   ReticleDir,
   IMPACT_DAILY_BUCKETS,
+  IMPACT_DEFECT_LIMIT,
   IMPACT_SCHEMA_VERSION,
   ImpactScopeSchema,
   addImpactCounts,
@@ -11,6 +12,7 @@ import {
   emptyImpactRecords,
   estimateImpactSavings,
   type ImpactCounts,
+  type ImpactDefect,
   type ImpactScope,
   type ImpactSnapshot,
 } from '@reticlehq/core';
@@ -29,7 +31,10 @@ import {
 /** Writes are debounced: a verification loop is 50-200 calls, and each one is a counter bump. */
 const WRITE_DEBOUNCE_MS = 800;
 
-export interface ImpactPaths {
+/** The project's cloud binding, written by `reticle link`. Absent for an unlinked project. */
+const CLOUD_LINK_FILE = 'cloud.json';
+
+interface ImpactPaths {
   project: string;
   global: string;
 }
@@ -38,11 +43,30 @@ export interface ImpactPaths {
  * `reticleRoot` is the project's own `.reticle` directory (what every other store here is handed);
  * the global scope always lives beside the daemon's own state in `~/.reticle`.
  */
-export function impactPaths(reticleRoot: string): ImpactPaths {
+function impactPaths(reticleRoot: string): ImpactPaths {
   return {
     project: join(reticleRoot, ReticleDir.IMPACT_FILE),
     global: join(homedir(), ReticleDir.ROOT, ReticleDir.IMPACT_FILE),
   };
+}
+
+/**
+ * Where this project's dashboard lives, if `reticle link` recorded one.
+ *
+ * Read from the link file rather than derived from the API url, because the API origin and the
+ * console origin are different hosts in every deployment that is not a laptop. Synchronous and
+ * best-effort, like every other read in this file: a missing or malformed link file means no link
+ * in the HUD, never a failed tool call.
+ */
+function readDashboardUrl(reticleRoot: string): string | undefined {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(join(reticleRoot, CLOUD_LINK_FILE), 'utf8'));
+    if ('object' !== typeof raw || null === raw) return undefined;
+    const value = (raw as Record<string, unknown>)['dashboardUrl'];
+    return 'string' === typeof value && value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function emptyScope(now: number): ImpactScope {
@@ -53,6 +77,7 @@ function emptyScope(now: number): ImpactScope {
     records: emptyImpactRecords(),
     savings: estimateImpactSavings(counts),
     since: now,
+    defects: [],
   };
 }
 
@@ -110,6 +135,11 @@ function isNextDay(a: string, b: string): boolean {
  */
 export interface ImpactFoldMeta {
   runMs?: number;
+  /**
+   * The defect this call caught, when it caught one. Carried beside the counters rather than in
+   * them because it is not a tally: `counts.failed` says how many, this says which.
+   */
+  defect?: ImpactDefect;
 }
 
 /** Fold one delta into a scope: totals, today's bucket, records and streak. Pure. */
@@ -145,7 +175,23 @@ export function applyDelta(
   records.bestStreakDays = Math.max(records.bestStreakDays, records.streakDays);
   records.longestRunMs = Math.max(records.longestRunMs, meta.runMs ?? 0);
 
-  return { counts, days, records, savings: estimateImpactSavings(counts), since: scope.since };
+  /*
+   * Newest first, capped. Prepending is what makes the HUD's short list the CURRENT breakage rather
+   * than the first ten things that ever broke — which, after a week, is a list about the past.
+   */
+  const defects =
+    meta.defect === undefined
+      ? scope.defects
+      : [meta.defect, ...scope.defects].slice(0, IMPACT_DEFECT_LIMIT);
+
+  return {
+    counts,
+    days,
+    records,
+    savings: estimateImpactSavings(counts),
+    since: scope.since,
+    defects,
+  };
 }
 
 /**
@@ -158,6 +204,7 @@ export class ImpactStore {
   readonly #paths: ImpactPaths;
   readonly #now: () => number;
   readonly #projectName: string | undefined;
+  readonly #dashboardUrl: string | undefined;
   #project: ImpactScope;
   #global: ImpactScope;
   #timer: ReturnType<typeof setTimeout> | undefined;
@@ -167,6 +214,7 @@ export class ImpactStore {
     this.#paths = impactPaths(opts.reticleRoot);
     this.#now = opts.now ?? ((): number => Date.now());
     this.#projectName = opts.projectName;
+    this.#dashboardUrl = readDashboardUrl(opts.reticleRoot);
     const now = this.#now();
     this.#project = readScope(this.#paths.project, now);
     this.#global = readScope(this.#paths.global, now);
@@ -192,6 +240,7 @@ export class ImpactStore {
       global: this.#global,
     };
     if (this.#projectName !== undefined) snap.projectName = this.#projectName;
+    if (this.#dashboardUrl !== undefined) snap.dashboardUrl = this.#dashboardUrl;
     return snap;
   }
 

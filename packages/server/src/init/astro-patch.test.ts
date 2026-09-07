@@ -10,7 +10,12 @@
 
 import { describe, expect, it } from 'vitest';
 import { ReticleDir } from '@reticlehq/core';
-import { patchAstroConfig, patchAstroLayout } from './astro-patch.js';
+import {
+  ASTRO_ENV_DTS_DECLARES,
+  patchAstroConfig,
+  patchAstroEnvDts,
+  patchAstroLayout,
+} from './astro-patch.js';
 import { PatchKind } from './patch-kind.js';
 
 const PLAIN_CONFIG = `import { defineConfig } from 'astro/config';
@@ -291,6 +296,29 @@ const emittedWatchMatcher = (code: string): RegExp => {
   if (literal?.[1] === undefined) throw new Error(`no regex literal in: ${code}`);
   return new RegExp(literal[1]);
 };
+
+describe('patchAstroEnvDts (#677)', () => {
+  it('creates src/env.d.ts when the file is absent', () => {
+    const patch = patchAstroEnvDts(null);
+    expect(patch.kind).toBe(PatchKind.APPLY);
+    if (patch.kind !== PatchKind.APPLY) return;
+    expect(patch.code).toBe(ASTRO_ENV_DTS_DECLARES);
+  });
+
+  it('appends the declares without clobbering an existing create-astro env.d.ts', () => {
+    const existing = '/// <reference path="../.astro/types.d.ts" />\n';
+    const patch = patchAstroEnvDts(existing);
+    expect(patch.kind).toBe(PatchKind.APPLY);
+    if (patch.kind !== PatchKind.APPLY) return;
+    expect(patch.code).toContain('reference path');
+    expect(patch.code).toContain('__RETICLE_TOKEN__');
+    expect(patch.code).toContain('__RETICLE_ROOT__');
+  });
+
+  it('is a no-op when the declares are already present', () => {
+    expect(patchAstroEnvDts(ASTRO_ENV_DTS_DECLARES).kind).toBe(PatchKind.ALREADY);
+  });
+});
 
 describe('the daemon journal does not drive the dev server', () => {
   it('excludes the journal directory from the watcher', () => {

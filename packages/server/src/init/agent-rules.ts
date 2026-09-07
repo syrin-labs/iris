@@ -1,7 +1,7 @@
 /**
  * `reticle init` writes a behavioral rule into the coding agent's instruction file so the agent
  * VERIFIES a feature with Reticle after building it — not only when the user remembers to say "test
- * it with reticle". Registering the MCP server (mcp.ts / cursor.ts) only makes the tools AVAILABLE;
+ * it with reticle". Registering the MCP server (mcp.ts / mcp-clients.ts) only makes the tools AVAILABLE;
  * this is the piece that makes the agent reach for them, every session, unprompted.
  *
  * It carries a SECOND standing instruction, and that one is not about this project at all: send
@@ -15,7 +15,7 @@
  * written into whichever instruction file the detected agent reads: `CLAUDE.md` (Claude Code),
  * `.cursor/rules/reticle.mdc` (Cursor, `alwaysApply` so it stays in context), or `AGENTS.md` as the
  * cross-agent fallback. Idempotent via a marker block — safe to append to an existing file and a
- * re-run is a no-op. Mirrors the apply/already result shape used across init (see cursor.ts).
+ * re-run is a no-op. Mirrors the apply/already result shape used across init (see mcp-clients.ts).
  */
 
 import { NPX } from './mcp.js';
@@ -47,6 +47,18 @@ const RULE_BEGIN =
 const RULE_END = '<!-- reticle:end -->';
 
 /**
+ * Does this file already carry the managed block?
+ *
+ * Exported so callers cannot invent their own looser test. The begin marker carries explanatory
+ * text inside the comment, so a substring check for `reticle:begin` matches files that
+ * `mergeMarkedInstruction` would treat as having NO block — and the two disagreeing means a refresh
+ * silently appends a second copy instead of updating the first.
+ */
+export function hasManagedBlock(text: string): boolean {
+  return text.includes(RULE_BEGIN);
+}
+
+/**
  * How the agent must INVOKE the CLI.
  *
  * `reticle init` installs the SDK packages, never the server — so there is no `reticle` on the
@@ -71,21 +83,32 @@ export const CLI = `${NPX} ${RETICLE_NPM_PACKAGE}`;
  * inside a host that asks the human for permission — so a dev server it starts is visible in the
  * transcript, attributable, and stoppable.
  *
- * The guards are the whole reason this is safe, so no renderer may drop them: adopt what is already
- * listening, read the command rather than invent one, never kill, background it and SAY so, and leave
- * the permission prompt to the host.
+ * The guards are the whole reason this is safe, so no renderer may drop them: one server at a time,
+ * read the command rather than invent one, never kill anything you did not start, and leave the
+ * permission prompt to the host. "Background it and say so" is no longer among them because the
+ * branch above now states it at the point of action, and this text is read every turn — a rule
+ * stated twice costs every agent tokens forever and is the first thing to drift.
+ *
+ * The RESTART branch outranks the rest and is stated first. It used to be an aside, while "if a dev
+ * server is already listening, use it" was a numbered guard — so an agent resolving the two
+ * reasonably reused a server started before `init` edited the build config, served a bundle with no
+ * SDK in it, and landed on an empty session list with every other step done correctly.
  *
  * Exported because slash-command.ts renders the same rule; there must not be two versions of it.
  */
-export const DEV_SERVER_POLICY = `**If no dev server is listening, start one yourself.** Read the project's own dev script out of \`package.json\` (\`dev\`, \`start\`, whatever this project calls it), run it in the BACKGROUND, tell the user in one line that it is running and how to stop it, then carry on. Stopping to ask is how a verification turn ends with nothing verified.
+export const DEV_SERVER_POLICY = `**A dev server already running when \`reticle init\` ran does not have Reticle in its bundle.** It read the build config at boot; \`init\` edited it afterwards. It serves the old bundle and no session appears. In order:
 
-Five guards, none optional:
+1. **A dev server was already running?** Restart it, then hard-reload the tab. "Something is listening" does not mean the right bundle is served.
+2. **Nothing was running?** Start it in the BACKGROUND and say so in one line. \`reticle_sessions\` gives you this project's own dev command in \`next_action\`; use that, never compose one. Started after \`init\`, it needs no restart.
 
-1. **Never start a second one.** If something is already listening on the app's port, use it.
-2. **Never guess the command.** It comes from \`package.json\` scripts. If there is no recognisable dev script, say so and stop rather than inventing one.
-3. **Never kill anything.** Not a dev server, not a daemon, not a port holder — including one you started.
-4. **Background it, and say so.** The user must know a server is running and how to stop it. A dev server the human does not know about is the same failure one step later.
-5. **The permission prompt belongs to your host.** Never try to bypass, suppress or auto-approve it, and take a refusal as the answer.`;
+Stopping to ask is how a verification turn ends with nothing verified.
+
+Four guards, none optional:
+
+1. **Never run two at once.** One dev server on the app's port. Restarting a stale one means stopping it first, not starting a second alongside it.
+2. **Never guess the command.** It comes from \`package.json\` scripts. No recognisable dev script means say so and stop, not invent one.
+3. **Never kill anything you did not start**, and never a daemon or a port holder. The one exception is the restart above, and say in one line that you did it.
+4. **The permission prompt belongs to your host.** Never bypass, suppress or auto-approve it, and take a refusal as the answer.`;
 
 /**
  * The operative rules, carried by every file that loads on every turn.
@@ -94,7 +117,7 @@ Five guards, none optional:
  * NOT to, how, and the guards against calling something proven when it is not. Everything an agent
  * needs only at the moment it hits a specific situation lives in RETICLE.md, named at the end.
  */
-const RULE_BODY = `## Verifying with Reticle
+export const RULE_BODY = `## Verifying with Reticle
 
 This app is instrumented by **Reticle**, an in-app verification layer exposed as \`reticle_*\` MCP tools and the \`${CLI}\` CLI (always through npx: Reticle's server is not installed into this project). Verifying is part of "done", not an optional extra.
 
@@ -110,20 +133,39 @@ This app is instrumented by **Reticle**, an in-app verification layer exposed as
 - **Only \`reticle_act_and_wait\` and \`reticle_assert\` produce a verdict.** \`reticle_act\` and everything else move or read the app and prove nothing, so a session ending without one of those two has no result however many tools it used.
 - Covered flows: \`${CLI} gate\` reports which recorded flows the changed files affect and whether they still pass.
 
+**Setting Reticle up, or just restarted? You are mid-sequence — do not stop until a verdict exists.**
+The whole of it is: instrument the app → get a dev server running → open the app in a browser →
+drive one flow → report the verdict. Every step is yours to do, and none of them needs the user.
+The ONE legitimate pause is a client restart, because a client reads its server list at startup;
+when you come back, you are not finished, you are on the next step — resume it without being asked.
+Stopping anywhere else leaves an app that looks installed and can verify nothing, which is the
+single commonest way this goes wrong. \`/reticle\` carries the full recovery ladder when a step
+does not work; use it rather than guessing, and never report the install as finished without a
+verdict to point at.
+
 **Nothing connected? Get the app running.**
 
 ${DEV_SERVER_POLICY}
 
 A dev server that is already running does not pick up an edited build config or a newly created plugin file — restart it and hard-reload the tab. And if a server IS listening and still nothing connects, the cause is the SDK not loading in the page, not a missing dev server; do not tell the user to start one they are already running.
 
+**Finish \`src/reticle-dev.ts\` before you claim setup is done.** \`init\` writes it and cannot always fill it in: a store that needs an argument only reading the code supplies (Jotai atoms, an XState actor, a TanStack \`queryClient\`) is left as a commented \`registerStore\` line. A file that registers nothing looks exactly like a finished one, and \`reticle_state\` then returns empty forever — which is indistinguishable from an app that has nothing to report, so it reads as success. Uncomment the line, complete it, and prove it by driving one flow and seeing your keys come back. If \`init\` told you to restart your client, this is the job waiting for you on the other side of that restart.
+
+**Verify each feature as you finish it, not all of them at the end.** Asked for four, build one, drive it, get a verdict, then start the second. A red verdict after four builds has four suspects; after one it has none.
+
+**Capture what a change is FOR while you are building it, not afterwards.** \`reticle_intent\` records the business outcome a change is meant to produce, and the only moment anybody knows it is while the change is being made. Pass \`intent\` when you save a flow, so the saved flow carries the reason it exists. A flow without one replays for months and then reports "step 3 failed" instead of what stopped being true for a user.
+
 **Honesty, which is the whole point:**
 
 - **\`verified: "unknown"\` is not a pass.** It means Reticle drove the app and could not tell what happened; \`verifiedReason\` says which clause decided that. Report it as unknown, never as working.
+- **\`verified: "no-fault"\` is not a pass either.** It means nothing was DECLARED to prove: the page settled and no channel complained, but you asserted nothing, so there is no verification. You get it whenever \`until\` is omitted. Name a consequence the action changes — a signal, a request, a route, or store state — and call again.
 - **Never weaken a check to make it green.** Downgrading, skipping or deleting an assertion is a finding, not a fix.
 - **If Reticle cannot run** (no daemon, or this is not a running web app), say so. Do not skip verification silently.
 - **Setup is not finished until one real flow has been driven and produced a verdict.** \`init\` exiting 0, the tools appearing, and a session being listed are all things that happen before anything has been verified.
 
 **The \`/reticle\` skill runs this whole loop for you** — detect, connect, drive one flow, report. If your client does not have it, install it once: \`/plugin marketplace add reticlehq/reticle\` then \`/plugin install reticle@reticlehq\` in Claude Code, or \`npx skills add reticlehq/reticle\` anywhere the skills CLI works.
+
+**A tool you need is missing? It exists.** The default surface advertises a subset; reach any other by name with \`reticle_run { tool, args }\`, and list them with \`reticle_tools\`. Two worth knowing: \`reticle_context\` returns this run's own memory — what is established, what is proven, what is still unverified — which is what you want after a compaction or when picking up work you did not start; \`reticle_intent\` records what a change was MEANT to do, while somebody still knows.
 
 **Report Reticle's own defects with \`reticle_feedback\` the moment you notice**, then carry on with your task. You are the user Reticle is built for and the only one who can say what it cost you, and that knowledge is gone when your context is.
 

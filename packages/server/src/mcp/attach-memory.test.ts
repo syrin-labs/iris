@@ -22,6 +22,7 @@ import {
   describeAttachState,
   rememberEnumerated,
   rememberProxyStarted,
+  rememberToolCalled,
 } from './attach-memory.js';
 
 describe('attach memory', () => {
@@ -43,9 +44,13 @@ describe('attach memory', () => {
     expect(attachState(dir, 4400)).toBe(AttachState.NEVER_ENUMERATED);
   });
 
-  it('reports enumerated once a tool list was asked for', () => {
+  // Listing the tools is no longer the END of the chain: a client that lists and never calls is the
+  // state the field reports as hardest to diagnose, so it has a name of its own now. Reaching
+  // `enumerated` takes an actual call.
+  it('reports enumerated once a tool list was asked for AND a tool was called', () => {
     rememberProxyStarted(dir, 4400);
     rememberEnumerated(dir, 4400);
+    rememberToolCalled(dir, 4400);
     expect(attachState(dir, 4400)).toBe(AttachState.ENUMERATED);
   });
 
@@ -57,7 +62,8 @@ describe('attach memory', () => {
 
   it('survives a restart of the process that recorded it', () => {
     rememberEnumerated(dir, 4400);
-    // Same state home, a fresh read: the bit is on disk, not in this process.
+    rememberToolCalled(dir, 4400);
+    // Same state home, a fresh read: the bits are on disk, not in this process.
     expect(attachState(dir, 4400)).toBe(AttachState.ENUMERATED);
   });
 
@@ -91,6 +97,7 @@ describe('attach memory', () => {
     // working one is the noise this whole diagnosis exists to replace.
     rememberProxyStarted(dir, 4400);
     rememberEnumerated(dir, 4400);
+    rememberToolCalled(dir, 4400);
     expect(attachStatusFields(dir, 4400)).toEqual({ mcpClient: AttachState.ENUMERATED });
   });
 
@@ -113,5 +120,49 @@ describe('attach memory', () => {
     expect(() => {
       rememberProxyStarted('/dev/null/nope', 4400);
     }).not.toThrow();
+  });
+});
+
+/**
+ * The state past `enumerated`, and the one the field actually reports.
+ *
+ * A careful evaluator had the browser side provably working — SDK injected, overlay visible, a live
+ * session on the daemon — registered the MCP server in three separate agents, watched one of them
+ * list every tool, and then had the agent tell them Reticle was not present on the machine. Both
+ * ends healthy, nothing crossing between them.
+ *
+ * `enumerated` cannot describe that. It means a client read the catalogue, which is exactly what
+ * that user's agent did, so the most-broken install we know of reports the same state as a perfect
+ * one. What distinguishes them is whether a tool was ever CALLED, and nothing recorded it.
+ */
+describe('a client that listed the tools and never called one', () => {
+  it('is a state of its own, not "enumerated"', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reticle-attach-called-'));
+    rememberProxyStarted(dir, 4400);
+    rememberEnumerated(dir, 4400);
+    expect(attachState(dir, 4400)).toBe(AttachState.NEVER_CALLED);
+  });
+
+  it('becomes enumerated-and-used once a tool is actually called', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reticle-attach-called-'));
+    rememberProxyStarted(dir, 4400);
+    rememberEnumerated(dir, 4400);
+    rememberToolCalled(dir, 4400);
+    expect(attachState(dir, 4400)).toBe(AttachState.ENUMERATED);
+  });
+
+  // The action has to be worth reading: this user spent hours on it and had no way to tell which
+  // link was broken, so the message must name the link rather than the component.
+  it('names the link that is broken, not a component', () => {
+    const action = describeAttachState(AttachState.NEVER_CALLED) ?? '';
+    expect(action.length).toBeGreaterThan(0);
+    expect(action).toMatch(/tool/i);
+  });
+
+  // The earlier states must not regress: a client that never listed is still the restart case.
+  it('leaves the never-enumerated state alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reticle-attach-called-'));
+    rememberProxyStarted(dir, 4400);
+    expect(attachState(dir, 4400)).toBe(AttachState.NEVER_ENUMERATED);
   });
 });

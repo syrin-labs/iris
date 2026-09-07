@@ -10,11 +10,21 @@ import {
   ReticleCommand,
   DEFAULT_ASSERT_TIMEOUT_MS,
   PredicateKind,
+  Verified,
 } from '@reticlehq/core';
 import { ReticleTool } from './tool-names.js';
+import {
+  countSchema,
+  cursorSchema,
+  httpStatusSchema,
+  timeoutMsSchema,
+  windowMsSchema,
+} from './numeric-bounds.js';
 import { buildReactionReport } from '../events/reaction.js';
 import { findContradictions } from '../events/contradictions.js';
 import { evaluatePredicate, waitForPredicate, PredicateSchema } from '../events/predicate.js';
+import { resolveSessionWithin } from '../session/resolve-within.js';
+import { WALL_CLOCK } from '../session/wall-clock.js';
 import { parsePredicate } from '../events/predicate-parse.js';
 import {
   matchNet,
@@ -26,6 +36,7 @@ import {
   reconcileNet,
   projectNetCall,
   projectConsoleLog,
+  withoutUrlRaw,
 } from '../events/event-filters.js';
 import {
   applyEventBudget,
@@ -33,7 +44,11 @@ import {
   withSizeCost,
   DEFAULT_QUERY_LIMIT,
 } from '../session/output-budget.js';
-import { healthEnvelope, bufferEnvelope } from '../session/session-health.js';
+import {
+  annotateStarvedFailure,
+  healthEnvelope,
+  bufferEnvelope,
+} from '../session/session-health.js';
 import type { Session } from '../session/session.js';
 import type { Predicate } from '../events/predicate.js';
 import {
@@ -46,10 +61,16 @@ import { assertVerdict } from './assert-verdict.js';
 import { assertSource } from './assert-source.js';
 import { isChangeUndeclared } from '../honesty/undeclared-change.js';
 import { openSessionIntents } from '../intent/open-intents.js';
+import {
+  dischargeInlineIntent,
+  inlineVerdictId,
+  linkInlineIntent,
+} from '../intent/inline-intent.js';
 import { bodiesNotCaptured } from '../honesty/uncaptured-bodies.js';
 import { withControl } from '../session/control-envelope.js';
 import { asString, asNumber, asRecord } from './tools-helpers.js';
-import { type ToolDef, sessionIdShape, commandOrThrow } from './tool-kit.js';
+import { type ToolDef, intentArg, sessionIdShape, commandOrThrow } from './tool-kit.js';
+import { gradeOfPredicate } from './assert-grade.js';
 
 /**
  * Evidence-completeness block: present on observe/network/console only when the ring buffer has
@@ -119,9 +140,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
     description:
       'Return the timeline of everything the app did in a window (DOM/network/route/console/animation/signal), with a summary. Use after an action. Pass `max_events` to cap the timeline to the most recent N (older events are dropped and counted in cost.droppedOldest). Every result carries a `cost:{events,bytes}` hint so you can self-budget your next call.',
     inputSchema: {
-      window_ms: z
-        .number()
-        .positive()
+      window_ms: windowMsSchema
         // A non-positive window silently produced a FUTURE cursor, so the tool returned zero events
         // and echoed the nonsense value back — indistinguishable from a genuinely quiet page. An
         // agent that fumbles this argument gets a clean "nothing happened" instead of being told the
@@ -130,14 +149,12 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         .describe(
           'Time window to look back, in ms (must be > 0). Default: 2000. Ignored when `since` is provided.',
         ),
-      since: z
-        .number()
+      since: cursorSchema
         .optional()
         .describe(
           'Cursor from a prior reticle_act or reticle_observe call. Scopes the event window to exactly that span.',
         ),
-      until: z
-        .number()
+      until: cursorSchema
         .optional()
         .describe('Upper cursor bound. With `since`, returns the span "between action A and B".'),
       actionId: z
@@ -154,9 +171,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
             'dom | net | route | console | animation | signal | perf | state | storage — or a raw ' +
             'type (e.g. "net.request"). Omit to return all types.',
         ),
-      max_events: z
-        .number()
-        .nonnegative()
+      max_events: countSchema
         .optional()
         .describe(
           'Cap the timeline to the most recent N events. Older events are counted in cost.droppedOldest.',
@@ -243,12 +258,13 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       const contradictions = findContradictions(filtered, {
         currentDocumentId: session.currentDocumentId,
         currentEditEpoch: session.currentEditEpoch,
+        appOrigin: session.url,
         ...(judgingTheAct ? { ...session.lastAct.effect(), actionSince: actCursor } : {}),
       });
       // carry session health — a throttled tab means the observed timeline may be incomplete.
       return withControl(session, {
         ...report,
-        events: report.events.map(withoutConstantSessionId),
+        events: report.events.map((e) => withoutUrlRaw(withoutConstantSessionId(e))),
         ...(contradictions.length > 0 ? { contradictions } : {}),
         cost: costHint(report, budgeted.length, droppedOldest),
         ...healthEnvelope(session),
@@ -267,9 +283,12 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       ),
       // Same concept, the neighbouring tool's name. See alias-args.ts.
       until: PredicateSchema.optional().describe("Alias for `predicate` (act_and_wait's name)."),
-      timeout_ms: z.number().optional().describe('Maximum wait in milliseconds. Default: 4000.'),
-      since: z
-        .number()
+      timeout_ms: timeoutMsSchema
+        .optional()
+        .describe(
+          'Maximum wait in milliseconds. Default: 4000. Capped at 55000: your MCP client aborts the request before a longer wait can return, so a bound above this would be advertised and not deliverable. To outlast it, poll — several short waits, each of which returns a verdict.',
+        ),
+      since: cursorSchema
         .optional()
         .describe('Cursor from a prior reticle_act — scopes the wait to events after that act.'),
       ...sessionIdShape,
@@ -283,6 +302,12 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         .optional()
         .describe(
           'The tab disconnected mid-wait, so this was never observed — the verdict is UNKNOWN, not a failure of the app.',
+        ),
+      inconclusive: z
+        .string()
+        .optional()
+        .describe(
+          'The wait could not be graded as a product failure — e.g. the tab is throttled and may never have rendered. The verdict is UNKNOWN, not "the UI is absent".',
         ),
       session: z
         .object({ lastSeenMs: z.number(), throttled: z.boolean(), focused: z.boolean() })
@@ -314,21 +339,26 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         ),
     },
     handler: async (deps, args) => {
-      const session = deps.sessions.resolve(asString(args['sessionId']));
+      const waitBudget = asNumber(args['timeout_ms']) ?? DEFAULT_ASSERT_TIMEOUT_MS;
+      // Spend the budget waiting for the APP as well as for the predicate. See resolve-within.
+      const session = await resolveSessionWithin(
+        deps.sessions,
+        asString(args['sessionId']),
+        waitBudget,
+        WALL_CLOCK,
+      );
       // `until` is act_and_wait's name for this — see alias-args.ts.
       const predicate = parsePredicate(aliasParam(args, 'predicate', ['until'])['predicate']);
       // Honesty: explicit since wins; else default to the last act's cursor; else the whole buffer.
       const since = asNumber(args['since']) ?? session.lastAct.cursor() ?? 0;
-      const verdict = await waitForPredicate(
-        session,
-        predicate,
-        asNumber(args['timeout_ms']) ?? DEFAULT_ASSERT_TIMEOUT_MS,
-        since,
-      );
+      const verdict = await waitForPredicate(session, predicate, waitBudget, since);
       // match reticle_assert — wrap with control + session health (throttle matters most while blocking)
       // and the buffer envelope, so a verdict reached over an evicted window says so.
       return withControl(session, {
-        ...verdict,
+        // #537's starved-wait note wraps the verdict (it RETURNS the verdict), so it stands where
+        // `...verdict` did. The source line is #533's `assertionSource`, which superseded
+        // `lastActSourceOnFailure` — an assert used to be blamed on the previous act's file:line.
+        ...annotateStarvedFailure(session, verdict),
         ...assertionSource(session, predicate, verdict),
         ...healthEnvelope(session),
         ...bufferEnvelope(session),
@@ -339,7 +369,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
     name: ReticleTool.ASSERT,
     example: { predicate: { kind: PredicateKind.SIGNAL, name: 'todos:loaded' } },
     description:
-      'Evaluate a predicate (optionally waiting up to timeout_ms). Returns { pass, evidence, failureReason? }. The end of every verify loop. Prefer a { signal } or { net } consequence over { element }/{ text } presence — a passing presence-only assertion returns `advice` because a wrong/healed element can fake it. By default it only counts events since your last act, so a stale buffered signal can never fake a pass; pass `since` (an observe/act cursor) to set the window explicitly.',
+      'Evaluate a predicate (optionally waiting up to timeout_ms). Returns { pass, evidence, failureReason? }. The end of every verify loop. CHECKING SEVERAL THINGS? Put them in ONE call with { kind: "allOf", predicates: [...] } — it returns one verdict naming whichever member failed, and one call costs one round trip where N calls cost N. Prefer a { signal } or { net } consequence over { element }/{ text } presence — a passing presence-only assertion returns `advice` because a wrong/healed element can fake it. By default it only counts events since your last act, so a stale buffered signal can never fake a pass; pass `since` (an observe/act cursor) to set the window explicitly.',
     inputSchema: {
       predicate: PredicateSchema.optional().describe(
         // Every kind, each with the field that carries its argument. Five of the nine were
@@ -354,18 +384,17 @@ export const OBSERVE_TOOLS: ToolDef[] = [
           'over element/text presence.',
       ),
       until: PredicateSchema.optional().describe("Alias for `predicate` (act_and_wait's name)."),
-      timeout_ms: z
-        .number()
+      timeout_ms: timeoutMsSchema
         .optional()
         .describe(
-          'If > 0, wait up to this many milliseconds before failing. Default: 0 (evaluate once).',
+          'If > 0, wait up to this many milliseconds before failing. Default: 0 (evaluate once). Capped at 55000: your MCP client aborts the request before a longer wait can return, so a bound above this would be advertised and not deliverable. To outlast it, poll — several short waits, each of which returns a verdict.',
         ),
-      since: z
-        .number()
+      since: cursorSchema
         .optional()
         .describe(
           'Cursor from a prior reticle_act — scopes the assertion to events after that act.',
         ),
+      intent: intentArg,
       ...sessionIdShape,
     },
     outputSchema: {
@@ -377,6 +406,12 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         .optional()
         .describe(
           'The tab disconnected mid-wait, so this was never observed — the verdict is UNKNOWN, not a failure of the app.',
+        ),
+      inconclusive: z
+        .string()
+        .optional()
+        .describe(
+          'The assertion could not be graded as a product failure — e.g. the tab is throttled and may never have rendered. The verdict is UNKNOWN, not "the UI is absent".',
         ),
       advice: z
         .string()
@@ -428,12 +463,26 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         ),
     },
     handler: async (deps, args) => {
-      const session = deps.sessions.resolve(asString(args['sessionId']));
+      const timeout = asNumber(args['timeout_ms']) ?? 0;
+      // Spend the budget waiting for the APP as well as for the predicate. See resolve-within.
+      const session = await resolveSessionWithin(
+        deps.sessions,
+        asString(args['sessionId']),
+        timeout,
+        WALL_CLOCK,
+      );
       // `until` is act_and_wait's name for this — see alias-args.ts.
       const predicate = parsePredicate(aliasParam(args, 'predicate', ['until'])['predicate']);
-      const timeout = asNumber(args['timeout_ms']) ?? 0;
       // Honesty: explicit since wins; else default to the last act's cursor; else the whole buffer.
       const since = asNumber(args['since']) ?? session.lastAct.cursor() ?? 0;
+      // Declared BEFORE the verdict, so the undeclared-change read below finds it open and stays
+      // quiet on THIS verdict rather than on the next one. Discharged after that read.
+      const intentId = await linkInlineIntent(
+        deps,
+        asString(args['sessionId']),
+        asString(args['intent']),
+        PredicateKind.SETTLED === predicate.kind ? undefined : predicate,
+      );
       const verdict =
         timeout > 0
           ? await waitForPredicate(session, predicate, timeout, since)
@@ -465,6 +514,29 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         verdict.observationLost,
         changeUndeclared,
       );
+      // The assertion IS the proof attempt, so a green one discharges the intent it was drawn for. A
+      // red proved nothing, and an unbound intent refuses discharge anyway — see inline-intent.ts.
+      // The id is checked HERE rather than only inside the helper so a caller that declared no intent
+      // touches nothing at all, not even the clock.
+      if (intentId !== undefined && Verified.YES === decision['verified']) {
+        await dischargeInlineIntent(
+          deps,
+          asString(args['sessionId']),
+          intentId,
+          {
+            verdictId: inlineVerdictId(ReticleTool.ASSERT, deps.now()),
+            grade: gradeOfPredicate(predicate),
+            at: deps.now(),
+          },
+          /*
+           * An assertion has no element of its own — it observes, it does not act. The file it names
+           * is the one the LAST action touched, which is the code path that produced the state being
+           * asserted about. Already remembered on the session for exactly this reason: an assertion
+           * whose failure has nothing to point at still needs to name a file.
+           */
+          session.lastAct.source(),
+        );
+      }
       // Journal the verdict so a LATER turn can read what this one proved. A verdict that lives only
       // in the response lives only in the agent's context window, which is the copy a compaction
       // destroys — see runs/run-context.ts. Recorded WITHOUT an attribution window: this tool drives
@@ -472,7 +544,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       session.recordAction(ReticleTool.ASSERT, asRecord(args), verdictEffect);
       return withControl(session, {
         ...decision,
-        ...verdict,
+        ...annotateStarvedFailure(session, verdict),
         ...(contradictions.length > 0 ? { contradictions } : {}),
         // What the app did not tell Reticle, on the same rule the act path uses.
         ...(gaps.length > 0 ? { instrumentationGaps: gaps } : {}),
@@ -491,14 +563,12 @@ export const OBSERVE_TOOLS: ToolDef[] = [
     description:
       'Filtered list of network calls. Fast path for "did POST /x return 200?". A zero-match filter returns a `hint` { totalInWindow, present[] } of the calls that DID fire, so a miss is diagnosable. Desktop IPC (`ipc://`) has no status code — the 200/500 there is derived, so filter on `ok` for those.',
     inputSchema: {
-      since: z
-        .number()
+      since: cursorSchema
         .optional()
         .describe(
           'Cursor from a prior reticle_act — scopes the query to requests fired after that act.',
         ),
-      until: z
-        .number()
+      until: cursorSchema
         .optional()
         .describe('Upper cursor bound — with `since`, the span between two acts.'),
       actionId: z
@@ -510,16 +580,14 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         .optional()
         .describe('HTTP method filter: GET | POST | PUT | DELETE | PATCH etc.'),
       urlContains: z.string().optional().describe('Substring that the request URL must contain.'),
-      status: z.number().optional().describe('HTTP status code filter (e.g. 200, 404, 500).'),
+      status: httpStatusSchema.optional().describe('HTTP status code filter (e.g. 200, 404, 500).'),
       ok: z
         .boolean()
         .optional()
         .describe(
           'Outcome filter: false keeps only calls that FAILED, true only those that succeeded. The filter to use for desktop IPC (`ipc://`), whose status code is derived. A still-pending call matches neither.',
         ),
-      limit: z
-        .number()
-        .nonnegative()
+      limit: countSchema
         .optional()
         .describe(
           'Keep only the most recent N matching calls (older are dropped and counted in droppedOldest) — cuts tokens on a wide window. Defaults to 200 when omitted; pass a higher number for more, or scope with since/until.',
@@ -605,23 +673,19 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       level: consoleLevelEnum
         .optional()
         .describe(`Log level filter: ${CONSOLE_LEVEL_LIST}. Omit to return all levels.`),
-      since: z
-        .number()
+      since: cursorSchema
         .optional()
         .describe(
           'Cursor from a prior reticle_act — scopes the query to log entries after that act.',
         ),
-      until: z
-        .number()
+      until: cursorSchema
         .optional()
         .describe('Upper cursor bound — with `since`, the span between two acts.'),
       actionId: z
         .string()
         .optional()
         .describe('Keep only log entries attributed to this action — "what did action N log".'),
-      limit: z
-        .number()
-        .nonnegative()
+      limit: countSchema
         .optional()
         .describe(
           'Keep only the most recent N matching entries (older are dropped and counted in droppedOldest) — cuts tokens when a page spams the console. Defaults to 200 when omitted; pass a higher number for more, or scope with since/until.',

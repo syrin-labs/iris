@@ -18,6 +18,7 @@ import {
   craImportPatch,
   craEnvPatch,
   craDevModuleFile,
+  craDevModulePath,
   CRA_DEV_MODULE_IMPORT,
   CRA_TOKEN_MISSING_NOTE,
 } from './cra.js';
@@ -78,7 +79,13 @@ describe('the clone that has no token', () => {
   it('names the missing variable and the one command that fixes it', () => {
     const file = craDevModuleFile(4400, 'proj');
     expect(true).toBe(file.includes('console.error'));
-    expect(file).toContain(CRA_TOKEN_MISSING_NOTE);
+    // The note is split across short string concatenations so printWidth 80 passes (#684).
+    // Joined, it is still the same sentence the rest of the product names.
+    const arg = file.split('console.error(')[1]?.split(');')[0] ?? '';
+    const text = [...arg.matchAll(/"(?:\\.|[^"\\])*"/g)]
+      .map((m) => JSON.parse(m[0]) as string)
+      .join('');
+    expect(text).toBe(`[reticle] ${CRA_TOKEN_MISSING_NOTE}`);
     expect(CRA_TOKEN_MISSING_NOTE).toContain('REACT_APP_RETICLE_TOKEN');
     expect(CRA_TOKEN_MISSING_NOTE).toContain('.env.development.local');
     // The RUNNABLE invocation, not the bin name. This note is printed into a CRA app where nothing
@@ -90,5 +97,19 @@ describe('the clone that has no token', () => {
 
   it('still attempts the connect, so a bridge running without a token keeps working', () => {
     expect(craDevModuleFile(4400, 'proj')).toContain('reticle.connect(');
+  });
+});
+
+describe('JavaScript CRA gets a .js module (#675)', () => {
+  it('picks .js when the project has no TypeScript', () => {
+    expect(craDevModulePath(false)).toBe('src/reticle-dev.js');
+    expect(craDevModulePath(true)).toBe('src/reticle-dev.ts');
+  });
+
+  it('omits the TypeScript empty-module marker from the JS emit', () => {
+    const js = craDevModuleFile(4400, 'proj', { typescript: false });
+    expect(js).toContain('reticle.connect(');
+    expect(js).not.toContain('export {}');
+    expect(craDevModuleFile(4400, 'proj', { typescript: true })).toContain('export {}');
   });
 });

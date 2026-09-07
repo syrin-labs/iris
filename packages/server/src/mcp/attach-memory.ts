@@ -33,7 +33,16 @@ export const AttachState = {
   NEVER_ATTACHED: 'never-attached',
   /** A client started it and never asked for the tool list — the state that needs a restart. */
   NEVER_ENUMERATED: 'never-enumerated',
-  /** Started and enumerated. Nothing to say. */
+  /**
+   * The catalogue was read and no tool was ever called: both ends healthy, nothing crossing.
+   *
+   * Reported from the field as the hardest state to diagnose, and it is the one every component
+   * check passes. The browser SDK is injected, the daemon has a live session, the client lists all
+   * the tools, and the agent still reports Reticle as absent. `enumerated` used to cover this, which
+   * meant the most-broken install we know of read identically to a perfect one.
+   */
+  NEVER_CALLED: 'never-called',
+  /** Started, enumerated, and actually used. Nothing to say. */
   ENUMERATED: 'enumerated',
 } as const;
 export type AttachState = (typeof AttachState)[keyof typeof AttachState];
@@ -59,6 +68,23 @@ const NEVER_ENUMERATED_ACTION =
  * client next starts Reticle — and telling that user their server is unregistered would send them
  * to re-run `init` over a working setup.
  */
+/**
+ * The link that is broken, named as a link rather than as a component.
+ *
+ * Every other check in this product is about a PIECE: is the daemon up, is the SDK injected, is a
+ * session live, are the tools registered. This state is the one where every piece passes and the
+ * chain still does not carry anything, so the message has to say which hop failed and what to do
+ * about it, not repeat that the pieces are fine.
+ */
+const NEVER_CALLED_ACTION =
+  "an MCP client listed Reticle's tools on this port and has never called one, so the tools are " +
+  'registered and no request has reached the daemon. That is the agent-to-daemon hop, not the ' +
+  'browser or the daemon: both of those can look healthy while this one is broken. Ask your agent ' +
+  'to run `reticle_sessions` explicitly. If it answers, the link is fine and the agent simply had ' +
+  'no reason to call it; if it says Reticle is unavailable, the client is talking to a different ' +
+  'server than the one this record belongs to, so re-check which command and port it launches. ' +
+  'This record is per port, not per client.';
+
 const NEVER_ATTACHED_ACTION =
   'no MCP client has started Reticle on this port, so either the server is not registered with your ' +
   'client or nothing has attached since this record began — register it with `npx ' +
@@ -69,9 +95,11 @@ interface AttachRecord {
   attached: boolean;
   /** A client asked that server for the tool list. */
   enumerated: boolean;
+  /** A client actually CALLED one of them. The bit that separates a working link from a listed one. */
+  called: boolean;
 }
 
-const EMPTY: AttachRecord = { attached: false, enumerated: false };
+const EMPTY: AttachRecord = { attached: false, enumerated: false, called: false };
 
 function memoryPath(stateDir: string, port: number): string {
   return join(stateDir, `attach-${String(port)}.json`);
@@ -86,6 +114,7 @@ function read(stateDir: string, port: number): AttachRecord {
     return {
       attached: true === record.attached,
       enumerated: true === record.enumerated,
+      called: true === record.called,
     };
   } catch {
     return EMPTY;
@@ -110,6 +139,18 @@ export function rememberProxyStarted(stateDir: string, port: number): void {
 }
 
 /**
+ * Record that a client actually CALLED a tool here, not merely listed them.
+ *
+ * Written once and then skipped, like the other two: this runs on the hot path of every tool call,
+ * and a diagnostic that writes a file per call would cost more than it tells anybody.
+ */
+export function rememberToolCalled(stateDir: string, port: number): void {
+  const known = read(stateDir, port);
+  if (known.called) return;
+  write(stateDir, port, { ...known, called: true });
+}
+
+/**
  * Record that a client asked for the tool list on this port.
  *
  * Enumeration implies attachment — a `tools/list` cannot arrive at a server nobody started — so this
@@ -119,14 +160,17 @@ export function rememberProxyStarted(stateDir: string, port: number): void {
 export function rememberEnumerated(stateDir: string, port: number): void {
   const known = read(stateDir, port);
   if (known.enumerated) return;
-  write(stateDir, port, { attached: true, enumerated: true });
+  write(stateDir, port, { ...known, attached: true, enumerated: true });
 }
 
-/** Which of the three client-side states this port is in. */
+/** Which of the four client-side states this port is in. */
 export function attachState(stateDir: string, port: number): AttachState {
   const known = read(stateDir, port);
-  if (known.enumerated) return AttachState.ENUMERATED;
-  return known.attached ? AttachState.NEVER_ENUMERATED : AttachState.NEVER_ATTACHED;
+  // Ordered outward along the chain: attached, then listed, then actually used. The last hop is
+  // the one every component check misses, so it is asked last and answered explicitly.
+  if (!known.attached) return AttachState.NEVER_ATTACHED;
+  if (!known.enumerated) return AttachState.NEVER_ENUMERATED;
+  return known.called ? AttachState.ENUMERATED : AttachState.NEVER_CALLED;
 }
 
 /**
@@ -138,11 +182,12 @@ export function attachState(stateDir: string, port: number): AttachState {
 export function describeAttachState(state: AttachState): string | undefined {
   if (state === AttachState.NEVER_ENUMERATED) return NEVER_ENUMERATED_ACTION;
   if (state === AttachState.NEVER_ATTACHED) return NEVER_ATTACHED_ACTION;
+  if (state === AttachState.NEVER_CALLED) return NEVER_CALLED_ACTION;
   return undefined;
 }
 
 /** What `reticle status` reports about the client side of the install. */
-export interface AttachStatusFields {
+interface AttachStatusFields {
   mcpClient: AttachState;
   mcpClientAction?: string;
 }

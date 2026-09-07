@@ -22,7 +22,15 @@ import {
   readProjectPort,
 } from './cli-port.js';
 import { DoctorRow, doctorRow } from './doctor-rows.js';
+import { attachState, describeAttachState } from '../mcp/attach-memory.js';
 import { findOccupiedSiblings, siblingListenerNote } from './sibling-ports.js';
+import {
+  daemonsServingProjectElsewhere,
+  resolveDaemonForProject,
+  splitBrainNote,
+  wrongDaemonNote,
+} from '../daemon/daemon-resolve.js';
+import { isAlive } from '../daemon/daemon.js';
 
 /**
  * `reticle doctor` — collapse the ~6 independent first-run failure modes into one command. Checks the
@@ -46,6 +54,24 @@ function asIdentity(payload: unknown): DaemonIdentity {
     ...(version === undefined ? {} : { version }),
     ...(contract === undefined ? {} : { contract }),
   };
+}
+
+/**
+ * One project, two daemons — asked from whichever end this command is standing on.
+ *
+ * Shares the rule with `reticle status` rather than restating it: the empty daemon can see that the
+ * app connected somewhere else, the daemon holding the app can only see that this project owns
+ * another one, and a second copy of either half would be a second opinion waiting to disagree.
+ */
+function splitBrainLine(port: number, projectId: string | undefined): string | undefined {
+  const home = reticleStateHome();
+  const elsewhere = splitBrainNote(
+    port,
+    daemonsServingProjectElsewhere(projectId, port, home, isAlive, (other) =>
+      hasProjectConnectedBefore(home, other, projectId),
+    ),
+  );
+  return elsewhere ?? wrongDaemonNote(port, resolveDaemonForProject(projectId, home, isAlive));
 }
 
 export async function handleDoctor(port: number): Promise<void> {
@@ -109,6 +135,28 @@ export async function handleDoctor(port: number): Promise<void> {
   const projectPort = readProjectPort(process.cwd());
   const mismatch = diagnosePortMismatch(port, projectPort);
   if (mismatch !== undefined) line(doctorRow(DoctorRow.PORT_CHECK, `✗ ${mismatch}`));
+
+  const projectId = readProjectId(process.cwd());
+  // The hop between the agent and this daemon, stated as its own row rather than inferred from the
+  // ones above it. `sessions` says the BROWSER reached the daemon; nothing said whether the AGENT
+  // did, and those two are exactly the pair a user cannot tell apart when one of them is broken.
+  const attach = attachState(reticleStateHome(), port);
+  const attachAction = describeAttachState(attach);
+  // A SPLIT outranks the attach record, and this is the one place it can. Both records are per PORT,
+  // so on a machine whose daemons have split in two the attach row reports "nothing has ever
+  // attached here" and sends the reader to re-register a server that is registered and running —
+  // the confident wrong answer for a link that is not missing but misaimed.
+  const split = splitBrainLine(port, projectId);
+  line(
+    doctorRow(
+      DoctorRow.AGENT_LINK,
+      split !== undefined
+        ? `✗ ${split}`
+        : attachAction === undefined
+          ? "✓ an MCP client has listed and called Reticle's tools on this port"
+          : `✗ ${attachAction}`,
+    ),
+  );
   // Remaining half of #261. The SDK dialling a port we are not on is invisible as a refused inbound,
   // but a listener on a well-known Reticle port is visible. Report the observation; do not conclude
   // it is the daemon this app wants — somebody else's daemon looks the same from here.
@@ -118,7 +166,6 @@ export async function handleDoctor(port: number): Promise<void> {
   // The check this checklist was missing: is the APP wired, not just the tools. Everything above can
   // be green in a project that has never been through `init`, and that combination is precisely the
   // one `doctor` gets run to explain.
-  const projectId = readProjectId(process.cwd());
   line(
     projectWiringLine({
       projectId,

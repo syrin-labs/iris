@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  AppRuntime,
   ReticleCommand,
   RETICLE_CAPTURE_FILE_PREFIX,
   VISUAL_NO_PROVIDER_RECOMMENDATION,
@@ -7,6 +8,7 @@ import {
 } from '@reticlehq/core';
 import { ReticleTool } from '../tools/tool-names.js';
 import { sessionIdShape } from '../tools/tool-kit.js';
+import { ratioSchema } from '../tools/numeric-bounds.js';
 import { asNumber, asRecord, asString } from '../tools/tools-helpers.js';
 import { diffPng, type VisualRect } from './visual-diff.js';
 import { VisualStore } from './visual-store.js';
@@ -166,20 +168,53 @@ function isCompletePng(bytes: Buffer): boolean {
  * `full-page-unsupported` — a viewport image returned as though it were the whole scroll height is a
  * baseline that says nothing about the content below the fold, and a later diff would call it green.
  */
+/**
+ * Which runtime this session is, for scoping a visual artifact.
+ *
+ * Undefined when the session cannot be resolved or its SDK never reported one — and undefined means
+ * the flat legacy path, so a baseline captured before any of this keeps matching.
+ */
+function runtimeOf(deps: ToolDeps, sessionId: string | undefined): string | undefined {
+  try {
+    return deps.sessions.resolve(sessionId).runtime;
+  } catch {
+    return undefined;
+  }
+}
+
 async function capture(
   deps: ToolDeps,
   sessionId: string | undefined,
   args: Record<string, unknown>,
-): Promise<{ png?: Uint8Array; reason?: string }> {
+): Promise<{ png?: Uint8Array; reason?: string; runtime?: string | undefined }> {
   const provider = screenshotProvider(deps);
   if (provider !== undefined) {
     const session = deps.sessions.resolve(sessionId);
     const png = await provider.screenshot(session.url, await buildOpts(deps, sessionId, args));
-    if (png !== undefined) return { png };
+    // A driven browser renders the session's URL in a BROWSER — so the pixels are web even when the
+    // session named is a desktop window. Scoping those under the desktop runtime would corrupt that
+    // runtime's baseline with a picture of a different renderer.
+    if (png !== undefined) return { png, runtime: AppRuntime.WEB };
   }
+  // The window's own backing store, via the Electron/Tauri adapter — the only route whose pixels
+  // really are the desktop app.
   const desktop = await desktopCapture(deps, sessionId, true === args['fullPage']);
-  if (desktop.png !== undefined) return { png: desktop.png };
+  if (desktop.png !== undefined) return { png: desktop.png, runtime: runtimeOf(deps, sessionId) };
   if (desktop.reason !== undefined) return { reason: desktop.reason };
+
+  /*
+   * A LEASED page is a real browser page, so the pixels were always there — the visual tools simply
+   * had no route to them. Without this, `reticle_screenshot` answered "no provider" for every context
+   * an agent can actually acquire, which made visual regression impossible on exactly the isolated
+   * contexts the pool exists to hand out. Tried last: a CDP provider, when there is one, is driving
+   * the page the caller means, and a lease is the fallback rather than a competitor.
+   */
+  const leased =
+    sessionId === undefined
+      ? undefined
+      : await deps.pool?.screenshotLease(sessionId, { fullPage: true === args['fullPage'] });
+  // A leased page is a real browser page, whatever the session is.
+  if (leased !== undefined) return { png: leased, runtime: AppRuntime.WEB };
   return {
     reason: provider === undefined ? VisualReason.NO_PROVIDER : VisualReason.CAPTURE_FAILED,
   };
@@ -239,13 +274,16 @@ export const VISUAL_TOOLS: ToolDef[] = [
     },
     handler: async (deps: ToolDeps, args) => {
       const sessionId = asString(args['sessionId']);
-      const { png, reason } = await capture(deps, sessionId, args);
+      const { png, reason, runtime } = await capture(deps, sessionId, args);
       if (png === undefined) {
         return reason === VisualReason.NO_PROVIDER ? noProvider : { ok: false, reason };
       }
       const name = asString(args['name']) ?? 'default';
       const store = new VisualStore(deps.fs, deps.reticleRoot);
-      const path = await store.saveBaseline(name, png);
+      // Scoped to the runtime that produced it: an Electron window, a Tauri webview and a browser
+      // tab do not render the same url the same way, and one shared baseline makes every
+      // cross-runtime diff wrong. See visualDir.
+      const path = await store.saveBaseline(name, png, runtime);
       return { ok: true, saved: true, name, path, bytes: png.length };
     },
   },
@@ -264,8 +302,10 @@ export const VISUAL_TOOLS: ToolDef[] = [
       ref: z.string().optional(),
       clip: rectShape.optional(),
       masks: z.array(rectShape).optional(),
-      maxRatio: z.number().optional(),
-      threshold: z.number().optional().describe('Pixel difference threshold (0–1). Default: 0.01.'),
+      maxRatio: ratioSchema.optional(),
+      threshold: ratioSchema
+        .optional()
+        .describe('Pixel difference threshold (0–1). Default: 0.01.'),
       ...sessionIdShape,
     },
     outputSchema: {
@@ -282,14 +322,22 @@ export const VISUAL_TOOLS: ToolDef[] = [
     handler: async (deps: ToolDeps, args) => {
       const baseline = asString(args['baseline']) ?? '';
       const store = new VisualStore(deps.fs, deps.reticleRoot);
-      const baselineBytes = await store.readBaseline(baseline);
-      if (baselineBytes === undefined) return { ok: false, reason: VisualReason.BASELINE_MISSING };
 
+      // Capture FIRST, then fetch the baseline for the runtime that produced these pixels. Reading it
+      // by the session's runtime looked equivalent and is not: the route decides the renderer, so a
+      // desktop session captured through a driven browser must be compared against the WEB baseline,
+      // not the desktop one. Comparing across renderers is a confident wrong diff in one direction
+      // and a silently overwritten baseline in the other.
       const sessionId = asString(args['sessionId']);
-      const { png: current, reason } = await capture(deps, sessionId, args);
+      const { png: current, reason, runtime } = await capture(deps, sessionId, args);
       if (current === undefined) {
         return reason === VisualReason.NO_PROVIDER ? noProvider : { ok: false, reason };
       }
+
+      // A baseline from another runtime is not missing by accident — it is a different rendering, and
+      // "no baseline for this one" is the honest answer.
+      const baselineBytes = await store.readBaseline(baseline, runtime);
+      if (baselineBytes === undefined) return { ok: false, reason: VisualReason.BASELINE_MISSING };
 
       const masks = rectsFrom(args['masks']);
       const threshold = asNumber(args['threshold']);
@@ -305,7 +353,7 @@ export const VISUAL_TOOLS: ToolDef[] = [
       if (diffBytes === undefined) {
         return { ok: false, ...verdict, reason: VisualReason.DIMENSION_MISMATCH };
       }
-      const diffPath = await store.saveDiff(baseline, diffBytes);
+      const diffPath = await store.saveDiff(baseline, diffBytes, runtime);
       return { ok: true, ...verdict, diffPath };
     },
   },

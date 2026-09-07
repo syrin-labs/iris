@@ -1,15 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { LastAct } from '../session/last-act.js';
 import {
+  AppRuntime,
+  BlindSpotKind,
   EventType,
-  SessionState,
+  ReticleCommand,
   Verified,
   VerifiedReason,
+  type CommandResult,
   type ReticleEvent,
 } from '@reticlehq/core';
 import { TOOLS, type ToolDef, type ToolDeps } from './tools.js';
 import { ReticleTool } from './tool-names.js';
-import type { Session, SessionManager } from '../session/session.js';
+import { BaselineStore } from '../project/baselines.js';
+import { createNodeFileSystem } from '../project/fs-port.js';
+import { RecordingStore } from '../flows/recordings.js';
+import { FlowStore } from '../flows/flows.js';
+import { ProjectStore } from '../project/project-store.js';
+import { AnnotationStore } from '../flows/annotation-store.js';
+import type { SessionManager } from '../session/session.js';
+import { createFakeSession } from '../session/fake-session.js';
 
 /**
  * A green verdict must never imply more coverage than the SDK actually had.
@@ -24,12 +33,12 @@ import type { Session, SessionManager } from '../session/session.js';
  * The field stays OMITTED at full coverage: its PRESENCE is the warning, so emitting it always would
  * make it noise on every healthy call and it would stop being read.
  */
-function depsWithBlindSpots(blindSpots: Record<string, number>): ToolDeps {
-  const session: Partial<Session> = {
-    id: 'demo',
+function depsWithBlindSpots(
+  blindSpots: Record<string, number>,
+  runtime?: (typeof AppRuntime)[keyof typeof AppRuntime],
+): ToolDeps {
+  const session = createFakeSession({
     bufferHealth: () => ({ total: 5, dropped: 0 }),
-    recordAction: () => 'a1',
-    lastAct: new LastAct(),
     command: () =>
       Promise.resolve({
         ok: true,
@@ -38,14 +47,11 @@ function depsWithBlindSpots(blindSpots: Record<string, number>): ToolDeps {
         result: { matched: false, count: 0, elements: [] },
       }),
     blindSpots: () => blindSpots,
-    eventsSince: () => [],
-    queryEvents: () => Promise.resolve([]),
     elapsed: () => 1000,
     health: () => ({ lastSeenMs: 5, throttled: false, focused: true, hidden: false }),
-    getState: () => SessionState.ACTIVE,
-    drainInbox: () => [],
-  };
-  const sessions: Partial<SessionManager> = { resolve: () => session as Session };
+    ...(runtime === undefined ? {} : { runtime }),
+  });
+  const sessions: Partial<SessionManager> = { resolve: () => session };
   return { sessions: sessions as SessionManager } as unknown as ToolDeps;
 }
 
@@ -75,6 +81,17 @@ const absentElementInScope = {
     kind: 'element',
     query: { by: 'testid', value: 'shipment-row', scope: '#cross-origin-frame' },
     absent: true,
+  },
+  timeout_ms: 0,
+};
+
+const notWrappedAbsentElement = {
+  predicate: {
+    kind: 'not',
+    predicate: {
+      kind: 'element',
+      query: { by: 'testid', value: 'shipment-row' },
+    },
   },
   timeout_ms: 0,
 };
@@ -113,15 +130,37 @@ describe('reticle_assert discloses partial coverage', () => {
     expect(result['verified']).toBe(Verified.YES);
   });
 
-  it('keeps an unscoped element absence green when unrelated virtualized rows are unobserved', async () => {
+  it('downgrades an element absence to UNKNOWN when virtualized rows are unobserved', async () => {
     const result = (await tool(ReticleTool.ASSERT).handler(
       depsWithBlindSpots({ 'virtualized-unmounted': 1 }),
       absentElement,
     )) as Record<string, unknown>;
 
     expect(result['pass']).toBe(true);
-    expect(result['verified']).toBe(Verified.YES);
-    expect(result['verifiedReason']).toBe(VerifiedReason.PROVED);
+    expect(result['verified']).toBe(Verified.UNKNOWN);
+    expect(result['verifiedReason']).toBe(VerifiedReason.ABSENCE_BLIND_SPOT);
+  });
+
+  it('downgrades an element absence to UNKNOWN when a closed shadow root is unobserved', async () => {
+    const result = (await tool(ReticleTool.ASSERT).handler(
+      depsWithBlindSpots({ 'closed-shadow-root': 1 }),
+      absentElement,
+    )) as Record<string, unknown>;
+
+    expect(result['pass']).toBe(true);
+    expect(result['verified']).toBe(Verified.UNKNOWN);
+    expect(result['verifiedReason']).toBe(VerifiedReason.ABSENCE_BLIND_SPOT);
+  });
+
+  it('downgrades a not-wrapped element absence when virtualized rows are unobserved', async () => {
+    const result = (await tool(ReticleTool.ASSERT).handler(
+      depsWithBlindSpots({ 'virtualized-unmounted': 1 }),
+      notWrappedAbsentElement,
+    )) as Record<string, unknown>;
+
+    expect(result['pass']).toBe(true);
+    expect(result['verified']).toBe(Verified.UNKNOWN);
+    expect(result['verifiedReason']).toBe(VerifiedReason.ABSENCE_BLIND_SPOT);
   });
 
   it('names which regions were unobservable, so the agent can act on it', async () => {
@@ -155,6 +194,38 @@ describe('reticle_assert discloses partial coverage', () => {
 
     expect('coverage' in result).toBe(false);
   });
+
+  /**
+   * A browser tab was reported as an Electron renderer with unobserved IPC because the desktop
+   * kinds sit in the same coverage vocabulary. The session already knows it is web.
+   */
+  it('does not report Electron IPC coverage on a web session', async () => {
+    const result = (await tool(ReticleTool.ASSERT).handler(
+      depsWithBlindSpots(
+        {
+          [BlindSpotKind.UNOBSERVED_IPC]: 1,
+          [BlindSpotKind.UNWATCHED_STATE]: 1,
+        },
+        AppRuntime.WEB,
+      ),
+      absentConsole,
+    )) as Record<string, unknown>;
+
+    expect(String(result['coverage'])).toContain('no subscribable store');
+    expect(String(result['coverage'])).not.toContain('Electron');
+    expect(String(result['coverage'])).not.toContain('ipcRenderer');
+    const spots = result['coverage_spots'] as { kind: string }[] | undefined;
+    expect(spots?.map((s) => s.kind)).toEqual([BlindSpotKind.UNWATCHED_STATE]);
+  });
+
+  it('still names a missing Electron preload on an Electron renderer', async () => {
+    const result = (await tool(ReticleTool.ASSERT).handler(
+      depsWithBlindSpots({ [BlindSpotKind.UNOBSERVED_IPC]: 1 }, AppRuntime.ELECTRON),
+      absentConsole,
+    )) as Record<string, unknown>;
+
+    expect(String(result['coverage'])).toContain('@reticlehq/electron/preload');
+  });
 });
 
 describe('reticle_assert carries the verdict, not just pass', () => {
@@ -164,20 +235,14 @@ describe('reticle_assert carries the verdict, not just pass', () => {
   // only in act_and_wait — the tool an agent actually calls never consulted it.
   /** A console-absence assertion over a window we control, so only the WRITE varies. */
   const runAssert = async (events: ReticleEvent[]): Promise<unknown> => {
-    const session: Partial<Session> = {
-      id: 'demo',
+    const session = createFakeSession({
       bufferHealth: () => ({ total: 5, dropped: 0 }),
-      recordAction: () => 'a1',
-      lastAct: new LastAct(),
-      blindSpots: () => ({}),
       eventsSince: () => events,
       queryEvents: () => Promise.resolve(events),
       elapsed: () => 1000,
       health: () => ({ lastSeenMs: 5, throttled: false, focused: true, hidden: false }),
-      getState: () => SessionState.ACTIVE,
-      drainInbox: () => [],
-    };
-    const sessions: Partial<SessionManager> = { resolve: () => session as Session };
+    });
+    const sessions: Partial<SessionManager> = { resolve: () => session };
     const deps = { sessions: sessions as SessionManager } as unknown as ToolDeps;
     return tool(ReticleTool.ASSERT).handler(deps, absentConsole);
   };
@@ -203,5 +268,88 @@ describe('reticle_assert carries the verdict, not just pass', () => {
   it('reports yes on a clean window', async () => {
     const result = (await runAssert([])) as Record<string, unknown>;
     expect(result['verified']).toBe(Verified.YES);
+  });
+});
+
+describe('reticle_act_and_wait downgrades absence when blind spots hide the target', () => {
+  function actSessionWithBlindSpots(blindSpots: Record<string, number>): ToolDeps {
+    const noEvents: ReticleEvent[] = [];
+    const command = (name: string): Promise<CommandResult> => {
+      if (name === ReticleCommand.MATCH) {
+        return Promise.resolve({
+          kind: 'command_result',
+          id: 'q1',
+          ok: true,
+          result: { matched: false, count: 0, elements: [] },
+        });
+      }
+      return Promise.resolve({
+        kind: 'command_result',
+        id: 'c1',
+        ok: true,
+        result: { dispatched: true, settled: true, effect: { domMutatedWithin: 1 } },
+      });
+    };
+    const session = createFakeSession(
+      {
+        elapsed: () => 1000,
+        command,
+        queryEvents: () => Promise.resolve(noEvents),
+        eventsSince: () => noEvents,
+        bufferHealth: () => ({ total: 10, dropped: 0 }),
+        blindSpots: () => blindSpots,
+        health: () => ({ lastSeenMs: 0, throttled: false, focused: true }),
+      },
+      { url: 'http://localhost:5173/app' },
+    );
+    const sessions: Partial<SessionManager> = { resolve: () => session };
+    return {
+      sessions: sessions as SessionManager,
+      baselines: new BaselineStore(),
+      recordings: new RecordingStore(),
+      flows: new FlowStore(createNodeFileSystem(), '/tmp/reticle-test/.reticle', { now: () => 0 }),
+      project: new ProjectStore(createNodeFileSystem(), '/tmp/reticle-test/.reticle', {
+        now: () => 0,
+      }),
+      annotations: new AnnotationStore(),
+      fs: createNodeFileSystem(),
+      reticleRoot: '/tmp/reticle-test/.reticle',
+      now: () => 0,
+    };
+  }
+
+  const ACT_ABSENT = {
+    ref: 'e1',
+    action: 'click',
+    until: { kind: 'element', query: { by: 'testid', value: 'shipment-row' }, absent: true },
+  };
+
+  it('downgrades to UNKNOWN when virtualized rows hide where the element could be', async () => {
+    const deps = actSessionWithBlindSpots({ [BlindSpotKind.VIRTUALIZED_UNMOUNTED]: 1 });
+    const r = (await tool(ReticleTool.ACT_AND_WAIT).handler(deps, ACT_ABSENT)) as Record<
+      string,
+      unknown
+    >;
+    expect(r['verified']).toBe(Verified.UNKNOWN);
+    expect(r['verifiedReason']).toBe(VerifiedReason.ABSENCE_BLIND_SPOT);
+  });
+
+  it('downgrades to UNKNOWN when a closed shadow root hides subtrees', async () => {
+    const deps = actSessionWithBlindSpots({ [BlindSpotKind.CLOSED_SHADOW_ROOT]: 1 });
+    const r = (await tool(ReticleTool.ACT_AND_WAIT).handler(deps, ACT_ABSENT)) as Record<
+      string,
+      unknown
+    >;
+    expect(r['verified']).toBe(Verified.UNKNOWN);
+    expect(r['verifiedReason']).toBe(VerifiedReason.ABSENCE_BLIND_SPOT);
+  });
+
+  it('does NOT cite ABSENCE_BLIND_SPOT when no blind spot is present', async () => {
+    const deps = actSessionWithBlindSpots({});
+    const r = (await tool(ReticleTool.ACT_AND_WAIT).handler(deps, ACT_ABSENT)) as Record<
+      string,
+      unknown
+    >;
+    expect(r['verifiedReason']).not.toBe(VerifiedReason.ABSENCE_BLIND_SPOT);
   });
 });

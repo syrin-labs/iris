@@ -69,7 +69,7 @@ Each gate exists because the ones above it are blind to something. That blindnes
 | **Integration** | `pnpm test:integration` | real headless Chromium: browser pool, crash isolation, framework adapters, `withReticle` | the MCP surface, the daemon | `e2e` |
 | **Web e2e battery** | `pnpm test:e2e` | 32 specs against 3 booted servers and a real browser (the tool surface, the daemon lifecycle, transport faults, telemetry, trace shape), plus the soak | desktop runtimes; the install | `e2e` |
 | **Desktop battery** | `pnpm test:e2e:desktop` | a real Electron main process and a **packaged** Tauri binary, driven headless | web-only paths | `desktop-e2e` |
-| **Install gate** | `pnpm gate:install` | scaffolds 3 pristine apps, publishes this checkout to a local Verdaccio, lets `init` install itself, boots each app in a real browser, polls for a session | install _complexity_; see [`fixtures.md`](./fixtures.md) | `install-gate` |
+| **Install gate** | `pnpm gate:install` | scaffolds 3 pristine apps, publishes this checkout to a local Verdaccio, lets `init` install itself, boots each app in a real browser, polls for a session that advertised capabilities | install _complexity_; see [`fixtures.md`](./fixtures.md) | `install-gate` |
 | **Matrix records** | `pnpm matrix:validate` | every submitted client-compat record is well-formed | whether the client actually works | `matrix-records` |
 | **Windows** | (CI only) | that the code runs at all on the majority platform | e2e; Windows is unit-only | `windows` |
 | **Rust** | `cargo fmt/clippy/check` | `packages/tauri` compiles and lints on Linux, macOS, and cross-checks Windows | everything JS | `rust`, `rust-macos` |

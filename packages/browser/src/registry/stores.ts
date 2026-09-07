@@ -61,6 +61,7 @@ export function registerStore(
   source: StoreGetter | StoreLike,
   subscribe?: StoreSubscribe,
 ): void {
+  claimSource(name, source);
   if (isStoreLike(source)) {
     const getter: StoreGetter = () => source.getState();
     const sub: StoreSubscribe = (listener) => source.subscribe(listener);
@@ -186,4 +187,40 @@ function warnSilentStoreOnce(name: string): void {
       `changes are invisible: no STATE_CHANGE events, no state diffs in causal summaries, and a state ` +
       `predicate will never see it update. Pass the store object (or a subscribe callback) to fix.`,
   );
+}
+
+/**
+ * Who owns a given store SOURCE — the object the app (or an adapter) was built from.
+ *
+ * Registration is keyed by name, which cannot answer "is this same store already readable?". The
+ * question matters because the React adapter discovers stores from the fiber tree, and an app that
+ * has already registered the very same store by hand must not get a second entry for it under a
+ * second name. Comparing the READ VALUE cannot answer it either: `tanstackQueryStore` builds a fresh
+ * snapshot object on every `getState`, so identity never matches. Measured on bench-app, which
+ * registers `queries` itself and got an auto-discovered `query` beside it — one cache, listed twice,
+ * in every state read.
+ *
+ * A WeakMap so nothing here keeps an app's store alive.
+ */
+const sourceOwners = new WeakMap<object, string>();
+/** Adapter instance → the object it wraps, so registering an adapter also claims its source. */
+const adapterSources = new WeakMap<object, object>();
+
+/** Called by an adapter to record what it was built from. See `sourceOwner`. */
+export function markAdapterSource(store: object, source: object): void {
+  adapterSources.set(store, source);
+}
+
+function claimSource(name: string, source: StoreGetter | StoreLike): void {
+  if (null === source || ('object' !== typeof source && 'function' !== typeof source)) return;
+  sourceOwners.set(source, name);
+  const wrapped = adapterSources.get(source);
+  if (wrapped !== undefined) sourceOwners.set(wrapped, name);
+}
+
+/** The name this store source is registered under, or undefined if nothing has claimed it. */
+export function sourceOwner(value: unknown): string | undefined {
+  if (null === value || ('object' !== typeof value && 'function' !== typeof value))
+    return undefined;
+  return sourceOwners.get(value);
 }

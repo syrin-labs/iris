@@ -1,0 +1,6 @@
+{
+  "name": "electron-vue-pinia-renderer",
+  "dependencies": {
+    "@reticlehq/browser": "workspace:*"
+  }
+}

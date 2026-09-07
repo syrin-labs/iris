@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { restartHint } from './run.js';
+import { restartHint } from './closing-hint.js';
 import { StepStatus } from './plan.js';
 import { Framework } from './detect.js';
 

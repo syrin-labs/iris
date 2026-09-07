@@ -75,6 +75,30 @@ export const REPORT_CSS = `
 [${REPORT_PANEL_ATTR}] .reticle-report-basis{
   display:block;margin-top:2px;color:var(--reticle-c-active);opacity:.8;
   font-size:8.5px;letter-spacing:.06em;text-transform:uppercase;cursor:help;}
+[${REPORT_PANEL_ATTR}] .reticle-report-defects-wrap{margin-top:14px;}
+[${REPORT_PANEL_ATTR}] .reticle-report-defects{
+  display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none;}
+/* A left rule rather than a card per row: ten cards in a 320px panel is a wall, and the rule keeps
+   the list scannable as a list — which is what a person is doing when they open this. */
+[${REPORT_PANEL_ATTR}] .reticle-report-defect{
+  display:flex;flex-direction:column;gap:1px;padding:4px 0 4px 8px;
+  border-left:2px solid color-mix(in srgb,#f87171 70%,transparent);}
+[${REPORT_PANEL_ATTR}] .reticle-report-defect-title{
+  font-size:11px;line-height:1.35;overflow-wrap:anywhere;}
+[${REPORT_PANEL_ATTR}] .reticle-report-defect-detail{
+  color:var(--reticle-faint);font-size:10px;line-height:1.35;overflow-wrap:anywhere;}
+[${REPORT_PANEL_ATTR}] .reticle-report-defect-source{
+  color:var(--reticle-faint);font-size:9.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  overflow-wrap:anywhere;}
+[${REPORT_PANEL_ATTR}] .reticle-report-defects-more{
+  display:inline-block;margin-top:8px;font-size:10px;color:var(--reticle-c-active);
+  text-decoration:none;}
+[${REPORT_PANEL_ATTR}] .reticle-report-defects-more:hover{text-decoration:underline;}
+[${REPORT_PANEL_ATTR}] .reticle-report-local-only{
+  margin:14px 0 0;padding-top:10px;border-top:1px solid var(--reticle-line);
+  color:var(--reticle-faint);font-size:10px;line-height:1.45;}
+[${REPORT_PANEL_ATTR}] .reticle-report-local-only code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--reticle-c-active);}
 [${REPORT_PANEL_ATTR}] .reticle-report-chart-wrap{margin-top:12px;}
 [${REPORT_PANEL_ATTR}] .reticle-report-section{
   display:block;margin-bottom:6px;color:var(--reticle-faint);font-size:9.5px;

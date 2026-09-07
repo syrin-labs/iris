@@ -193,3 +193,30 @@ describe('an unwatched state channel is not an unchanged one', () => {
     expect(causalSummary(changed, { stateUnwatched: false }).stateUnwatched).toBeUndefined();
   });
 });
+
+/**
+ * `summary.route` reported the DOCUMENT pathname, which is `/` on every page of a hash-routed app —
+ * the same misreading that made `{ kind: 'route', pathname }` unsatisfiable there. An agent reading
+ * this field after a navigation would conclude the route never changed. Measured on react-admin
+ * under Electron: the app moved to `#/posts/12/show` and the summary said `/`.
+ */
+describe('the summary reports the route the router is on', () => {
+  it('reads the fragment on a hash-routed app', () => {
+    const s = causalSummary([
+      {
+        t: 1,
+        type: EventType.ROUTE_CHANGE,
+        sessionId: 's',
+        data: { pathname: '/', search: '', hash: '#/posts/12/show' },
+      },
+    ]);
+    expect(s.route).toBe('/posts/12/show');
+  });
+
+  it('still reports the pathname on a path-routed app', () => {
+    const s = causalSummary([
+      { t: 1, type: EventType.ROUTE_CHANGE, sessionId: 's', data: { pathname: '/dashboard' } },
+    ]);
+    expect(s.route).toBe('/dashboard');
+  });
+});

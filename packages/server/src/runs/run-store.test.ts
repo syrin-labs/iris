@@ -1,6 +1,7 @@
 import { removeTempDir } from '../temp-dir.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { asRunId, RunReadError, type ReticleVerificationRun } from '@reticlehq/core';
@@ -47,6 +48,35 @@ describe('RunStore — temp-dir filesystem, never touches the repo', () => {
 
   afterEach(async () => {
     await removeTempDir(join(root, '..'));
+  });
+
+  /**
+   * The write is the thing people wait on; the notification must never be able to break it.
+   */
+  it('notifies AFTER the run is readable, so a listener never races the rename', async () => {
+    let onDiskWhenNotified: boolean | undefined;
+    const notified = new RunStore(fs, root, {
+      // Checked SYNCHRONOUSLY inside the callback: the whole claim is that a listener woken here can
+      // already read the run, and asserting after the write returns would prove nothing about order.
+      onWrote: () => {
+        onDiskWhenNotified = existsSync(join(root, 'runs', 'run-notify.json'));
+      },
+    });
+    await notified.write(make('run-notify', 1000));
+    expect(onDiskWhenNotified).toBe(true);
+    const read = await notified.read(asRunId('run-notify'));
+    expect(read.ok).toBe(true);
+  });
+
+  it('a listener that throws does not fail the durable write', async () => {
+    const notified = new RunStore(fs, root, {
+      onWrote: () => {
+        throw new Error('sync is offline');
+      },
+    });
+    await expect(notified.write(make('run-throwing', 1000))).resolves.toBeUndefined();
+    const read = await notified.read(asRunId('run-throwing'));
+    expect(read.ok).toBe(true);
   });
 
   it('writes then reads a run round-trip', async () => {

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ReticleCommand } from '@reticlehq/core';
 import { ReticleTool } from '../tools/tool-names.js';
 import { asNumber, asString } from '../tools/tools-helpers.js';
+import { idleMsSchema } from '../tools/numeric-bounds.js';
 import type { ToolDef, ToolDeps } from '../tools/tools.js';
 
 /**
@@ -16,8 +17,7 @@ export const SESSION_TOOLS: ToolDef[] = [
     description:
       'Tune the presenter session for this app. { idleEndMs } sets how long the session stays open after you go quiet before the panel shows the human you are WAITING (your turn). Default 5min — the SLOW backstop; signal handback IMMEDIATELY with reticle_session{action:"yield"} instead of waiting for this. Lower it for snappier auto-handback, raise it for a slow app where long gaps between your tool calls are normal. Enforced SERVER-SIDE (immune to background-tab throttling); it also fires if you (the MCP client) disconnect — so a forgotten or crashed session never leaves the HUD reading "live". Going quiet then acting again revives the session automatically. Returns { applied, idleEndMs }.',
     inputSchema: {
-      idleEndMs: z
-        .number()
+      idleEndMs: idleMsSchema
         .optional()
         .describe(
           'Idle window in milliseconds after which the panel shows WAITING (your turn). Default: 300000 (5 min) — the slow backstop; prefer reticle_session{action:"yield"}. Raise for slow apps.',

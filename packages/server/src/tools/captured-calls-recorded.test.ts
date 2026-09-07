@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { SessionState } from '@reticlehq/core';
 import { ReticleTool } from './tool-names.js';
 import { runTool } from './invoke-tool.js';
+import { buildDynamicTools } from './dynamic-tools.js';
 import { CaptureLedger } from '../honesty/feature-capture.js';
 import { createNodeFileSystem } from '../project/fs-port.js';
 import { BaselineStore } from '../project/baselines.js';
@@ -89,5 +90,32 @@ describe('the dispatch point records the calls the journal never keeps', () => {
     await runTool(tool(ReticleTool.ACT), deps(session(capture)), { ref: REF });
 
     expect(capture.calls()).toEqual([]);
+  });
+});
+
+describe('the dispatch point counts every tool call, whatever route it took', () => {
+  it('counts a call under the tool name, including one that drives the page', async () => {
+    const capture = new CaptureLedger();
+    const only = session(capture);
+
+    await runTool(tool(ReticleTool.ACT), deps(only), { ref: REF });
+    await runTool(tool(ReticleTool.ACT), deps(only), { ref: REF });
+    await runTool(tool(ReticleTool.SNAPSHOT), deps(only), {});
+
+    expect([...capture.toolCalls()]).toEqual([
+      [ReticleTool.ACT, 2],
+      [ReticleTool.SNAPSHOT, 1],
+    ]);
+  });
+
+  it('attributes a reticle_run dispatch to the tool it RAN, not to reticle_run', async () => {
+    const capture = new CaptureLedger();
+    const inner = tool(ReticleTool.EXPLORE);
+    const run = buildDynamicTools([inner]).find((t) => ReticleTool.RUN === t.name);
+    if (run === undefined) throw new Error('reticle_run is missing from the dynamic tools');
+
+    await runTool(run, deps(session(capture)), { tool: ReticleTool.EXPLORE });
+
+    expect([...capture.toolCalls()]).toEqual([[ReticleTool.EXPLORE, 1]]);
   });
 });

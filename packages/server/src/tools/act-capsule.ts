@@ -16,6 +16,7 @@ import type { DivergenceCapsule } from '../capsule/capsule.js';
 import { ReticleTool } from './tool-names.js';
 import { asRecord, asString } from './tools-helpers.js';
 import type { ToolDeps } from './tool-kit.js';
+import { sessionRoot } from '../project/session-root.js';
 
 interface CapsuleSaveInputs {
   deps: ToolDeps;
@@ -25,20 +26,35 @@ interface CapsuleSaveInputs {
   args: Record<string, unknown>;
   actResult: { result?: unknown };
   actedSource?: { file: string; line: number };
+  /**
+   * The `.reticle` this capsule belongs in, from the session the act ACTUALLY drove.
+   *
+   * Passed in rather than re-resolved here, because re-resolving loses twice: `args.sessionId` is
+   * frequently absent, and `sessions.resolve(undefined)` throws whenever more than one tab is
+   * connected — which is precisely the multi-project case this routing exists for, so it failed in
+   * exactly the situation it was written to fix. The caller also knows about a session the act
+   * FOLLOWED through a navigation; this file cannot.
+   */
+  root?: string | undefined;
 }
 
 /** Returns the capsule id when one was written, or undefined when there was nothing to save. */
 export async function saveFailedAssertCapsule(
   inputs: CapsuleSaveInputs,
 ): Promise<string | undefined> {
-  const { deps, verdict, capsule, links, args, actResult, actedSource } = inputs;
+  const { deps, verdict, capsule, links, args, actResult, actedSource, root: given } = inputs;
   if (verdict.pass || capsule === undefined) return undefined;
 
   const id = capsuleId(deps.now(), asString(args['ref']) ?? 'assert');
   const expectedText = links
     .map((l) => ('name' in l ? `${l.kind} ${String(l.name)}` : l.kind))
     .join(' AND ');
-  const saved = await new CapsuleStore(deps.fs, deps.reticleRoot).save({
+  // The capsule belongs to the project whose app just failed, not to wherever the daemon stands.
+  // Same rule and same resolver as every other artifact: a capsule written into a sibling repo is
+  // evidence filed against a codebase that did not produce it, and it outlives the turn.
+  // The caller's answer wins; the resolver is the fallback for callers that have no session.
+  const root = given ?? sessionRoot(deps, asString(args['sessionId']));
+  const saved = await new CapsuleStore(deps.fs, root).save({
     version: CAPSULE_VERSION,
     id,
     createdAt: deps.now(),

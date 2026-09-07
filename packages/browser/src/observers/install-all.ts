@@ -17,6 +17,7 @@ import { installStoreState } from './state.js';
 import { installFocus } from './focus.js';
 import { installBlindSpots } from './blind-spots.js';
 import { installDownload } from './download.js';
+import { installContextOpen } from './context-open.js';
 import { installNetwork } from './network.js';
 import { installIpc, ipcNetOverrides, isReticleOwnIpc } from './ipc.js';
 import { installPerf } from './perf.js';
@@ -74,5 +75,6 @@ export function installAllObservers(emit: Emit, options: InstallOptions): Teardo
     ),
     guard(emit, SdkSite.DOM_OBSERVER, () => installBlindSpots(emit)), // cross-origin iframes the SDK can't see → BLIND_SPOT (coverage: partial)
     guard(emit, SdkSite.HEALTH_OBSERVER, () => installHealth(emit)), // page visibility/focus health + heartbeat
+    guard(emit, SdkSite.DOM_OBSERVER, () => installContextOpen(emit)), // window.open → CONTEXT_OPENED (the consequence may live in another context)
   ];
 }

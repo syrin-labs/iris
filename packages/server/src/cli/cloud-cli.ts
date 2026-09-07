@@ -1,30 +1,60 @@
 /**
- * Cloud subcommands for the `reticle` CLI — the user/agent door to Reticle Cloud, folded into the ONE
+ * Cloud subcommands for the `reticle` CLI — the user/agent door to the hosted service, folded into the ONE
  * tool (was the standalone `reticle-cloud` bootstrap script). These are THIN clients over the `/v1` API:
  * the moat is the server, not these verbs, and OSS reticle already ships the cloud-sync client — this just
  * surfaces it. Creds live under `~/.reticle`: `session.json` (human token from `reticle login`) and
  * `credentials.json` (per-project api keys from `reticle link`). The non-secret repo binding + sync policy
  * is `<repo>/.reticle/cloud.json`. Auth for a command = `RETICLE_CLOUD_KEY` env (agent) OR the login token.
  */
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { NodePlatform } from '../platform.js';
-import { spawn } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { z } from 'zod';
 import { createNodeFileSystem } from '../project/fs-port.js';
-import { RunStore } from '../runs/run-store.js';
-import { resolveProjectCloud } from '../cloud/cloud-config.js';
-import { cloudFetch, syncRunToCloud, SyncOutcome } from '../cloud/cloud-sync.js';
+import { CLOUD_LINK_FILE, resolveProjectCloud } from '../cloud/cloud-config.js';
+import { applyCredential, findCredential } from './cloud-keystore.js';
+import { defaultProjectFor } from './project-name.js';
+import { RETICLE_CONFIG_BASENAME } from './cli-port.js';
+import { normalizeUrl } from './cloud-session.js';
+import { cmdLogin, cmdLogout } from './cloud-login.js';
+import {
+  api,
+  baseUrl,
+  bearer,
+  CREDENTIALS_FILE,
+  emit,
+  err,
+  flags,
+  hint,
+  home,
+  readJson,
+  readSession,
+  readSessionFor,
+  RETICLE_DIR,
+} from './cloud-kit.js';
+import { describeSync, runSyncCycle } from '../cloud/sync-cycle.js';
+import { diskSink, diskSource, readCloudIssues, readCloudState } from '../cloud/sync-disk.js';
 
-const DEFAULT_URL = 'http://localhost:8890';
-const RETICLE_DIR = '.reticle';
-const SESSION_FILE = 'session.json';
-const CREDENTIALS_FILE = 'credentials.json';
-const CLOUD_LINK_FILE = 'cloud.json';
-const DEFAULT_PROJECT_ID = 'default';
-
+/**
+ * Where `reticle login` dials when nothing says otherwise: the hosted service.
+ *
+ * This is the same origin as the dashboard — the API serves the built console — so there is one
+ * host for a user to know and one for us to configure.
+ *
+ * It used to be `http://localhost:8890`, which is correct for exactly one audience: whoever is
+ * developing the service itself. Every other user — the entire point of publishing the package —
+ * typed `reticle login` and got a connection refused against a port on their own machine, which
+ * reads as "the cloud is down", not "you are dialling the wrong host". Developing against a local
+ * API is now what needs saying out loud, via RETICLE_CLOUD_URL, because that is the rarer case.
+ */
+/**
+ * One session file per host, so more than one environment can be logged in at once.
+ *
+ * `session.json` stays what it always was — the ACTIVE login, and the thing a bare command with no
+ * override resolves through. This directory is what makes staging and production hold at the same
+ * time instead of clobbering each other, which is the whole reason a single file was not enough.
+ */
 const CLOUD_COMMANDS: ReadonlySet<string> = new Set([
   'login',
   'logout',
@@ -32,7 +62,10 @@ const CLOUD_COMMANDS: ReadonlySet<string> = new Set([
   'link',
   'project',
   'config',
+  'issues',
+  'memory',
   'push',
+  'sync',
   'runs',
   'regression',
   'share',
@@ -40,253 +73,104 @@ const CLOUD_COMMANDS: ReadonlySet<string> = new Set([
 export const isCloudCommand = (cmd: string | undefined): boolean =>
   cmd !== undefined && CLOUD_COMMANDS.has(cmd);
 
-const home = (): string => join(homedir(), RETICLE_DIR);
-const err = (msg: string): void => {
-  process.stderr.write(`reticle: ${msg}\n`);
-};
-/** A next-step nudge on stderr (humans read it; agents parse stdout JSON and ignore this). */
-const hint = (msg: string): void => {
-  process.stderr.write(`→ ${msg}\n`);
-};
-const emit = (obj: unknown): void => {
-  process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
-};
+/** `reticle sync --watch` — keep cycling instead of exiting. */
+const WATCH_FLAG = '--watch';
 
-/** Read + parse a JSON file, or null when missing/malformed (never throws). */
-const readJson = async (path: string): Promise<unknown> => {
-  try {
-    return JSON.parse(await readFile(path, 'utf8'));
-  } catch {
-    return null;
-  }
-};
+/**
+ * How often `--watch` cycles.
+ *
+ * A minute is chosen against what a cycle COSTS, not against how fresh anybody needs the dashboard:
+ * an unchanged session sends one small GET and nothing else, so a minute is cheap enough that nobody
+ * turns it off — and a sync people turn off is the only kind that actually loses data.
+ */
+const DEFAULT_SYNC_INTERVAL_MS = 60_000;
 
-/** Parse `--flag value` pairs out of an argv tail. */
-const flags = (argv: readonly string[]): Record<string, string> => {
-  const f: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i += 1) {
-    const a = argv[i];
-    if (a !== undefined && a.startsWith('--') && i + 1 < argv.length) {
-      const v = argv[i + 1];
-      if (v !== undefined) f[a.slice(2)] = v;
-      i += 1;
-    }
-  }
-  return f;
-};
+/**
+ * How a key is named out loud: enough to match it against the dashboard, never enough to use.
+ *
+ * The same shape the console shows (`displayPrefix`), so the two surfaces name one key identically
+ * and somebody can tell at a glance which row this repo is using.
+ */
+const KEY_HINT_CHARS = 16;
+const keyHint = (key: string): string =>
+  key.length <= KEY_HINT_CHARS ? key : `${key.slice(0, KEY_HINT_CHARS)}…`;
 
-const SessionSchema = z.object({ url: z.string(), token: z.string(), orgName: z.string() });
-const readSession = async (): Promise<z.infer<typeof SessionSchema> | null> => {
-  const parsed = SessionSchema.safeParse(await readJson(join(home(), SESSION_FILE)));
-  return parsed.success ? parsed.data : null;
-};
-
-const baseUrl = (session: { url: string } | null): string => {
-  const env = process.env['RETICLE_CLOUD_URL'];
-  return env !== undefined && env.length > 0
-    ? env.replace(/\/+$/, '')
-    : (session?.url ?? DEFAULT_URL);
-};
-
-/** Bearer for a command: an explicit api key (agent) wins, else the human login token. */
-const bearer = (session: { token: string } | null): string | null => {
-  const key = process.env['RETICLE_CLOUD_KEY'];
-  if (key !== undefined && key.length > 0) return key;
-  return session?.token ?? null;
-};
-
-/** One `/v1` call. Throws a friendly Error on a non-2xx so the command surfaces it and exits 1. */
-const api = async (
-  method: string,
+/**
+ * The api key this machine already holds for a project ON THIS CLOUD, if any.
+ *
+ * Two shapes, matching the resolver: `{ key, url }` is what `link` writes now and is only returned
+ * when the URL matches, and a bare string is the legacy shape with no URL to check. Without the URL
+ * check this would happily reuse a production key for a self-hosted link, because `link` names
+ * every project "default" and the two collide in one slot.
+ */
+const storedCredential = async (
+  projectId: string,
   url: string,
-  token: string | null,
-  body?: unknown,
-): Promise<unknown> => {
-  const headers: Record<string, string> = {};
-  if (token !== null) headers['authorization'] = `Bearer ${token}`;
-  if (body !== undefined) headers['content-type'] = 'application/json';
-  const init: { method: string; headers: Record<string, string>; body?: string } = {
-    method,
-    headers,
-  };
-  if (body !== undefined) init.body = JSON.stringify(body);
-  const res = await cloudFetch(url, init);
-  const text = await res.text();
-  let json: unknown = null;
-  if (text.length > 0) {
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new Error(`expected JSON from ${method} ${url} but got: ${text.slice(0, 120)}`);
-    }
+  orgId: string | undefined,
+): Promise<string | undefined> =>
+  findCredential(await readJson(join(home(), CREDENTIALS_FILE)), projectId, url, orgId);
+
+/**
+ * What a key is good for, or undefined when the cloud will not accept it.
+ *
+ * Never throws: a revoked key, a rotated one and an unreachable cloud are all "cannot reuse this",
+ * and the caller's answer to every one of them is the same — mint a fresh one.
+ */
+const validateKey = async (
+  url: string,
+  key: string,
+): Promise<z.infer<typeof WhoamiSchema> | undefined> => {
+  try {
+    return WhoamiSchema.parse(await api('GET', `${url}/v1/cloud/whoami`, key));
+  } catch {
+    return undefined;
   }
-  if (!res.ok) {
-    const parsed = z.object({ error: z.object({ message: z.string() }) }).safeParse(json);
-    throw new Error(parsed.success ? parsed.data.error.message : `${res.status} ${res.statusText}`);
-  }
-  return json;
 };
 
-const LoginSchema = z.object({ token: z.string(), org: z.object({ name: z.string() }) });
 const KeySchema = z.object({ projectId: z.string(), projectName: z.string(), key: z.string() });
-const WhoamiSchema = z.object({ projectId: z.string(), projectName: z.string() });
+const WhoamiSchema = z.object({
+  projectId: z.string(),
+  projectName: z.string(),
+  /**
+   * Which tenant the key belongs to. Optional for the same reason `dashboardUrl` is — an older
+   * cloud does not send it — and when it is missing a stored key cannot be proved to be ours, which
+   * is why the reuse path below mints instead of guessing.
+   */
+  orgId: z.string().optional(),
+  /**
+   * Where this project's dashboard lives. Optional because an older cloud does not send it, and a
+   * CLI that refused to link against one would break the thing it is supposed to connect.
+   */
+  dashboardUrl: z.string().optional(),
+});
 const CreatedProjectSchema = z.object({ projectId: z.string(), name: z.string() });
 const ProjectsListSchema = z.object({
   projects: z.array(z.object({ projectId: z.string(), name: z.string() })),
 });
 
 /** Resolve a --project value that may be a slug id OR a display name into the canonical projectId. */
+/**
+ * The id for the project the caller named, creating it if it does not exist yet.
+ *
+ * It used to refuse — "create it with `reticle project create`" — which made naming a project a
+ * two-command bookkeeping ritual for the COMMON case: a first repo, whose project has of course not
+ * been created yet. That refusal is also the only reason the magic path existed: bare `link` binds
+ * to a project called `Default` precisely so nobody has to meet this error.
+ *
+ * Creating is announced rather than silent. A tool that quietly invents a durable, billable object
+ * is its own surprise, and the whole point of this change is that the automatic path SAYS what it
+ * did.
+ */
 const resolveProjectId = async (url: string, token: string, wanted: string): Promise<string> => {
   const { projects } = ProjectsListSchema.parse(await api('GET', `${url}/v1/projects`, token));
   const lc = wanted.toLowerCase();
   const match = projects.find((p) => p.projectId === wanted || p.name.toLowerCase() === lc);
-  if (match === undefined)
-    throw new Error(
-      `no project "${wanted}" — create it with \`reticle project create "${wanted}"\``,
-    );
-  return match.projectId;
-};
-
-/**
- * `reticle login --email <e> [--org <name>] [--code <123456>]` — sign in, cache the token under
- * ~/.reticle.
- *
- * TWO STEPS, because the cloud proves you own the inbox before it hands out a session: ask for a code,
- * then exchange it. (It used to take an email alone — which meant anyone who knew your address owned your
- * org.) `--org` is only consulted when the account is brand new; a returning user never needs it.
- *
- * Without `--code` we request one and stop, telling the user to re-run with it. The one exception is a
- * LOCAL cloud, whose dev mailer cannot actually deliver mail and so echoes the code back in its response
- * (`devCode`) — there we complete the login in a single command rather than asking a developer to read a
- * code out of a server log they may not even be tailing.
- */
-const RequestCodeSchema = z.object({ devCode: z.string().optional() });
-
-const DeviceStartSchema = z.object({
-  deviceCode: z.string(),
-  userCode: z.string(),
-  verificationUri: z.string(),
-  verificationUriComplete: z.string(),
-  interval: z.number(),
-  expiresAt: z.number(),
-});
-const DevicePollSchema = z.object({
-  status: z.string(),
-  token: z.string().optional(),
-  org: z.object({ name: z.string() }).optional(),
-});
-
-/** Best-effort open the approval page in the default browser; the printed URL is the headless fallback. */
-const openBrowser = (target: string): void => {
-  const cmd =
-    NodePlatform.MACOS === process.platform
-      ? 'open'
-      : NodePlatform.WINDOWS === process.platform
-        ? 'cmd'
-        : 'xdg-open';
-  const args = NodePlatform.WINDOWS === process.platform ? ['/c', 'start', '', target] : [target];
-  try {
-    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
-    child.on('error', () => undefined);
-    child.unref();
-  } catch {
-    /* no opener available — the user opens the printed URL manually */
-  }
-};
-
-/** Persist a session token under ~/.reticle and print the next step. Shared by both login paths. */
-const writeSession = async (url: string, token: string, orgName: string): Promise<void> => {
-  await mkdir(home(), { recursive: true });
-  await writeFile(
-    join(home(), SESSION_FILE),
-    `${JSON.stringify({ url, token, orgName }, null, 2)}\n`,
+  if (match !== undefined) return match.projectId;
+  const created = CreatedProjectSchema.parse(
+    await api('POST', `${url}/v1/projects`, token, { name: wanted }),
   );
-  emit({ loggedIn: orgName, session: join(home(), SESSION_FILE) });
-  hint(
-    'next: `reticle link` to bind this repo to your Default project (or `reticle project create <name>` first)',
-  );
-};
-
-/**
- * Browser device flow — the DEFAULT `reticle login` (like `gh auth login`): fetch a device + user code,
- * open the browser to approve, then poll until the user confirms. No email to type, no code to copy back.
- */
-const cmdLoginDevice = async (): Promise<number> => {
-  const url = baseUrl(null);
-  const started = DeviceStartSchema.parse(
-    await api('POST', `${url}/v1/auth/device/start`, null, {}),
-  );
-  hint(
-    `Opening ${started.verificationUri} — confirm this code in the browser: ${started.userCode}`,
-  );
-  openBrowser(started.verificationUriComplete);
-  const intervalMs = Math.max(1, started.interval) * 1000;
-  for (;;) {
-    await sleep(intervalMs);
-    const poll = DevicePollSchema.parse(
-      await api('POST', `${url}/v1/auth/device/token`, null, { deviceCode: started.deviceCode }),
-    );
-    if ('approved' === poll.status && poll.token !== undefined && poll.org !== undefined) {
-      await writeSession(url, poll.token, poll.org.name);
-      return 0;
-    }
-    if ('pending' === poll.status) {
-      if (Date.now() > started.expiresAt) {
-        err('device login expired — run `reticle login` again');
-        return 1;
-      }
-      continue;
-    }
-    err(
-      'denied' === poll.status
-        ? 'device login was denied in the browser'
-        : 'device login expired — run `reticle login` again',
-    );
-    return 1;
-  }
-};
-
-/**
- * `reticle login` — browser device flow by default; `--email <e>` (or a positional email) keeps the
- * headless two-step code path for CI/servers where opening a browser makes no sense.
- */
-const cmdLogin = async (argv: readonly string[]): Promise<number> => {
-  const f = flags(argv);
-  const positional = argv[0] !== undefined && !argv[0].startsWith('--') ? argv[0] : undefined;
-  const email = f['email'] ?? positional;
-  if (email === undefined) return cmdLoginDevice();
-  const org = f['org'];
-  const url = baseUrl(null);
-
-  let code = f['code'];
-  if (code === undefined) {
-    const requested = RequestCodeSchema.parse(
-      await api('POST', `${url}/v1/auth/request-code`, null, {
-        email,
-        ...(org !== undefined ? { orgName: org } : {}),
-      }),
-    );
-    // A real cloud mails the code and never echoes it; a local one cannot mail, so it hands it back.
-    if (requested.devCode === undefined) {
-      emit({ codeSent: true, to: email });
-      hint(`check your inbox, then: \`reticle login --email ${email} --code <the 6-digit code>\``);
-      return 0;
-    }
-    code = requested.devCode;
-  }
-
-  const parsed = LoginSchema.parse(
-    await api('POST', `${url}/v1/auth/login`, null, { email, code }),
-  );
-  await writeSession(url, parsed.token, parsed.org.name);
-  return 0;
-};
-
-/** `reticle logout` — forget the cached session token (per-project keys under credentials.json stay). */
-const cmdLogout = async (): Promise<number> => {
-  await writeFile(join(home(), SESSION_FILE), '').catch(() => undefined);
-  emit({ loggedOut: true });
-  return 0;
+  hint(`created project "${wanted}" (${created.projectId}) — it did not exist yet`);
+  return created.projectId;
 };
 
 /**
@@ -302,8 +186,25 @@ const cmdWhoami = async (): Promise<number> => {
     homedir(),
     process.env,
   );
+  /*
+   * The sync half of "what is my state". Without it the honest answer to "why does the dashboard
+   * look old?" was to go and read a JSON file — and the two failure modes a person actually hits
+   * (nothing has synced yet, and the last attempt errored) looked identical from out here.
+   */
+  const reticleRoot = join(process.cwd(), RETICLE_DIR);
+  const state = readCloudState(reticleRoot);
+  const decisions = Object.keys(readCloudIssues(reticleRoot).triage).length;
   emit({
     loggedInAs: session?.orgName ?? null,
+    sync: {
+      lastPushAt: state.lastPushAt ?? null,
+      lastPullAt: state.lastPullAt ?? null,
+      /** Present only when the machine is behind BECAUSE something failed, which is the useful case. */
+      ...(state.lastError === undefined ? {} : { lastError: state.lastError }),
+      /** Decisions collected from the dashboard and readable locally. */
+      decisionsHeld: decisions,
+      neverSynced: state.lastPullAt === undefined,
+    },
     repo: {
       attached: cloud.config !== null,
       projectId: cloud.projectId,
@@ -318,11 +219,18 @@ const cmdWhoami = async (): Promise<number> => {
 
 /** `reticle project ls` / `reticle project create <name>` — key- or session-authed. */
 const cmdProject = async (argv: readonly string[]): Promise<number> => {
-  const session = await readSession();
+  const active = await readSession();
+  const url = baseUrl(active);
+  const session = await readSessionFor(url);
   const token = bearer(session);
-  const url = baseUrl(session);
   if (null === token) {
-    err('run `reticle login` first, or set RETICLE_CLOUD_KEY');
+    // Name BOTH hosts when there is a session for a different one. "Run reticle login" on its own is
+    // baffling to somebody who just did — the useful fact is that they logged in somewhere else.
+    err(
+      null !== active && normalizeUrl(active.url) !== url
+        ? `signed in to ${normalizeUrl(active.url)}, but this command targets ${url} — run \`reticle login --url ${url}\`, or set RETICLE_CLOUD_KEY`
+        : `not signed in to ${url} — run \`reticle login --url ${url}\`, or set RETICLE_CLOUD_KEY`,
+    );
     return 2;
   }
   const sub = argv[0];
@@ -374,34 +282,135 @@ const cmdProject = async (argv: readonly string[]): Promise<number> => {
  */
 const cmdLink = async (argv: readonly string[]): Promise<number> => {
   const f = flags(argv);
-  const session = await readSession();
-  const url = baseUrl(session);
+  const url = baseUrl(await readSession(), f['url']);
+  // Same rule as every other authed verb: the token is looked up by the host it will be sent to.
+  const session = await readSessionFor(url);
   const envKey = process.env['RETICLE_CLOUD_KEY'];
+  /*
+   * Read the existing binding FIRST, because it decides which project a bare `link` targets.
+   * Re-running `link` is ordinary — rotating a key, repointing an environment — and it must land in
+   * the project this repo already reports to, or its history splits in two without saying so.
+   */
+  const priorLink = await readJson(join(process.cwd(), RETICLE_DIR, CLOUD_LINK_FILE));
+  const priorProjectId =
+    'object' === typeof priorLink && priorLink !== null
+      ? (priorLink as Record<string, unknown>)['projectId']
+      : undefined;
 
   let projectId: string;
   let projectName: string;
   let key: string;
+  /**
+   * The tenant this binding belongs to, recorded so the credential can be filed and found per-org.
+   * Undefined against an older cloud, where the slot stays cloud+project as it always was.
+   */
+  let orgId: string | undefined;
+  /** The key this machine already had for the slot, and whether it provably belongs to another tenant. */
+  let priorKey: string | undefined;
+  let priorIsForeign = false;
+  /*
+   * Where this project's dashboard lives. Asked of the cloud rather than derived from `url`: the API
+   * origin and the console origin are different hosts in every deployment that is not a laptop, so a
+   * link the CLI guessed would be wrong exactly where it matters.
+   */
+  let dashboardUrl: string | undefined;
+  /** Whether the key was already on this machine — so the report can say so instead of "minted". */
+  let reusedKey = false;
+  // Tracked separately from the value: an OLDER cloud answers whoami without a dashboardUrl, and
+  // keying the fallback off the value would ask the same question twice every time.
+  let askedWhoami = false;
   if (envKey !== undefined && envKey.length > 0) {
     const who = WhoamiSchema.parse(await api('GET', `${url}/v1/cloud/whoami`, envKey));
     projectId = who.projectId;
     projectName = who.projectName;
+    dashboardUrl = who.dashboardUrl;
+    orgId = who.orgId;
+    askedWhoami = true;
     key = envKey;
   } else if (session !== null) {
     // --project accepts a slug id OR a display name; default when omitted. Resolve to the canonical id.
     const wanted = f['project'];
+    /*
+     * A repo is named after itself, not "Default".
+     *
+     * Every repo used to bind to one project called "Default" — measured, two unrelated checkouts on
+     * one account merged their runs, issues and impact into a single bucket, and the dashboard's
+     * per-project view described nothing. It is also what let two TENANTS collide, since a
+     * credential slot built from a project id is only as distinct as the ids are.
+     */
+    const fallback = defaultProjectFor(
+      basename(process.cwd()),
+      'string' === typeof priorProjectId ? priorProjectId : undefined,
+    );
     const targetId =
       wanted === undefined
-        ? DEFAULT_PROJECT_ID
+        ? await resolveProjectId(url, session.token, fallback)
         : await resolveProjectId(url, session.token, wanted);
-    const minted = KeySchema.parse(
-      await api('POST', `${url}/v1/keys`, session.token, {
-        name: 'reticle-cli',
-        projectId: targetId,
-      }),
-    );
-    projectId = minted.projectId;
-    projectName = minted.projectName;
-    key = minted.key;
+    /*
+     * Reuse the key this machine already holds for the project, rather than minting another.
+     *
+     * `link` was idempotent about the BINDING and not about the KEY: two runs against one project
+     * left two live `reticle-cli` keys on the account, each valid, neither identifiable to a repo.
+     * Agents retry — that is what agents do — so it accumulates silently until somebody has a key
+     * list they cannot reason about and revokes the wrong one. Measured: proving an unrelated fix
+     * with two `link` runs created exactly that.
+     *
+     * Validated before trusting, because a stored key can have been revoked or rotated from the
+     * dashboard and a stale credential must not strand the repo. The check is the whoami call the
+     * mint path already makes for `dashboardUrl`, so the common path costs no extra round trip —
+     * and a key that fails it is replaced rather than reported.
+     */
+    const existing = await storedCredential(targetId, url, session.orgId);
+    const validated = existing === undefined ? undefined : await validateKey(url, existing);
+    /*
+     * A valid key is not the same as OUR key.
+     *
+     * `validateKey` only asks whether the cloud still accepts it, and a key belonging to another
+     * organisation on the same cloud passes that question perfectly. With every project named
+     * "default", the slot `<url>::default` was shared across tenants — so a brand-new workspace
+     * signing in on a machine that had linked a different account reused that account's key and
+     * would have pushed its runs into a stranger's dashboard. Measured, not hypothesised.
+     *
+     * So reuse now requires PROOF of a tenant match, and treats anything less as no match: an older
+     * cloud that omits `orgId`, or a session file written before we recorded one, both fall through
+     * to minting. Minting a second key is a tidiness problem; pushing to the wrong tenant is a
+     * disclosure, and only one of those is worth defaulting to.
+     */
+    const sameTenant =
+      validated !== undefined &&
+      session.orgId !== undefined &&
+      validated.orgId !== undefined &&
+      validated.orgId === session.orgId;
+    const reusable = sameTenant ? validated : undefined;
+    priorKey = existing;
+    // Provably somebody else's: it still works on this cloud AND whoami names a different org. A key
+    // that merely FAILED validation is our own revoked one, and overwriting that is the point.
+    priorIsForeign =
+      validated !== undefined &&
+      validated.orgId !== undefined &&
+      session.orgId !== undefined &&
+      validated.orgId !== session.orgId;
+    if (existing !== undefined && reusable !== undefined) {
+      projectId = reusable.projectId;
+      projectName = reusable.projectName;
+      dashboardUrl = reusable.dashboardUrl;
+      orgId = reusable.orgId;
+      askedWhoami = true;
+      key = existing;
+      reusedKey = true;
+    } else {
+      const minted = KeySchema.parse(
+        await api('POST', `${url}/v1/keys`, session.token, {
+          name: 'reticle-cli',
+          projectId: targetId,
+        }),
+      );
+      projectId = minted.projectId;
+      projectName = minted.projectName;
+      key = minted.key;
+      // The key was minted WITH this session, so its tenant is this session's by construction.
+      orgId = session.orgId;
+    }
   } else {
     err('run `reticle login` first, or set RETICLE_CLOUD_KEY to link with an existing key');
     return 2;
@@ -413,10 +422,28 @@ const cmdLink = async (argv: readonly string[]): Promise<number> => {
   const prev = await readJson(linkPath);
   const prevObj =
     'object' === typeof prev && prev !== null ? (prev as Record<string, unknown>) : {};
+  // The minted-key path has not asked yet. Best-effort: a link that works is worth more than a link
+  // that also has a link in it, and an older cloud simply does not send one.
+  if (!askedWhoami) {
+    try {
+      const who = WhoamiSchema.parse(await api('GET', `${url}/v1/cloud/whoami`, key));
+      dashboardUrl = who.dashboardUrl;
+      // Only FILL IN a tenant we do not have. The session we minted with is the authority on which
+      // org this key belongs to; letting a later lookup overwrite it is how the answer drifts.
+      orgId = orgId ?? who.orgId;
+    } catch {
+      // Older cloud, or a transient failure. The HUD shows its list without a link.
+    }
+  }
+
   const cloudJson = {
     projectId,
     projectName,
+    // Recorded so the daemon resolves the credential in the ORG slot rather than the ambiguous
+    // cloud+project one, which two tenants on one cloud both answer to.
+    ...(orgId === undefined ? {} : { orgId }),
     url,
+    ...(dashboardUrl === undefined ? {} : { dashboardUrl }),
     sync: prevObj['sync'] ?? { runs: true, memory: true, flows: true },
     verify: prevObj['verify'] ?? 'local',
   };
@@ -425,15 +452,53 @@ const cmdLink = async (argv: readonly string[]): Promise<number> => {
   await mkdir(home(), { recursive: true });
   const credPath = join(home(), CREDENTIALS_FILE);
   const creds = (await readJson(credPath)) ?? {};
-  const credObj =
-    'object' === typeof creds && creds !== null ? (creds as Record<string, unknown>) : {};
-  credObj[projectId] = key;
+  const credObj = applyCredential(
+    'object' === typeof creds && creds !== null ? (creds as Record<string, unknown>) : {},
+    { projectId, url, key, orgId, priorKey, priorIsForeign },
+  );
   await writeFile(credPath, `${JSON.stringify(credObj, null, 2)}\n`);
 
   emit({ linked: projectName, projectId, cloudJson: linkPath, credentials: credPath });
+  /*
+   * Say what just happened, in the vocabulary of somebody who has used other tools.
+   *
+   * `link` mints the key and stores it for you, which is the product's whole edge — and it is
+   * invisible, which is its whole cost. A real report: somebody pasted a masked placeholder key
+   * into a `.env` because their mental model said "I must make a key and put it somewhere". One had
+   * already been minted and filed outside the repo. They did not need another step; they needed to
+   * be told the step had happened.
+   *
+   * The key is identified the way the dashboard identifies it — a prefix, never the secret — so
+   * this can be read aloud, pasted into an issue, or left in a terminal without leaking anything.
+   */
+  hint(`bound this repo to project "${projectName}"`);
+  hint(
+    reusedKey
+      ? `reusing key ${keyHint(key)} — already stored in ${credPath}, not in your repo`
+      : `minted key ${keyHint(key)} — stored in ${credPath}, not in your repo`,
+  );
+  hint('to change it: `reticle link --project <other>`; to inspect: `reticle whoami`');
   hint(
     'linked ✓ runs auto-push on `reticle verify`; `reticle push` sends existing local runs; `reticle whoami` shows state',
   );
+  /*
+   * A binding is not a connection.
+   *
+   * Without `.reticle.json` the app's bundle carries no projectId, so the daemon cannot attribute a
+   * session to this repo: its runs pool into whichever root the daemon itself was started in, and
+   * `sync` here reports "nothing to send" however much was actually recorded. Measured on this
+   * repo's bench app — two verdicts driven, then a sync that claimed there was nothing.
+   *
+   * Said AFTER the success line rather than refusing: the binding really was written and really is
+   * correct, and the missing half is one command away. Refusing would strand somebody who links
+   * before they install, which is a legitimate order to work in.
+   */
+  if (!(await createNodeFileSystem().exists(join(process.cwd(), RETICLE_CONFIG_BASENAME)))) {
+    hint(
+      `no ${RETICLE_CONFIG_BASENAME} here, so this app announces no project — its runs will not be ` +
+        'attributed to this binding. Run `reticle init` in the app, then restart the dev server.',
+    );
+  }
   return 0;
 };
 
@@ -475,8 +540,17 @@ const cmdConfig = async (argv: readonly string[]): Promise<number> => {
   return 0;
 };
 
-/** `reticle push` — best-effort push of local run artifacts to the linked project (honors sync policy). */
-const cmdPush = async (): Promise<number> => {
+/**
+ * `reticle sync [--watch]` — one full cycle: send the difference, collect what came back.
+ *
+ * This replaced a `push` that re-uploaded every run artifact on every invocation. That was fine with
+ * three runs and absurd with three hundred, and it only ever went one way — so a bug somebody
+ * resolved on the dashboard stayed open on the laptop forever.
+ *
+ * The sync POLICY is applied here rather than inside the protocol: a project that has turned runs or
+ * flows off simply presents a source with nothing in it, and the cycle does not need to know why.
+ */
+const cmdSync = async (argv: readonly string[]): Promise<number> => {
   const fs = createNodeFileSystem();
   const reticleRoot = join(process.cwd(), RETICLE_DIR);
   const cloud = await resolveProjectCloud(fs, reticleRoot, homedir(), process.env);
@@ -484,25 +558,58 @@ const cmdPush = async (): Promise<number> => {
     err('cloud not attached here — run `reticle link` (or set RETICLE_CLOUD_URL/KEY)');
     return 1;
   }
-  if (!cloud.policy.runs) {
-    emit({ pushed: 0, skipped: 'sync.runs is off for this project (reticle config --runs on)' });
-    return 0;
+  const config = cloud.config;
+  const full = diskSource(reticleRoot);
+  const source = {
+    runs: (): ReturnType<typeof full.runs> => (cloud.policy.runs ? full.runs() : []),
+    flows: (): readonly unknown[] => (cloud.policy.flows ? full.flows() : []),
+    // `memory` is the project's cross-run history and the derived records that summarise it.
+    derived: (kind: Parameters<typeof full.derived>[0]): unknown =>
+      cloud.policy.memory ? full.derived(kind) : undefined,
+  };
+
+  const once = async (): Promise<number> => {
+    const report = await runSyncCycle({
+      config,
+      source,
+      sink: diskSink(reticleRoot),
+      state: readCloudState(reticleRoot),
+      now: () => Date.now(),
+      request: async (url, init) => {
+        const res = await fetch(url, init);
+        return { status: res.status, text: await res.text() };
+      },
+    });
+    emit({
+      ok: report.ok,
+      project: cloud.projectId,
+      sent: {
+        runs: report.runsSent,
+        flows: report.flowsSent,
+        records: report.derivedSent,
+        ...(report.runsRejected.length > 0 ? { rejected: report.runsRejected } : {}),
+      },
+      pulled: report.pulled,
+      ...(report.morePending ? { morePending: true } : {}),
+      ...(report.error === undefined ? {} : { error: report.error }),
+    });
+    hint(describeSync(report));
+    return report.ok ? 0 : 1;
+  };
+
+  const watch = argv.includes(WATCH_FLAG);
+  if (!watch) return once();
+
+  const everyMs = Number(process.env['RETICLE_SYNC_INTERVAL_MS'] ?? DEFAULT_SYNC_INTERVAL_MS);
+  hint(`watching ${reticleRoot} — syncing every ${String(Math.round(everyMs / 1000))}s`);
+  for (;;) {
+    await once();
+    await sleep(everyMs);
   }
-  const store = new RunStore(fs, reticleRoot);
-  const ids = await store.list();
-  let pushed = 0;
-  let failed = 0;
-  for (const id of ids) {
-    const read = await store.read(id);
-    if (!read.ok) continue;
-    const res = await syncRunToCloud(read.run, cloud.config, cloudFetch);
-    if (res.outcome === SyncOutcome.SYNCED) pushed += 1;
-    else if (res.outcome === SyncOutcome.FAILED) failed += 1;
-  }
-  emit({ pushed, failed, total: ids.length, project: cloud.projectId });
-  if (pushed > 0) hint(`pushed ✓ see them in the dashboard Runs tab (${cloud.config.url})`);
-  return 0;
 };
+
+/** `reticle push` — the name people already type. One cycle, same as `reticle sync`. */
+const cmdPush = async (): Promise<number> => cmdSync([]);
 
 /** Resolve THIS repo's linked cloud (url + project-scoped key). Throws a friendly error if not attached. */
 const repoCloud = async (): Promise<{ url: string; apiKey: string }> => {
@@ -522,6 +629,85 @@ const repoCloud = async (): Promise<{ url: string; apiKey: string }> => {
 const cmdRuns = async (): Promise<number> => {
   const { url, apiKey } = await repoCloud();
   emit(await api('GET', `${url}/v1/runs`, apiKey));
+  return 0;
+};
+
+/**
+ * `reticle issues [--fix <fingerprint>]` — the triage queue, where the agent can reach it.
+ *
+ * The dashboard is a place a PERSON looks. The defects it lists were found by an agent, are usually
+ * fixed by an agent, and every one of them carries the prompt that would fix it — so requiring a
+ * browser to read them puts a human copy-paste in the middle of a loop that has no other human step
+ * in it.
+ *
+ * `--fix <fingerprint>` prints that one issue's fix prompt as BARE TEXT on stdout, nothing else: no
+ * JSON envelope, no label, no trailing commentary. That is what makes it pipeable — `reticle issues
+ * --fix <fp> | pbcopy`, or straight into an agent's stdin. Anything wrapped around it would have to
+ * be stripped by every caller, and the ones that forgot would paste our prose into their codebase.
+ */
+const cmdIssues = async (argv: readonly string[]): Promise<number> => {
+  const { url, apiKey } = await repoCloud();
+  const fixAt = argv.indexOf('--fix');
+  const wanted = -1 === fixAt ? undefined : argv[fixAt + 1];
+  if (fixAt !== -1 && wanted === undefined) {
+    err('usage: reticle issues --fix <fingerprint>');
+    return 2;
+  }
+  const body = await api('GET', `${url}/v1/issues`, apiKey);
+  if (wanted === undefined) {
+    emit(body);
+    return 0;
+  }
+  const parsed = z
+    .object({
+      issues: z.array(
+        z.object({ fingerprint: z.string(), title: z.string(), fixPrompt: z.string().nullish() }),
+      ),
+    })
+    .safeParse(body);
+  if (!parsed.success) {
+    err('the server did not return an issue list this build understands');
+    return 1;
+  }
+  const found = parsed.data.issues.find((i) => i.fingerprint === wanted);
+  if (found === undefined) {
+    err(`no issue with fingerprint '${wanted}' — run \`reticle issues\` to list them`);
+    return 2;
+  }
+  const prompt = found.fixPrompt;
+  if (prompt === undefined || null === prompt || 0 === prompt.length) {
+    // Silent on stdout, explicit on stderr: a caller piping this into an agent must get NOTHING
+    // rather than an apology, or the apology becomes the prompt.
+    err(`issue '${found.title}' carries no suggested fix — not every origin produces one`);
+    return 4;
+  }
+  process.stdout.write(`${prompt}\n`);
+  return 0;
+};
+
+/**
+ * `reticle memory [--subject <name>]` — what this project knows, where an agent can reach it.
+ *
+ * Shared memory only pays for itself if something READS it. An agent about to verify checkout should
+ * be able to ask what the team already knows about checkout before it starts, and it cannot open a
+ * browser to find out — so the knowledge has to arrive on stdout like everything else it consumes.
+ *
+ * Every call is recorded server-side as a consultation. That is the number which separates memory
+ * that is worth keeping from a wiki nobody opens, and it cannot be measured from the writing side.
+ *
+ * `--subject` narrows to one area, which is the call an agent should actually make: pulling the
+ * whole corpus to answer one question is the cost the sharded store was built to avoid.
+ */
+const cmdMemory = async (argv: readonly string[]): Promise<number> => {
+  const { url, apiKey } = await repoCloud();
+  const at = argv.indexOf('--subject');
+  const subject = -1 === at ? undefined : argv[at + 1];
+  if (-1 !== at && subject === undefined) {
+    err('usage: reticle memory [--subject <name>]');
+    return 2;
+  }
+  const query = subject === undefined ? '' : `?subject=${encodeURIComponent(subject)}`;
+  emit(await api('GET', `${url}/v1/memory${query}`, apiKey));
   return 0;
 };
 
@@ -552,9 +738,11 @@ export const runCloudCommand = async (argv: readonly string[]): Promise<number> 
   try {
     switch (cmd) {
       case 'login':
-        return await cmdLogin(rest);
+        // The linker is passed in rather than imported by cloud-login: login ends by linking and
+        // link needs a session, so the cycle is broken at this one call site.
+        return await cmdLogin(rest, cmdLink);
       case 'logout':
-        return await cmdLogout();
+        return await cmdLogout(rest);
       case 'whoami':
         return await cmdWhoami();
       case 'project':
@@ -565,8 +753,14 @@ export const runCloudCommand = async (argv: readonly string[]): Promise<number> 
         return await cmdConfig(rest);
       case 'push':
         return await cmdPush();
+      case 'sync':
+        return await cmdSync(rest);
       case 'runs':
         return await cmdRuns();
+      case 'issues':
+        return await cmdIssues(rest);
+      case 'memory':
+        return await cmdMemory(rest);
       case 'regression':
         return await cmdRegression();
       case 'share':

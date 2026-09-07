@@ -12,11 +12,17 @@
  * was offered and when — no identity, nothing about the machine.
  */
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { creditNudge, wasNudged } from './nudge-credit.js';
+import {
+  armUpdateNudgeFrom,
+  resetUpdateNudge,
+  takeUpdateNudge,
+  updateNudgeState,
+} from './update-nudge.js';
 
 const withDir = (fn: (dir: string) => void): void => {
   const dir = mkdtempSync(join(tmpdir(), 'nudge-'));
@@ -55,5 +61,46 @@ describe('crediting the update nudge', () => {
       expect(() => wasNudged('2.5.0', dir)).not.toThrow();
       expect(wasNudged('2.5.0', dir)).toBe(false);
     });
+  });
+});
+
+/**
+ * The nudge shipped for several releases and emitted NOTHING.
+ *
+ * `versionChange.nudged` answers "did the nudge cause this update", which only ever reaches us from
+ * machines that DID update. A cohort pinned three releases back never fires `version_changed` at
+ * all — so the one population worth understanding was the one the metric structurally could not
+ * see, while being nudged the whole time.
+ */
+describe('the nudge reports whether it actually fired', () => {
+  beforeEach(() => {
+    resetUpdateNudge();
+  });
+
+  it('reports nothing offered and nothing shown on a current install', () => {
+    expect(updateNudgeState()).toEqual({ shown: false });
+  });
+
+  /**
+   * The half that separates "nothing was available" from "something was and the nudge did not
+   * fire". Without `offered`, `shown: false` is both facts at once and only one is a defect.
+   */
+  it('reports the version it knows about even before an agent is told', () => {
+    armUpdateNudgeFrom({ latestVersion: '9.9.9' }, '1.0.0');
+    expect(updateNudgeState()).toEqual({ shown: false, offered: '9.9.9' });
+  });
+
+  it('reports it as shown once an agent has actually taken it', () => {
+    armUpdateNudgeFrom({ latestVersion: '9.9.9' }, '1.0.0');
+    expect(takeUpdateNudge()).toBeDefined();
+    expect(updateNudgeState()).toEqual({ shown: true, offered: '9.9.9' });
+  });
+
+  /** One-shot per process by design: the flag means "an agent was told", never how often. */
+  it('does not become a counter', () => {
+    armUpdateNudgeFrom({ latestVersion: '9.9.9' }, '1.0.0');
+    takeUpdateNudge();
+    expect(takeUpdateNudge()).toBeUndefined();
+    expect(updateNudgeState()).toEqual({ shown: true, offered: '9.9.9' });
   });
 });

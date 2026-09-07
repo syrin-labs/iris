@@ -26,6 +26,22 @@ const NO_BOOT = process.argv.includes('--no-boot');
 // Ports live in one module — see the note there on why disagreeing about them silently
 // invalidated the benchmark twice.
 const { RETICLE_PORT, API_PORT, DEMO_PORT, BENCH_URL } = PORTS;
+/**
+ * The fixture's own sign-in password, handed to the passes as a replay secret.
+ *
+ * A recorded flow no longer stores the value typed into a password field — it keeps
+ * `<redacted: supply at replay>` and reads the real one from `RETICLE_SECRET_<FIELD>` at replay,
+ * so a credential never lands in a git-checked flow. Correct, and it silently broke every
+ * replay-based pass here: sign-in filled the placeholder, the app stayed on the login screen, and
+ * every anchor after it drifted with `nearest: login-email`. The passes reported "not detected"
+ * rather than "could not run", which is the honest wording for a flow that never got past step two.
+ *
+ * This is a fixture account in a demo app with no data worth reaching. It is written out rather
+ * than read from a vault precisely because it is not a secret; the mechanism is what is being
+ * exercised.
+ */
+const REPLAY_SECRETS = { RETICLE_SECRET_LOGIN_PASSWORD: 'password' };
+
 const FIXTURE_READY_MS = Number(process.env.BENCH_FIXTURE_READY_MS ?? '30000');
 const PNPM_CMD = 'win32' === process.platform ? 'pnpm.cmd' : 'pnpm';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -265,7 +281,7 @@ function runScript(path) {
       // set that port only on the fixture, so the passes inherited nothing, fell back to a DIFFERENT
       // default, and no browser session ever connected — every flow failed while the pass still
       // reported ✓. Hand both down explicitly rather than hoping the defaults agree.
-      env: { ...process.env, RETICLE_PORT, BENCH_URL },
+      env: { ...process.env, RETICLE_PORT, BENCH_URL, ...REPLAY_SECRETS },
     });
   } catch (error) {
     console.error(`\n✗ ${path} FAILED (${error instanceof Error ? error.message : String(error)})`);

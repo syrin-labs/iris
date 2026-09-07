@@ -4,8 +4,7 @@
     "✓ Install dependencies → package.json",
     "✓ Reticle config → .reticle.json",
     "✓ Vite plugin → vite.config.ts",
-    "✓ Capabilities + store → src/reticle-dev.ts",
-    "ℹ AGENT: finish the capabilities file → src/reticle-dev.ts"
+    "✓ Capabilities + store → src/reticle-dev.ts"
   ],
   "next-app-router": [
     "– MCP server (global) → global (claude user scope)",
@@ -38,7 +37,6 @@
     "✓ Install dependencies → package.json",
     "✓ Reticle config → .reticle.json",
     "✓ Vite plugin → vite.config.js",
-    "✓ Capabilities + store → src/reticle-dev.ts",
-    "ℹ AGENT: finish the capabilities file → src/reticle-dev.ts"
+    "✓ Capabilities + store → src/reticle-dev.ts"
   ]
 }

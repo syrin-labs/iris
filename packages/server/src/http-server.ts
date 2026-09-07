@@ -19,6 +19,7 @@ import {
   requestToken,
   tokensMatch,
 } from './bridge/token-auth.js';
+import { LOOPBACK_IDLE_MS } from './loopback-agent.js';
 
 export interface SharedServer {
   readonly httpServer: http.Server;
@@ -327,6 +328,18 @@ export function createSharedServer(options: { token?: string } = {}): SharedServ
     });
   }
 
+  /**
+   * The daemon's half of the keep-alive pact with `loopbackAgent`.
+   *
+   * Node's default is 5 seconds, and the proxy's POST leg is one request per JSON-RPC message. An
+   * agent thinks for longer than 5s between tool calls essentially always, so with the default every
+   * tool call had to open a fresh socket however the client was configured — which on Windows ends
+   * in `ENOBUFS`. This has to stay ABOVE `LOOPBACK_IDLE_MS` so the CLIENT is always the side that
+   * retires an idle socket: if the server closed first, the proxy would keep picking up sockets that
+   * were already gone. It also has to stay below Node's 60s default `headersTimeout`.
+   */
+  httpServer.keepAliveTimeout = LOOPBACK_IDLE_MS + 10_000;
+
   return {
     httpServer,
     attachMcp,
@@ -404,7 +417,7 @@ function schemeOf(url: string): string | undefined {
   }
 }
 
-export function driveSchemeRefusal(url: string): string | undefined {
+function driveSchemeRefusal(url: string): string | undefined {
   const scheme = schemeOf(url);
   if (scheme !== undefined && DRIVEABLE_SCHEMES.includes(scheme)) return undefined;
   // Names what it got, because the caller is a CLI printing this to somebody who typed the url and

@@ -6,6 +6,7 @@ import { ReticleTool } from '../tools/tool-names.js';
 import { BaselineStore } from '../project/baselines.js';
 import { RecordingStore, type CompiledProgram } from './recordings.js';
 import { FlowStore } from './flows.js';
+import { FLOW_TOOLS } from './flow-tools.js';
 import { ProjectStore } from '../project/project-store.js';
 import { AnnotationStore } from './annotation-store.js';
 import { ArtifactRootReason } from '../project/artifact-root.js';
@@ -131,5 +132,37 @@ describe('reticle_flow_save writes to the session project, not the daemon cwd', 
     await tool(ReticleTool.FLOW_SAVE).handler(deps, { flowName: 'login' });
 
     expect([...written.keys()].some((p) => p.startsWith(`${DAEMON_ROOT}/flows`))).toBe(true);
+  });
+});
+
+/**
+ * The listing is what an agent READS to learn what a project has, and it was the half still
+ * answering from the daemon's own directory: the store was resolved but the reported path was
+ * joined onto `deps.reticleRoot`, so a HUD driving a React dashboard listed an unrelated
+ * checkout's Electron and Tauri flows and gave paths into a repo the user was not in.
+ */
+describe('reticle_flow_list reports paths in the session project', () => {
+  it('joins listed names onto the resolved root, not the daemon root', async () => {
+    const { fs } = createMemoryFs();
+    const recordings = new RecordingStore();
+    recordings.saveCompiled(oneStep('login'));
+
+    const deps = depsFor(fs, recordings, 'acme-web-9f3c1d', () => ({
+      root: PROJECT_ROOT,
+      reason: ArtifactRootReason.MATCHED_PROJECT,
+    }));
+    await tool(ReticleTool.FLOW_SAVE).handler(deps, { flowName: 'login' });
+
+    // FLOW_LIST is merged into the `reticle_flow` facade, so it is not in TOOLS by its own name.
+    const listTool = FLOW_TOOLS.find((t) => t.name === ReticleTool.FLOW_LIST);
+    if (listTool === undefined) throw new Error('no flow_list tool');
+    const res = (await listTool.handler(deps, {})) as {
+      flows: { name: string; path: string }[];
+    };
+    expect(res.flows.map((f) => f.name)).toContain('login');
+    for (const flow of res.flows) {
+      expect(norm(flow.path).startsWith(PROJECT_ROOT)).toBe(true);
+      expect(norm(flow.path).startsWith(DAEMON_ROOT)).toBe(false);
+    }
   });
 });

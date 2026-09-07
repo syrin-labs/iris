@@ -237,6 +237,32 @@ describe('cloudFetch', () => {
     vi.unstubAllGlobals();
   });
 
+  it('names the credential when it was pasted from a masked display, instead of leaking a ByteString error', async () => {
+    // The real report: RETICLE_CLOUD_KEY was set to `rk_live_…` — the ellipsis-masked placeholder a
+    // dashboard shows so a key is never displayed in full. undici answers that with "Cannot convert
+    // argument to a ByteString because the character at index 15 has a value of 8230", which names
+    // no variable, no file and no fix, and points at a byte offset in a header the user never saw.
+    let dialled = false;
+    vi.stubGlobal('fetch', () => {
+      dialled = true;
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    });
+
+    const error: unknown = await cloudFetch('https://app.reticle.sh/v1/keys', {
+      method: 'POST',
+      headers: { authorization: 'Bearer rk_live_…' },
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    const message = error instanceof Error ? error.message : '';
+    expect(message).toContain('authorization');
+    // The two facts that turn this into a one-line fix: it is truncated, and which knob holds it.
+    expect(message).toContain('truncated');
+    expect(message).toContain('RETICLE_CLOUD_KEY');
+    // Refused before dialling — a malformed credential is not worth a round trip.
+    expect(dialled).toBe(false);
+  });
+
   it('gives every cloud request an abort signal, so a stalled connection cannot hang forever', async () => {
     const seen: { signal: AbortSignal | undefined } = { signal: undefined };
     vi.stubGlobal('fetch', (_url: string, init: { signal?: AbortSignal }) => {

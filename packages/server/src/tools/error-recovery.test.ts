@@ -24,12 +24,22 @@ describe('recoveryFor — every known error carries an actionable next move', ()
     expect(recoveryFor("no connected session with id 'ghost'")).toBe(RECOVERY.UNKNOWN_SESSION);
   });
 
-  it('maps a throttled-tab refusal to the refocus / reticle drive escape hatch', () => {
+  it('maps a throttled-tab refusal to the refocus / escape-hatch recovery', () => {
     expect(
       recoveryFor(
         'refusing to act: tab throttled; timer/rAF/pointer gestures may silently no-op — refocus before driving',
       ),
     ).toBe(RECOVERY.THROTTLED);
+  });
+
+  it('THROTTLED names the in-protocol route first and leaves the CLI to the human (#521)', () => {
+    // Same defect COMMAND_TIMEOUT had: an MCP-only agent has no shell, so "run `reticle drive`"
+    // sent it nowhere. The agent's own route is `reticle_run { tool: "reticle_lease" }`; the CLI
+    // stays in the sentence as the human's equivalent.
+    expect(RECOVERY.THROTTLED).toContain('reticle_run { tool: "reticle_lease"');
+    expect(RECOVERY.THROTTLED.indexOf('reticle_run')).toBeLessThan(
+      RECOVERY.THROTTLED.indexOf('reticle drive'),
+    );
   });
 
   it('names reticle_lease through reticle_run, since it is unadvertised by default (#400)', () => {
@@ -211,6 +221,7 @@ describe('browser-side action guards are recognized refusals, not unknown defect
       'NOT_EDITABLE',
       'CONFIRM_DANGEROUS',
       'UNSUPPORTED_SURFACE',
+      'HOVER_NEEDS_POINTER',
     ] as const) {
       expect(typeof RECOVERY[key], key).toBe('string');
     }
@@ -267,6 +278,18 @@ describe('browser-side action guards are recognized refusals, not unknown defect
         'cannot fill a contenteditable element — rich-text editors keep their own document model',
       ),
     ).toBe(RECOVERY.UNSUPPORTED_SURFACE);
+  });
+
+  it('a hover without a real pointer is a named refusal, not a possible bug', () => {
+    expect(
+      recoveryFor(
+        'cannot hover without a real pointer — CSS :hover only applies to a native mouse move, never to a synthetic mouseover',
+      ),
+    ).toBe(RECOVERY.HOVER_NEEDS_POINTER);
+    expect(RECOVERY.HOVER_NEEDS_POINTER).toContain('reticle_run { tool: "reticle_lease"');
+    expect(RECOVERY.HOVER_NEEDS_POINTER.indexOf('reticle_run')).toBeLessThan(
+      RECOVERY.HOVER_NEEDS_POINTER.indexOf('reticle drive'),
+    );
   });
 });
 
@@ -474,6 +497,17 @@ describe('no condition Reticle itself authored is reported as a possible Reticle
       'Chromium is not installed for Playwright. Run: npx playwright install chromium',
       RECOVERY.NO_POOL,
     ],
+    [
+      'a hover without a real pointer',
+      'cannot hover without a real pointer — CSS :hover only applies to a native mouse move, never to a synthetic mouseover',
+      RECOVERY.HOVER_NEEDS_POINTER,
+    ],
+    [
+      'a sequence that names two sessions',
+      "reticle_act_sequence steps name different sessionIds ('lease-1' and 'tab-old'). " +
+        'Pass one sessionId at the top level to target a tab. Nothing was acted on.',
+      RECOVERY.BAD_ARGUMENTS,
+    ],
   ])('%s is recognized', (_label, message, expected) => {
     const payload = buildErrorPayload(message);
     expect(payload.feedback, message).toBeUndefined();
@@ -658,5 +692,66 @@ describe('an upstream validation sentence is still the caller to fix', () => {
     // silence the feedback channel this project depends on.
     const payload = buildErrorPayload('the presenter pool exploded');
     expect(JSON.stringify(payload)).toMatch(/defect in Reticle/i);
+  });
+});
+
+describe('a selector that missed is not a malformed call', () => {
+  /**
+   * Measured live, driving the bench app: `target: { testid: "new-deploy" }` on a view that had not
+   * rendered yet returned "target matched no element … take a reticle_snapshot", and the recovery
+   * appended was *"That call did not match the tool's schema — re-read that tool's parameters"*.
+   *
+   * The call matched the schema perfectly. The element was not on the page. Sending an agent to
+   * re-read arguments that were already correct costs it a turn on the commonest refusal there is —
+   * and it was the catch-all rule that claimed it, because the error's OWN advice names
+   * `reticle_snapshot`, which is exactly what that rule keys on.
+   */
+  const missed =
+    'target matched no element. Nothing was acted on and no verdict is possible — widen the ' +
+    'query, or take a reticle_snapshot to see what is actually on the page.';
+
+  it('does not tell the caller its arguments were wrong', () => {
+    const hint = recoveryFor(missed);
+    expect(hint).toBeDefined();
+    expect(hint).not.toMatch(/did not match the tool's schema/);
+    expect(hint).not.toMatch(/re-read that tool's parameters/);
+  });
+
+  it('says the call was valid and nothing was acted on', () => {
+    const hint = recoveryFor(missed) ?? '';
+    expect(hint).toMatch(/valid/i);
+    expect(hint).toMatch(/nothing was.*acted on/i);
+  });
+
+  /** An unmatched message collects the feedback ask, which is how agents get pushed to report a miss. */
+  it('is still matched, so it never collects a defect report', () => {
+    expect(recoveryFor(missed)).toBeDefined();
+  });
+});
+
+describe('the destructive-control refusal names the argument it wants', () => {
+  /**
+   * A benchmark run spent its ENTIRE 25-turn budget here. The refusal said "retry with
+   * args.confirmDangerous=true"; the agent looked for a top-level parameter by that name, did not
+   * find one, and went back to re-read the tool list instead of retrying. The flag is documented —
+   * inside the `args` object's own description — so the dotted path was pointing at something that
+   * is not a parameter.
+   */
+  const blocked =
+    'potentially destructive native action blocked; retry with args.confirmDangerous=true';
+
+  it('shows the argument object rather than a dotted path', () => {
+    const hint = recoveryFor(blocked) ?? '';
+    expect(hint).toMatch(/args: \{ confirmDangerous: true \}/);
+    expect(hint).toMatch(/inside the `args` object/);
+  });
+
+  /**
+   * The classifier matches `deploy` and `publish`, so an ordinary "New deploy" button trips it.
+   * Listing only delete/remove/revoke made the refusal read as a malfunction on an app where
+   * nothing was being destroyed.
+   */
+  it('names a trigger word that is not destruction', () => {
+    expect(recoveryFor(blocked) ?? '').toMatch(/deploy|publish/);
   });
 });

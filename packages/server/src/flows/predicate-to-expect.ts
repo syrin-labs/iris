@@ -84,26 +84,48 @@ export function predicateToExpect(predicate: Predicate): FlowExpect | undefined 
 }
 
 /**
- * The subset a REPLAY actually enforces today.
+ * The subset a REPLAY actually enforces.
  *
- * `flow-replay` checks exactly two things per step: `expect.element.testid` is present after the
- * action, and `expect.state` holds. A recorded `net` or `signal` expect is graded as a consequence
- * assertion by `classifyFlowAssertions` and then never evaluated — so writing one into a flow file
- * would make it report `grade: "asserted"` while nothing checks it.
+ * The rule has never changed: never write an assertion into a flow file that nothing evaluates. A
+ * flow reporting `grade: "asserted"` while its assertion is read by no one is a false green, in the
+ * feature whose entire purpose is preventing them.
  *
- * That is a false green, in the feature whose entire purpose is preventing them, produced by the
- * change that was meant to strengthen it. So only the enforced kinds are recorded: a flow that says
- * it asserts something must actually go red when that thing breaks.
+ * What changed is the SET. This kept only `element.testid` and `state`, because for a long time
+ * those were the only kinds replay checked — and the note here said lifting it "requires replay to
+ * evaluate them per step". Replay now does exactly that: `assertStepExpect` compiles every
+ * remaining kind through `successToPredicate` and waits on it. The condition was met and the filter
+ * was not updated, so the two drifted.
  *
- * Lifting this is worth doing — net and signal are the assertions agents most often make, and the
- * conversion above already handles them — but it requires replay to evaluate them per step (the
- * machinery exists: successToPredicate + the predicate engine). Until then, recording them would
- * trade a weak flow for a lying one.
+ * That drift had a cost, and it fell on the agent. `reticle_act_and_wait { until }` IS the agent
+ * saying what success means, and `net` is overwhelmingly what it says. Every one of those was
+ * discarded at capture, so an agent-recorded flow reached disk assertion-free BY CONSTRUCTION and
+ * `reticle_verify` then correctly called it `unverifiable` — the record → save → verify path
+ * completing all the way to a run that could never be a pass. Found by driving it.
+ *
+ * The list below is exactly what `successToPredicate` reads, including an element located by
+ * role or name. A testid is also asserted directly against the DOM by the step runner. Anything
+ * it cannot compile is still dropped.
  */
 export function enforcedOnReplay(expect: FlowExpect | undefined): FlowExpect | undefined {
   if (expect === undefined) return undefined;
   const kept: FlowExpect = {};
-  if (expect.element?.testid !== undefined) kept.element = expect.element;
+  // The step runner asserts a testid against the live DOM before the predicate engine. Role and
+  // name are not that path: successToPredicate compiles them, and dropping them here made a
+  // recorded `until` by button name vanish so the saved flow could not go red.
+  const element = expect.element;
+  if (
+    undefined !== element &&
+    (undefined !== element.testid || undefined !== element.role || undefined !== element.name)
+  ) {
+    kept.element = element;
+  }
+  // Everything `successToPredicate` can compile. Replay evaluates EVERY kind of expect through it
+  // (see assertStepExpect); this list is what that function actually reads.
   if (expect.state !== undefined) kept.state = expect.state;
+  if (expect.signal !== undefined) kept.signal = expect.signal;
+  if (expect.signalData !== undefined) kept.signalData = expect.signalData;
+  if (expect.signalCount !== undefined) kept.signalCount = expect.signalCount;
+  if (expect.net !== undefined) kept.net = expect.net;
+  if (expect.console !== undefined) kept.console = expect.console;
   return 0 === Object.keys(kept).length ? undefined : kept;
 }

@@ -22,6 +22,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseCliArgs } from '../cli/cli-parse.js';
+import { isCloudCommand } from '../cli/cloud-cli.js';
 import { RETICLE_DEFAULT_PORT } from '@reticlehq/core';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -114,6 +115,17 @@ describe('commands the product itself tells a user to run', () => {
   it('every one is accepted by the shipped parser', () => {
     const broken: string[] = [];
     for (const inv of found) {
+      /*
+       * Cloud subcommands dispatch BEFORE the typed parser, so the parser alone is not the oracle.
+       *
+       * `cli.ts` routes `login`, `link`, `sync` and the rest through `isCloudCommand` first and only
+       * then reaches `parseCliArgs` — so checking the parser by itself reports a working command as
+       * refused. This guard flagged `npx @reticlehq/server login`, which is the command the console's
+       * own empty state hands every new customer and which runs correctly; the guidance was right
+       * and the check was wrong. Mirroring the real dispatch is what keeps this file an oracle
+       * rather than an argument with correct documentation.
+       */
+      if (isCloudCommand(inv.argv[0])) continue;
       const parsed = parseCliArgs(inv.argv, RETICLE_DEFAULT_PORT);
       if ('error' === parsed.kind) {
         broken.push(`${inv.file}:${String(inv.line)} — \`${inv.raw.trim()}\` → ${parsed.message}`);

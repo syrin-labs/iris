@@ -83,6 +83,15 @@ the URL explicitly (Vite: VITE_RETICLE_WS_URL, or reticle.connect({ url })). An 
 open a ws:// socket at all. Still retrying…
 ```
 
+**You should not have to read this page to find that out.** If the agent opened the app with `reticle_lease`, which is the path `init` steers it to, the daemon reads that address off the page's own console, compares it with the port it is bound to, and puts the mismatch in the tool result:
+
+```
+The page dialled ws://localhost:4460/reticle (port 4460) and this daemon is on
+4400, so the dial never reached it. Nothing about the app's wiring is in question.
+```
+
+Neither side can work that out alone: the page cannot see the daemon, and the daemon never saw a dial that went somewhere else. The rest of this section covers what the lease cannot: a tab you opened yourself, or an app the pool cannot reach.
+
 That message names the exact address it tried. Compare its port with `bridge port` from `doctor` and set whichever is wrong:
 
 ```bash

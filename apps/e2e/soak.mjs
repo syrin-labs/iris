@@ -304,6 +304,18 @@ function selfCheck() {
     gateSoak({ ...clean, answered: 0, attribution: deadTransport }, null).failures.length === 0,
     '...and it raises NO failures, so a flaky machine never reads as a broken product',
   );
+  ok(
+    attributeOutcome({
+      connected: true,
+      transportAliveThroughout: true,
+      hasCapabilities: false,
+    }).outcome === Attribution.FAIL,
+    'connected with hasCapabilities:false is a FAIL — connected is not verifiable',
+  );
+  ok(
+    attributeOutcome({ connected: true, transportAliveThroughout: true }).outcome === Attribution.PASS,
+    'omitting hasCapabilities keeps the soak meaning: the link stayed up',
+  );
   console.log('\nsoak self-check: ok (the gate refuses what it must, and tolerates what it must)\n');
 }
 

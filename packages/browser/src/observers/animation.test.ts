@@ -84,4 +84,20 @@ describe('animation observer: overlay self-pollution', () => {
 
     expect(events.map((e) => e.type)).toContain(EventType.ANIM_END);
   });
+
+  it('stops emitting after teardown', () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const { emit, events } = collect();
+    teardown = installAnimation(emit);
+    teardown();
+    teardown = undefined;
+    events.length = 0;
+
+    fireAnim(el, 'animationstart', 'fade');
+    fireAnim(el, 'animationend', 'fade');
+    fireTransitionEnd(el, 'opacity');
+
+    expect(events).toHaveLength(0);
+  });
 });

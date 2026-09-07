@@ -38,6 +38,11 @@ const EXPECTED_SIZE: Record<ToolSurface, number> = {
   // target, plus the two meta-tools that reach the rest. See tool-surface.ts for why it is not the
   // default.
   [TOOL_SURFACE.VERIFY]: 3,
+  // The experimental middle: the four evidence tools plus look, act-with-a-verdict and assert, and
+  // the two meta-tools. Sized against `verify`'s measured failure — that surface saved 37% and
+  // tripled false alarms, and only the observation cut caused the second half. Membership itself is
+  // pinned in lean-surface.test.ts; this is only its count.
+  [TOOL_SURFACE.LEAN]: 10,
 };
 
 /**

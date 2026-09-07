@@ -17,7 +17,7 @@ import type { FileSystemPort } from './fs-port.js';
 /** POSIX form, so a `\`-joined path and a `/`-joined one are the same key. */
 const norm = (path: string): string => path.split('\\').join('/');
 
-export interface MemoryFs {
+interface MemoryFs {
   fs: FileSystemPort;
   /** Every file written, keyed by normalised absolute path. */
   written: Map<string, string>;
@@ -90,7 +90,12 @@ export function createMemoryFs(): MemoryFs {
       return Promise.resolve();
     },
     stat(path) {
-      return written.has(norm(path)) ? Promise.resolve({ mtimeMs: 0 }) : Promise.reject(notFound());
+      return written.has(norm(path))
+        ? Promise.resolve({ mtimeMs: 0, size: 0 })
+        : Promise.reject(notFound());
+    },
+    realpath(path: string) {
+      return written.has(norm(path)) ? Promise.resolve(norm(path)) : Promise.reject(notFound());
     },
     isNotFound(error) {
       return 'ENOENT' === (error as NodeJS.ErrnoException | undefined)?.code;

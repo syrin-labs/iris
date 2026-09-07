@@ -6,6 +6,7 @@ import { Verified } from '@reticlehq/core';
 import { ReticleTool } from '../tools/tool-names.js';
 import type { ToolDef, ToolDeps } from '../tools/tools.js';
 import { asNumber, asRecord, asString } from '../tools/tools-helpers.js';
+import { workerCountSchema } from '../tools/numeric-bounds.js';
 import { loadNamedFlows, resolveChangedFiles } from '../cli/cli-flow-commands.js';
 import { affectedSavedFlows } from './flow-sources.js';
 import { FLOW_TOOLS } from './flow-tools.js';
@@ -52,8 +53,7 @@ export const VERIFY_CHANGE_TOOLS: ToolDef[] = [
         .string()
         .optional()
         .describe('Git ref to diff against (e.g. "HEAD~1", "main"). Unioned with `files`.'),
-      parallel: z
-        .number()
+      parallel: workerCountSchema
         .optional()
         .describe('Replay this many affected flows at once (needs the browser pool).'),
       sessionId: z
@@ -259,6 +259,9 @@ async function inspectAfterReplay(
     const contradictions = findContradictions(session.eventsSince(cursor), {
       currentDocumentId: session.currentDocumentId,
       currentEditEpoch: session.currentEditEpoch,
+      appOrigin: session.url,
+      // The replay is the action, and the cursor is where it started.
+      actionSince: cursor,
     }) as { kind: string }[];
     const snapshot = await session.command(ReticleCommand.SNAPSHOT, {
       mode: SnapshotMode.INTERACTIVE,

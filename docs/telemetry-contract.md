@@ -27,7 +27,7 @@ Tool usage, timing, errors, verifications and bugs are all recorded in **one pla
 
 Do **not** add telemetry inside a tool handler. If you find yourself wanting to, the metric probably belongs at the chokepoint, read off the result.
 
-> The one exception is a path that genuinely does not go through `runTool`. Today that is only the verification runner (`reticle verify`, the HTTP verify surface), which has its own reporter in `telemetry/run-telemetry.ts`. **If you add a second dispatch path, it needs the same treatment**, and until it has one it is invisible. That gap existed for real: CI-found bugs were uncounted.
+> The exceptions are paths that genuinely do not go through `runTool`. One is the verification runner (`reticle verify`, the HTTP verify surface), which has its own reporter in `telemetry/run-telemetry.ts`. The other is the MCP proxy's POST leg (`postToSession`): a socket failure there never reaches a tool handler, so the counts live on the proxy's session summary and flush as `session_progress`. **If you add another dispatch path, it needs the same treatment**, and until it has one it is invisible. That gap existed for real: CI-found bugs were uncounted.
 
 ### 2. Names say what happened
 
@@ -118,6 +118,52 @@ Nothing measured the second. `daemon_started` and `mcp_client_connected` describ
 
 The failure side is a **set difference**, not an event: `daemon_started` minus `app_instrumented`, joined on `sessionId`. There used to be an `instrumentation_stalled` event for it, and it was removed because the derivation is strictly more complete. The event could only fire on a flush tick or a graceful shutdown, so a killed daemon never produced one and landed in the absence anyway, while the set difference catches it. Two ways to compute one number, disagreeing with each other, is worse than one way.
 
+## Where the install stopped: reading the non-instrumented majority
+
+Most daemons never see an app. The failure side is a **set difference** -- `daemon_started` minus `app_instrumented`, joined on `sessionId` -- and a set difference cannot say why. Four situations with four different owners land in it as one silence.
+
+Three fields split it, and none of them is a new event kind:
+
+| `init_completed.ok` | `project.initialized` | `project.appConnectedBefore` | Reading | Owner |
+| --- | --- | --- | --- | --- |
+| -- | `false` | `false` | `init` was never run here. Nothing was ever wired. | acquisition / docs |
+| `false` | -- | -- | `init` ran and failed. `init.reason` says which step. | us |
+| `true` | `true` | `false` | The config is written and **no page has ever reached the daemon**. The dev server was never restarted, the plugin never loaded, or the handshake was refused page-side. | us + onboarding |
+| -- | `true` | `true` | A working install whose app simply is not up right now. **Not a loss.** | nobody |
+
+The third row is the cohort the funnel actually loses, and it was invisible: `initialized` alone is `true` for the working installs too, so only the pair separates them.
+
+What this still does **not** answer: whether the dev server is running right now. Nothing probes for one at profile time, so "restarted the dev server and it still did not connect" and "never started the app at all" are both in the third row. `no-session-diagnosis.ts` computes that distinction live, for the agent, as prose -- it is not classified and it is not emitted.
+
+Two more traps on these fields. `project_profiled` fires **5 seconds after** the daemon comes up, so a daemon killed inside that window sends none of this and lands in the silence it was meant to explain. And `appConnectedBefore` is scoped to project + port: an app that has only ever connected on a different port reads `false`, correctly for the question asked and wrongly if you read it as "this user has never had Reticle work".
+
+## What the agent had to look at: `connection.appConnected`
+
+Most MCP clients that attach never call a single tool, and that cohort emits **nothing at all**. `tool_refused` cannot see it -- an agent that reads the server instructions, learns nothing is wired, and stops has refused nothing, because it made no call.
+
+`connection.appConnected` is the one bit that splits it. `false` means the handshake happened against a daemon with no app to look at, which is the state the first-move instructions describe and the state in which no tool could have answered anything. The two halves need opposite fixes: one is an install that never finished, the other is an agent that had everything it needed and did not use it.
+
+It does **not** say which instruction variant the agent was served. `buildServerInstructions` keys on `previouslyConnected` (durable, project-scoped), not on whether an app is attached right now, and those disagree on a working install whose page is closed.
+
+## Was the verdict trustworthy: reading `unknown` and the passing greens
+
+Two questions get asked of `verification_completed` constantly and both have exact answers already in the payload. Neither needs a new field, and both are read wrong without `reason`.
+
+**"A large share of verdicts come back `unknown`."** `verified` has three values and the rule that produces it has eleven clauses, so `unknown` on its own is seven different situations belonging to three different owners. **Always break `unknown` down by `verification.reason`** before treating it as a quality number:
+
+- `inconclusive`, `nothing_declared`, `vacuous_grade` -- the agent's own call. Teach the agent; the product worked.
+- `outcome_pending`, `outcome_unread`, `unsettled`, `evidence_incomplete`, `window_closed_early` -- the app had not finished. Wait and re-check; often a budget that ended early.
+- `observation_lost`, `unclean_capture`, `absence_blind_spot` -- **ours**. Ship a fix. `uncleanLoss` names which of the three owners inside that one.
+
+An `unknown` rate quoted without this split is a number about all three at once and actionable by none of them.
+
+**"Many verdicts passed their own assertion yet did not report `yes`."** That is `passed: true` with `verified !== 'yes'`, and it is mostly the product working as designed: `decideVerified` refuses a green seven ways. Split it:
+
+- `verified: 'no'` -- a green actively refuted by another channel. This is `falseGreenCaught`, and it is the thesis.
+- `verified: 'unknown'` -- Reticle declined to endorse a green it could not stand behind. `already_true` (the condition held before the action, so the check proved nothing) is a _correct_ refusal and not a defect anywhere.
+
+`falseGreenCaught` is deliberately narrow -- only `passed && verified === 'no'` -- so the wider number can be counted from `reason` without a definition change. **Do not widen it**: a metric whose definition shifts underneath it produces two series that look comparable and are not.
+
 ## Sessions: `daemon_stopped` vs `session_progress`
 
 Count sessions with **`daemon_stopped`** (`final: true`). It fires once, at a clean exit.
@@ -135,20 +181,28 @@ Four counters and one flag were added because the data could not answer question
 | Field | On | Means |
 | --- | --- | --- |
 | `noSessionErrors` | session summary | tool calls that failed because there was no app to reach: no session, no session by that id, or several with none named. The largest drop-off in the funnel; it was previously reachable only by unpacking `errors[]`. |
+| `postSocketFailures` | session summary | connection-level POST failures on the MCP proxy (`ENOBUFS`, `EMFILE`, `EADDRNOTAVAIL`, `ECONNREFUSED` before any bytes were sent). These never produce `tool_refused` (the call never reached a handler) and never produce `mcp_connection_lost` (the SSE stream is fine). Counted in the proxy process and flushed as `session_progress` on stdin end. The send is awaited, because fire-and-forget before `process.exit` is how `daemon_stopped` never arrived. Absent when none happened. |
+| `postRetriesSaved` | session summary | of those POST failures, how many a bounded retry then delivered. The numerator against `postSocketFailures`: a retry that quietly saves a call is a different fact from a retry that never runs. Absent when none were saved. |
 | `consecutiveRepeats` | session summary | longest back-to-back run per tool name. `toolCounts` reports five useful calls and five retries of one failing call identically, and those are opposite facts. |
 | `abandonedActions` | session summary | actions driven with no verdict AFTER them (the trailing unsettled run, not `actions - verifications`). That difference ignores order, so a verdict that drove nothing (a `flow_verify` over saved flows) silently paid for an abandoned action elsewhere. |
 | `endedWithVerdict` | session summary (final only) | did this session ever produce a verdict. The headline metric, and previously the only thing in the payload that had to be COMPUTED, from lifetime counters sitting next to windowed ones, which is a subtraction that gets read wrong. Sent as `false` rather than omitted: a session that drove an app and never asked whether it worked is the finding. |
 | `verification.browser` | `verification_completed` | `headless` \| `headed` \| `attached`: who DROVE the browser. `attached` (Reticle launched nothing, the SDK connected from a browser somebody else opened) is the common case in production, so on its own this is mostly "somebody's own browser". |
 | `verification.brand` | `verification_completed` | WHICH browser it was: `chrome` \| `edge` \| `arc` \| `dia` \| `brave` \| `opera` \| `firefox` \| `safari` \| `other`, the closed `BrowserBrand` list in core. The axis `engine` cannot answer, since Chrome, Edge, Arc, Dia and Brave are all `blink`. The SDK reads `navigator.userAgentData.brands` (and the UA string on Firefox/Safari, which expose no `userAgentData`) and normalises IN THE PAGE: a raw brand or UA string is unbounded and fingerprintable and never leaves. Anything unrecognised is `other`. **Omitted rather than `"unknown"`** when the page did not say. A desktop webview has no brand and an older SDK does not report one, and a guess is indistinguishable from a measurement on a dashboard. |
-| `verification.reason` | `verification_completed` | WHICH clause of `decideVerified` produced the verdict, from core's closed `VerifiedReason`: `inconclusive` \| `observation_lost` \| `assertion_failed` \| `contradicted` \| `already_true` \| `unclean_capture` \| `vacuous_grade` \| `outcome_pending` \| `outcome_unread` \| `unsettled` (the page never went idle and no consequence was declared) \| `evidence_incomplete` (the assertion held, but a channel's outcome had not arrived when the window closed) \| `proved`. See below. |
+| `verification.reason` | `verification_completed` | WHICH clause of `decideVerified` produced the verdict, from core's closed `VerifiedReason`: `inconclusive` \| `observation_lost` \| `window_closed_early` \| `assertion_failed` \| `contradicted` \| `already_true` \| `unclean_capture` \| `vacuous_grade` \| `outcome_pending` \| `outcome_unread` \| `unsettled` (the page never went idle and no consequence was declared) \| `evidence_incomplete` (the assertion held, but a channel's outcome had not arrived when the window closed) \| `proved`. See below. |
 | `verification.uncleanLoss` | `verification_completed` | WHAT was lost when `reason` is `unclean_capture`, from core's closed `CaptureLoss`: `buffer_loss` (our server ring buffer evicted evidence from the window) \| `transport_gap` (our browser queue overflowed) \| `blind_spot` (a boundary in the page, such as a cross-origin frame or a closed shadow root) \| `other`. Three owners, three fixes, and one bar on a dashboard until this existed. ONE value, not a list: a multi-value property is not something a breakdown can group by, so the first is sent, ours before the page's. **Absent whenever the capture was clean**, so its presence is itself the signal. Reported as `other` rather than omitted when the block says dirty and names nothing: a gap there would read as "no unclean verdicts happened". |
+| `project.stackUnknownReason` | `project_profiled` | WHY there is no `stack`, from core's closed `StackUnknownReason`: `no_app_found` \| `manifest_unrecognised` (we READ an app's manifest and knew nothing in it, which one line in `STACK_BY_DEP` fixes) \| `workspace_apps_unrecognised` \| `workspace_root_no_apps` (a monorepo root where discovery surfaced no app at all) \| `discovery_failed`. `stack` unknown is one of the largest buckets and an empty field is not a cause: it collapsed four facts with four different fixes. **Absent whenever a stack WAS found**, so its presence marks the unknown bucket. Note `workspace_root_no_apps` is expected to dominate over `workspace_apps_unrecognised`: `findWorkspaceApps` admits a directory only on a Vite/Next config file or a literal `next`/`vite` dependency, so a workspace app on any other framework is never surfaced and its manifest is never read. |
 | `bug.attribution` | `bug_found` | `app` \| `request` \| `reticle`: whose fault the defect was. **Absent means unclassified**, never `app`. See below. |
+| `refusal.noSessionReason` | `tool_refused` | For `no_session` only: WHICH no-session situation, from core's closed `NoSessionReason`: `lease_expired` \| `tab_gone` \| `app_not_reopened` \| `config_elsewhere` \| `no_listener_no_config` \| `no_listener` \| `no_config` \| `sdk_not_reaching_daemon`. `no_session` is the largest refusal cohort and on its own it is a set difference: nothing connected, with no word on which of several opposite situations that was. "Restarted the dev server and it still did not connect" and "never started the app" need opposite fixes and arrived as the same silence. Derived from the branches of `explainNoSession`, not classified beside them, so the code cannot describe a diagnosis different from the sentence the user was shown. **Absent on every other refusal reason.** |
 | `outage.stage` / `outage.reason` / `outage.attempts` | `mcp_connection_lost` | which stage of the outage, why the stream went away (closed `OutageReason`, `other` for anything unnamed), and how many reconnects had been tried. See below. |
+| `project.initialized` | `project_profiled` | has `reticle init` run here -- a `.reticle.json` is present. On `project_profiled` rather than `app_instrumented` deliberately: that event fires once per daemon start whatever happens next, so it is the only place a fact about a project reaches us for the users who never instrument anything. **Absent means an older sender, never `false`.** |
+| `project.appConnectedBefore` | `project_profiled` | has an app for THIS project ever connected to Reticle, from durable state -- not from this process. Scoped to project + port like every other reader of that state, so it cannot borrow another project's success on a shared daemon. **Absent when the daemon did not know its own port**, which is not-measured rather than `false`; a `false` invented from a read error would put the working installs into the cohort we are sizing. |
+| `connection.appConnected` | `mcp_client_connected` | was an app already attached when the agent arrived. The mirror of `instrumentation.agentAttached`, read off the same flag so the two halves cannot disagree about one daemon run. The closest thing we have to WHAT THE AGENT SAW. |
 | `installSource` | `reticle_installed`, `init_completed` | WHICH published route brought this install in, from core's closed `InstallSource`. Read from one self-declared marker (`RETICLE_INSTALL_SOURCE`) and NEVER inferred, so `unknown` is expected to dominate until every channel's own copy of the install command carries it. See below. |
 | `licenseId` / `licenseStatus` | every event, on a licensed build | Enterprise activation. `licenseStatus` is core's closed `LicenseActivation` (`active` \| `missing` \| `invalid` \| `expired`) and rides through the FAILURE states too, which is what makes a lapse distinguishable from a churn. `licenseId` is present only while a key verifies, so on identity alone a customer whose key expired and one who left are the same silence. `licenseId` is an opaque uuid that resolves to a company only against the issuance ledger held locally, so the analytics backend never holds a customer list. The organisation NAME is never sent. **All three absent on a build with no issuer key baked**, which is every OSS install, so absence means "not a licensed build" and costs nothing to say. See below. |
 | `init.confirmation` | `init_completed` | what `init` SAW after writing, from core's closed `InitConfirmation`: `connected` (an app carrying the SDK reached the daemon while it watched, and it is the only value that means installed) \| `no_daemon` (nothing was listening, so no session could arrive) \| `no_session` (a daemon was up and no app connected inside the window). **Absent means it never looked**, which is every scripted run: `init` waits only when a human is at the terminal. Read absent as "not measured", never as a failure to connect. |
 | `automation` | every event | ADVISORY hint that the run looks automated when `CI` does not say so, from core's closed `AutomationHint`: `container` \| `hosted_workspace` \| `no_tty`. `ci` reads one environment variable set only by a runner, so a gate driven from a cloud sandbox lands as a human at a machine. **Never a filter**: people work in containers, in Codespaces, and over ssh with no terminal, and dropping a row because this is set drops real users. Absent means nothing looked automated, not that a human was present. |
 | `tzOffsetMin` | every event | minutes offset from UTC. One integer, no location. |
+| `session.updateNudged` / `session.updateOffered` | session summary | did the update nudge actually fire this daemon run, and which version it knew about. The nudge is the ENTIRE adoption mechanism for a published fix -- it rides the tool-result envelope once per daemon process -- and for several releases it emitted nothing at all. `updateNudged` is the one-shot delivery flag: `true` means an agent was told, never how often. `updateOffered` is our own published version number, so it is low-cardinality and says nothing about the machine; without it `updateNudged: false` would mean "nothing was available" and "something was and the nudge did not fire" at once, and only the second is a defect. See below. |
 | `versionChange.nudged` | `version_changed` | an agent had been told about exactly this version recently, so the nudge plausibly caused the update. The daemon that nudges and the `reticle update` that acts are different processes, so a marker file joins them. |
 
 ## Enterprise activation: `licenseId`, `licenseStatus`
@@ -183,6 +237,23 @@ Two things about it are deliberate and easy to get wrong later.
 
 Capped at 50 per daemon run. Volume is part of this taxonomy's design and a stuck agent is exactly the shape that produces hundreds; `consecutiveRepeats` on the session summary still reports how long the loop ran.
 
+## Did anybody hear about the release: the nudge
+
+`versionChange.nudged` answers "did the nudge cause this update", and it only ever reaches us from machines that **did** update. The cohort that matters is the opposite one: an install pinned several releases back never fires `version_changed` at all, so the population being nudged the hardest was the population the metric structurally could not see.
+
+`session.updateNudged` + `session.updateOffered` close that. Crossed against the same installId's `version` on a later day, they separate two causes that need opposite fixes:
+
+| `updateOffered` | `updateNudged` | version moves later | Reading |
+| --- | --- | --- | --- |
+| absent | `false` | -- | nothing was available. Not a finding. |
+| present | `false`, run after run | no | **the nudge is not firing for them**: a manifest cache that never warms, a check that never returns, an offline machine. Ours. |
+| present | `true`, run after run | no | the agent is receiving it and **dropping it out of the envelope**, or telling a human who declines. A delivery problem, not a detection one. |
+| present | `true` | yes | it worked. `versionChange.nudged` confirms from the other side. |
+
+What it does **not** answer: whether the agent surfaced the nudge to its human. Nothing on this side of the envelope can see that, and inferring it from a later upgrade would credit the nudge for a `reticle update` somebody ran for their own reasons -- which is precisely the credit `nudge-credit.ts` bounds to a seven-day window rather than claiming outright.
+
+One edge to know when querying: `updateNudged` reads the delivery flag, and `armUpdateNudgeFrom` re-arms it when a newer manifest lands mid-session. On a long session that spans a release it therefore reports the LAST arming's state, not "was ever shown". Sessions in the data run to eleven hours, so this is reachable; it is rare, and it errs toward `false`.
+
 ## Which route brought them in: `installSource`
 
 Four install routes ship at once (the SKILL.md paste URL, an `npx skills add` package, a Claude Code plugin, and docs.reticle.sh), and not one install could be attributed to any of them. Every decision about where to spend distribution effort was made blind.
@@ -194,6 +265,12 @@ Nothing infers. Three things look like signals and are not: `npm_config_user_age
 So `plugin` is the only route detectable without anybody typing anything (the plugin registers the MCP server and sets the marker in its `env`). `skill_file`, `npx_skill`, `docs_site` and `readme` are detectable only where that channel's own published copy of the install command carries the marker, and each of those is a separately published artifact. `cli_direct` is not detectable at all.
 
 **`unknown` is therefore expected to be the largest bucket, and shrinking it is a distribution job rather than a classifier job.** Read a small `unknown` as a marker that spread. A guessed attribution would be worse than none: it is the number distribution decisions get steered on, and once a guess sits in the same column as a measurement the two cannot be told apart.
+
+**Where the value lives, and why it is not the environment.** The marker is an environment variable, so it exists for exactly one command and is gone by the next -- which is why the field originally reached two of the rarest events there are and nothing else. `init` writes it into `.reticle.json`, and `projectInstallSource()` reads **config first, then environment**, once per process, stamping it on every event that process sends. So the marker has to survive `init` to survive at all.
+
+**A re-run backfills it, and never overwrites it.** `installSource` used to be written only when `.reticle.json` was CREATED, and `init` reports that file as `already exists` on every re-run -- so everyone who arrived before the marker shipped, and everyone who ran `init` once without one, was stuck on `unknown` with no way to fix it, which is most of the population the field describes. `configWithInstallSource()` now ADDS the field to a config that lacks one. It never replaces a recorded value: the first channel is the one that brought the user in, and a later `init` through a different route must not take credit for an acquisition it did not make. An unparseable config is left exactly as it is.
+
+**Two ways this still degrades to `unknown`, and neither is a classifier bug.** An agent that paraphrases the published command drops the `RETICLE_INSTALL_SOURCE=` prefix along with it, and there is nothing on the machine afterwards that could recover it. And a project whose `init` never ran -- the SDK wired by hand, or a monorepo where the config sits somewhere the daemon's walk does not reach -- has no config to read from.
 
 ## Why a verdict came out that way: `verification.reason`
 
@@ -236,11 +313,36 @@ The transport-stability metric shipped with an **empty payload** for months, and
 
 The lesson is not "wire the field". It is that **the battery asserted the event ARRIVED and never that it carried anything**, and a kind-only assertion cannot see an empty payload. When you add an event kind, the live check has to assert the FIELDS.
 
-- `stage` is `first` (this session lost MCP at all) or `budget_spent` (it stopped retrying). These are the two facts the event exists to separate: the share of sessions that lose MCP, and the share where it never came back on its own.
-- `reason` is the closed `OutageReason`: `sse_ended` | `sse_error` | `sse_aborted` | `sse_closed` | `connect_error` | `other`. The proxy's own reason strings are free text that also feeds a log, so `mcp-outage.ts` narrows them and reports **`other`** for anything unnamed. A classifier that cannot say "I don't know" lies instead, and an unbounded string must never reach the wire.
+- `stage` is the closed `OutageStage`: `first` (this session lost MCP at all), `budget_spent` (it stopped retrying and went dormant), or `recovered` (the link came back on its own). Each is reported **at most once per proxy process**, so the three are a per-session state and never a count.
+- `reason` is the closed `OutageReason`: `sse_ended` | `daemon_shutdown` | `sse_error` | `sse_aborted` | `sse_closed` | `connect_error` | `other`. The proxy's own reason strings are free text that also feeds a log, so `mcp-outage.ts` narrows them and reports **`other`** for anything unnamed. A classifier that cannot say "I don't know" lies instead, and an unbounded string must never reach the wire.
 - `attempts`: consecutive reconnects tried when this was reported.
+- `pendingLost`: in-flight tool calls this drop actually killed -- the only part an agent can FEEL. Sent always, **including zero**, because zero is the finding.
+
+**Three things about querying this, and every one of them has already produced a wrong number.**
+
+**`daemon_shutdown` is not an outage.** The daemon announces a planned retirement before it closes the stream, and from the socket's side that is byte-identical to a daemon dying under a live client. Without the split, the metric meant to say "the agent lost its tools" spends most of its volume counting the idle exit working exactly as designed. **Filter it out before reading this event as an outage rate at all** -- a chart over the raw kind describes the idle timer, not the transport.
+
+**`attempts` on a `first` event is 1 by construction and carries no information.** It is emitted at the moment of the drop, when the counter has just been incremented once, and the once-per-process cap keeps any later drop from replacing it. Reading a field that can only hold one value as "reconnection never advances past the first attempt" is reading the emission point, not the transport. **`recovered` carries the real cost of coming back**; it is the only stage whose `attempts` is a measurement.
+
+**`first` alone is unfalsifiable, and the pair is the metric.** `first` with a matching `recovered` is a blip the agent probably never noticed (check `pendingLost`). `first` with `budget_spent` and no `recovered` is a session whose tools never came back on their own, which is the number worth driving down. Counting `first` on its own over-states the problem by roughly the whole of it.
 
 Still true and worth knowing when you query it: `mcp_connection_lost` carries **no `sessionId`** (it fires from the proxy process, not the daemon), and is capped at two per proxy process by design.
+
+### Licence activation
+
+Three envelope scalars, present on **every** event rather than on a licence event of their own: the questions a licensed customer generates are "how much is this org using it", "what is breaking for them" and "did their key lapse", and every one of those is answered by an event that has nothing to do with licensing.
+
+- `licenseId`. The signed licence id. An opaque uuid that resolves to a company only against the issuance ledger held locally, so the analytics backend never holds a customer list. Present only while a key verifies.
+- `licenseStatus`. `active` | `missing` | `invalid` | `expired`. Rides whenever an issuer key is baked, **including the failure states**, which is what makes a lapse distinguishable from a churn: a lapsed customer stops sending `licenseId`, so on identity alone a lapse and a departure look identical.
+- `licenseKeyPresent`. A key was placed in the environment, whatever this build concluded about it.
+
+**The trap this last one exists to close.** `licenseStatus` is absent entirely on a build with no issuer key baked, which is every OSS install and every source checkout. That is deliberate and correct for a machine with no key. And wrong for a machine with one. A customer who pastes a real enterprise key into such a build produced _no licence signal whatsoever_ and was indistinguishable from someone who has never held a key. So the one population most worth seeing was the one that could not be seen.
+
+**`licenseKeyPresent: true` with no `licenseStatus` is the "their key is not taking effect" case.** Query for it directly; it is a support ticket that has not been filed yet.
+
+**Never the key.** `licenseKeyPresent` is a boolean. The key is a credential and does not leave the machine, and neither does the organisation NAME (free text, and rule 3 is names-never-values) or the PLAN (the issuance ledger already holds it against the same id).
+
+**Where the key is looked for.** The daemon is spawned without an explicit `cwd` and inherits the editor's, so `<cwd>/.env` alone missed keys routinely: in a monorepo the daemon starts at the workspace root while the key sits in the app's own `.env`, and under some editors the cwd is the user's home. `license-env.ts` searches `.env` and `.env.local`, upward to the project root and one level down into `apps/*` and `packages/*`. Only the licence key is taken out of a file found by walking. Bulk-importing a `.env` from a directory the caller never named could rebind the daemon's port or its allowed origins, which would be a far worse bug than the one it fixes.
 
 ## Recording locally instead of sending: `RETICLE_TELEMETRY_FILE`
 
@@ -265,7 +367,9 @@ One deliberate exception to the rules above: `RETICLE_TELEMETRY_FILE` keeps tele
 | **A new finding shape** in a tool result | Teach `bugsInResult` the field. Add a case to the contract test | ✓ |
 | **A failure path** (connect, install, crash) | Classify it into an enum with an explicit `OTHER` bucket; a classifier that cannot say "I don't know" lies instead | ✓ |
 | **An event kind** | Add to `TelemetryEventKind` + a payload schema + emit it + add a live check to `apps/e2e/specs/telemetry-events-test.mjs` that asserts the **fields**, not just that it arrived | partly; the live check is on you |
-| **A block on `TelemetryExtra`** | Also add it to the `emit()` event build, the `blocks` flattening map, AND `TelemetryEventSchema`. Missing any one of the three drops the payload in silence (see `outage`) | ✗ **not enforced; be careful** |
+| **A field on an EXISTING block** | Add it to that block's schema in core, and nothing else. The `blocks` map flattens every key it finds, so a new field on `connection`/`project`/`outage`/… reaches the wire for free | `extra-blocks-reach-the-wire.test.ts` |
+| **A new block on `TelemetryExtra`** | FOUR hand-maintained lists, and missing any one drops the payload in silence (see `outage`): `TelemetryExtra` (`telemetry/telemetry.ts`), the `emit()` event-build spread (same file), the destructure + `blocks` prefix map (same file), and `TelemetryEventSchema` (`core/src/telemetry.ts`). Then add a `SAMPLES` entry in `extra-blocks-reach-the-wire.test.ts` | `extra-blocks-reach-the-wire.test.ts` |
+| **A new SCALAR on the envelope** (`installSource`, `automation`, `licenseId`) | THREE: `TelemetryExtra` if a caller sets it, the `emit()` event build, and `TelemetryEventSchema`. **No `blocks` entry** -- there is nothing to flatten, and adding one is a silent no-op | ✗ **not enforced; be careful** |
 | **A dispatch path** that bypasses `runTool` | Give it a reporter like `run-telemetry.ts`, or it is invisible | ✗ **not enforced; be careful** |
 
 ## Verifying it actually works

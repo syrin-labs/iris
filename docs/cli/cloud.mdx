@@ -20,7 +20,7 @@ These are thin clients over the `/v1` API. The moat is the server, not the verbs
 | `~/.reticle/credentials.json` | Project-scoped API keys from `reticle link`, keyed by `projectId` | Yes |
 | `<repo>/.reticle/cloud.json` | `{ projectId, projectName, url, sync, verify }`. The non-secret binding | No, commit it |
 
-Auth for any command is `RETICLE_CLOUD_KEY` from the environment (the agent path) if set, otherwise the login token. `RETICLE_CLOUD_URL` overrides the endpoint; the default is `http://localhost:8890`.
+Auth for any command is `RETICLE_CLOUD_KEY` from the environment (the agent path) if set, otherwise the login token. `RETICLE_CLOUD_URL` overrides the endpoint; the default is `http://localhost:8890`. When a command falls back to that default without `RETICLE_CLOUD_URL` (or a saved session URL), it prints a one-line notice on stderr; stdout stays pure JSON for agents.
 
 ## The commands
 

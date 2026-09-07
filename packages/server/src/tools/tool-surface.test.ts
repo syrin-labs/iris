@@ -147,9 +147,17 @@ describe('one surface, plus two switches', () => {
    * until re-measured on the same 30-bug set.
    *
    * If that measurement fails, the entry comes out. An unmeasured third surface IS a menu.
+   *
+   * `lean` is admitted on strictly narrower terms again: it is not offered, not documented as a
+   * recommendation, and exists to RUN the measurement that `verify` failed — same 30-bug set,
+   * observation tools retained. `verify` proved the token saving and the accuracy loss come from two
+   * different cuts; `lean` pays for only one of them. It is an EXPERIMENT with the same exit as the
+   * others: if it does not hold detection and false alarms against `default`, the entry comes out.
    */
-  it('offers exactly three internal surfaces, each a switch rather than a choice', () => {
-    expect(new Set(Object.values(TOOL_SURFACE))).toEqual(new Set(['default', 'all', 'verify']));
+  it('offers exactly four internal surfaces, each a switch rather than a choice', () => {
+    expect(new Set(Object.values(TOOL_SURFACE))).toEqual(
+      new Set([TOOL_SURFACE.DEFAULT, TOOL_SURFACE.ALL, TOOL_SURFACE.VERIFY, TOOL_SURFACE.LEAN]),
+    );
   });
 
   it('verify still reaches every other tool, or it is a trap rather than a saving', () => {

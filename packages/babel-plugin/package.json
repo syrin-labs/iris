@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/babel-plugin",
-  "version": "2.11.0",
+  "version": "2.13.1",
   "description": "Babel plugin that stamps data-reticle-source=\"file:line:col\" on JSX host elements so @reticlehq/react can map a DOM node to its source (works on React 19, which dropped _debugSource).",
   "type": "commonjs",
   "license": "Apache-2.0",
@@ -39,7 +39,10 @@
     "typecheck": "tsc -b",
     "lint": "eslint src",
     "test:unit": "vitest run src --passWithNoTests",
-    "prepack": "tsc -b && find dist -name \"*.test.*\" -delete && node ../../scripts/strip-maps.mjs dist"
+    "prepack": "tsc -b && node ../../scripts/prepare-dist.mjs dist"
+  },
+  "dependencies": {
+    "@reticlehq/core": "workspace:*"
   },
   "peerDependencies": {
     "@babel/core": "^7"

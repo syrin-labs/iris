@@ -191,11 +191,19 @@ export async function dragElement(
    * Everything here was missing before, and each omission breaks a different, standard library
    * pattern: without coordinates a geometry-based collision resolver sees a zero delta and reports
    * the source as its own drop target; without `buttons: 1` the usual "was the mouse released?"
-   * guard (`event.buttons === 0`) bails out mid-drag.
+   * guard (`event.buttons === 0`) bails out mid-drag. Boundary events (`over`/`out` bubbling,
+   * `enter`/`leave` not) do not bubble exactly when a real pointer's would not.
    */
-  const fire = (el: Element, type: string, at: Point, buttons: number): void => {
+  const fire = (
+    el: Element,
+    type: string,
+    at: Point,
+    buttons: number,
+    related?: Element | null,
+  ): void => {
+    const bubbles = !(type.endsWith('enter') || type.endsWith('leave'));
     const init = {
-      bubbles: true,
+      bubbles,
       cancelable: true,
       clientX: at.x,
       clientY: at.y,
@@ -203,6 +211,7 @@ export async function dragElement(
       screenY: at.y,
       buttons,
       button: 0,
+      ...(related !== undefined ? { relatedTarget: related } : {}),
     };
     if ('function' === typeof PointerEvent && type.startsWith('pointer')) {
       el.dispatchEvent(new PointerEvent(type, { ...init, pointerId: 1, isPrimary: true }));
@@ -210,17 +219,54 @@ export async function dragElement(
       el.dispatchEvent(new MouseEvent(type, init));
     }
   };
+  /** Is this path point inside an element's box? Rects are cached; jsdom reports zeros otherwise. */
+  const sourceRect = source.getBoundingClientRect();
+  const destRect = target !== null ? dest.getBoundingClientRect() : null;
+  const crosses = (rect: DOMRect, p: Point): boolean =>
+    p.x >= rect.left && p.x <= rect.right && p.y >= rect.top && p.y <= rect.bottom;
+
   fire(source, 'pointerdown', from, BUTTON_HELD);
   fire(source, 'mousedown', from, BUTTON_HELD);
   await nativeFrame();
   // A path, not a jump. `activationConstraint: { distance: N }` is the standard way to keep a
   // draggable card clickable, and a sensor only starts a drag once it has SEEN the pointer travel
   // that far — which a single move from A to B never shows it.
+  //
+  // The crossing announces itself: the first step outside the source fires out/leave on it, and
+  // the first step inside the destination fires over/enter on it, both with the button still held.
+  // Without these, React never synthesises `onMouseEnter` on the destination (it derives that from
+  // delegated `mouseover`/`mouseout`), so drag-to-select grids never extend their selection.
+  let leftSource = false;
+  let enteredDest = false;
   for (let step = 1; step <= DRAG_STEPS; step += 1) {
     const at = lerp(from, to, step / DRAG_STEPS);
+    if (!leftSource && !crosses(sourceRect, at)) {
+      leftSource = true;
+      // relatedTarget is the element the pointer crossed TO/FROM; React's enter/leave synthesis
+      // reads it off the delegated over/out pair to know which boundary was crossed.
+      fire(source, 'pointerout', at, BUTTON_HELD, dest);
+      fire(source, 'mouseout', at, BUTTON_HELD, dest);
+      fire(source, 'pointerleave', at, BUTTON_HELD, dest);
+      fire(source, 'mouseleave', at, BUTTON_HELD, dest);
+    }
+    if (leftSource && !enteredDest && destRect !== null && crosses(destRect, at)) {
+      enteredDest = true;
+      fire(dest, 'pointerover', at, BUTTON_HELD, source);
+      fire(dest, 'mouseover', at, BUTTON_HELD, source);
+      fire(dest, 'pointerenter', at, BUTTON_HELD, source);
+      fire(dest, 'mouseenter', at, BUTTON_HELD, source);
+    }
     fire(dest, 'pointermove', at, BUTTON_HELD);
     fire(dest, 'mousemove', at, BUTTON_HELD);
     await nativeFrame();
+  }
+  // A short hop whose sampled steps never land inside the destination box still crossed into it;
+  // announce the arrival rather than silently skipping the pair.
+  if (!enteredDest && destRect !== null) {
+    fire(dest, 'pointerover', to, BUTTON_HELD, source);
+    fire(dest, 'mouseover', to, BUTTON_HELD, source);
+    fire(dest, 'pointerenter', to, BUTTON_HELD, source);
+    fire(dest, 'mouseenter', to, BUTTON_HELD, source);
   }
   fire(dest, 'pointerup', to, BUTTON_RELEASED);
   fire(dest, 'mouseup', to, BUTTON_RELEASED);

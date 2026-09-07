@@ -89,6 +89,23 @@ export interface CapturedCall {
 export class CaptureLedger {
   #calls: CapturedCall[] = [];
   #dropped = 0;
+  #tools = new Map<string, number>();
+
+  /**
+   * One call, under the name of the tool that RAN — every tool, not just the read set above.
+   *
+   * Separate from `note` because it answers a different question and is bounded differently: this
+   * map cannot outgrow the tool table however long the session runs, so it needs no cap and never
+   * has to report a floor. See honesty/tool-hit-rate.ts for what it feeds.
+   */
+  noteTool(tool: string): void {
+    this.#tools.set(tool, (this.#tools.get(tool) ?? 0) + 1);
+  }
+
+  /** How many times each tool was called this session, in first-call order. */
+  toolCalls(): ReadonlyMap<string, number> {
+    return this.#tools;
+  }
 
   note(call: CapturedCall): void {
     this.#calls.push(call);
@@ -124,8 +141,18 @@ export function noteCapturedCall(
   session.capture?.note({ ...call, afterActions: session.actionCount ?? 0 });
 }
 
+/**
+ * Count one call against the session that made it, whichever tool it was.
+ *
+ * Tolerant of a ledger-less session for exactly the reason `noteCapturedCall` is: its calls are then
+ * absent rather than counted as zero, which is what `observed: false` exists to say.
+ */
+export function noteToolDispatched(session: { capture?: CaptureLedger }, tool: string): void {
+  session.capture?.noteTool(tool);
+}
+
 /** What one session's use of the two features looks like. Everything but `observed` is omitted when nothing was recorded. */
-export interface FeatureCapture {
+interface FeatureCapture {
   /** False when this daemon recorded nothing for the session — "not watched", never "not used". */
   observed: boolean;
   /** The ledger dropped calls, so every count is a floor. Present only when true. */

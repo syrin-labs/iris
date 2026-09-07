@@ -49,7 +49,7 @@ interface VerifiedInputs {
   /** Did a real frame flush before the wait gave up? */
   settled?: boolean;
   /**
-   * The caller NAMED the expected consequence before acting — an `until`/`predicate` of its own,
+   * The caller named a consequence before acting — an `until`/`predicate` of its own,
    * rather than the default "wait for the page to go idle".
    *
    * This is the epistemic core of the tool: a declaration made before the action cannot be
@@ -68,6 +68,12 @@ interface VerifiedInputs {
    */
   declaredConsequence?: boolean;
   /**
+   * A net the caller named is still open. `waitForPredicate` reports that as `pass: false` ("no
+   * request to …") the instant the budget ends, which made a cold backend `assertion_failed` and a
+   * warm one `proved`. Absence of a settle is not evidence the request never happened — see #669.
+   */
+  namedRequestInFlight?: boolean;
+  /**
    * A write in this window answered `202 Accepted` — the server took the request and has NOT
    * finished processing it.
    */
@@ -82,6 +88,22 @@ interface VerifiedInputs {
    * Empty means nothing went unread.
    */
   outcomeUnread?: readonly string[];
+  /**
+   * The declared consequence that held does not depend on the response body — an exact string
+   * rendered, a store path, a signal, a route, or an element located by role / name / testid. See
+   * `declaresBodyIndependentChannel`.
+   *
+   * The unread-body clause exists for the case where the body is the ONLY channel that could have
+   * contradicted the screen (a 200 with batch/GraphQL errors inside). When a body-independent
+   * declaration held, that is no longer true, and grading `unknown` costs a real verdict. The unread
+   * labels still ride out in `because`, the way absence-derived contradictions still ride out in
+   * `contradictions`.
+   *
+   * Narrow: it does not soften a 202, an observed contradiction, a dirty capture, or a net-only
+   * declaration. `declaredConsequence` alone is not enough — a `{ kind: "net", status: 200 }` is a
+   * declaration whose remaining channel IS the body.
+   */
+  independentOfBody?: boolean;
   /**
    * What the wait was for and what the window held when it ended — read ONLY by the two clauses that
    * answer UNSETTLED, which is the commonest reason a verdict comes back `unknown` and was also the
@@ -136,6 +158,44 @@ export function decideVerified(inputs: VerifiedInputs): VerifiedVerdict {
         'seen — this says nothing about the app. Call reticle_sessions for the current session ' +
         '(a reloaded tab keeps its id; a closed one is gone) and repeat the action if it is safe ' +
         'to repeat',
+    };
+  }
+
+  // ABOVE the failure clause, for the third time and the same reason: absence is not evidence.
+  //
+  // Omitting `until` waits for the page to SETTLE. Nobody declared a consequence, so a settle that
+  // times out says "the page was still busy when I stopped looking" — the definition of an
+  // absence-derived finding. The failure clause below took it at face value and returned
+  // `verified: "no"` with `because: 'the declared consequence did not hold'`, naming a consequence
+  // that does not exist. Measured on the hard fixture, whose push updates mean it never goes idle:
+  // a healthy pagination click was graded NO. Any app with polling or a live feed gets accused of a
+  // defect for being alive, which is the false NEGATIVE the ABSENCE_DERIVED doctrine exists to stop.
+  if (false === pass && false === inputs.declaredConsequence) {
+    return {
+      verified: Verified.UNKNOWN,
+      verifiedReason: VerifiedReason.UNSETTLED,
+      because:
+        'no consequence was declared, so this only waited for the page to go idle and it never ' +
+        'did — that is a statement about when Reticle stopped looking, not about the app. Pass ' +
+        '`until` naming what the action should cause (a signal, a request, a route, or store state)',
+    };
+  }
+
+  // ABOVE the failure clause, same reason as observationLost: absence is not evidence.
+  //
+  // A `{ net, urlContains }` miss while that URL is still in `stillInFlight` is a window that
+  // closed early, not a request that never happened. The same result object already named the
+  // in-flight POST; calling it `assertion_failed` contradicted that field and flipped green on a
+  // warm backend. UNKNOWN, and the sentence says to re-check once the request lands.
+  if (false === pass && true === inputs.namedRequestInFlight) {
+    return {
+      verified: Verified.UNKNOWN,
+      verifiedReason: VerifiedReason.WINDOW_CLOSED_EARLY,
+      because: unsettledBecause(
+        'the request this assertion named was still in flight when the window closed, so the ' +
+          'consequence was not disproved — it had not finished',
+        inputs.unsettled,
+      ),
     };
   }
 
@@ -194,6 +254,29 @@ export function decideVerified(inputs: VerifiedInputs): VerifiedVerdict {
     inputs.unsettled !== undefined &&
     !openWrite &&
     contradictions.every((c) => c.kind === ContradictionKind.REQUEST_NEVER_SETTLED);
+  // `signal-without-consequence` gets its own sentence, because the generic one is FALSE for it.
+  //
+  // That sentence says the window "closed before the app finished" and then explains that a poll or
+  // a timer kept the page busy. Nothing kept this page busy — nothing happened at all, which is the
+  // entire finding. Measured on the bench fixture: the correct UNKNOWN arrived wearing an
+  // explanation that told the agent to wait longer or assert something else, when the fact to act on
+  // was that the app announced a consequence it did not deliver. A right verdict with a wrong reason
+  // sends an agent to the wrong place, which costs as much as the wrong verdict did.
+  const signalOnly =
+    contradictions.length > 0 &&
+    contradictions.every((c) => c.kind === ContradictionKind.SIGNAL_WITHOUT_CONSEQUENCE);
+  if (signalOnly) {
+    return {
+      verified: Verified.UNKNOWN,
+      verifiedReason: VerifiedReason.EVIDENCE_INCOMPLETE,
+      because:
+        'the app fired the signal you waited for and NOTHING else moved — no DOM, no store, no ' +
+        'route, no request — so the only evidence is the app saying so. A signal emitted from the ' +
+        'value the app was ASKED for, rather than the one it committed, looks exactly like this. ' +
+        'Check the consequence directly (reticle_snapshot for what rendered, reticle_state for what ' +
+        'the store holds) before trusting it',
+    };
+  }
   if (contradictions.length > 0 && !settlementOnly) {
     const kinds = contradictions.map((c) => c.kind).join(', ');
     return {
@@ -230,9 +313,24 @@ export function decideVerified(inputs: VerifiedInputs): VerifiedVerdict {
   // with routeChanges 0, because the text was the nav link already on screen — the real navigation
   // landed 1.8s later. UNKNOWN rather than NO on purpose: the app may well be fine, and reporting a
   // failure we did not observe would be its own false claim.
+  //
+  // `no-fault` rather than `unknown`, once the window settled — the same distinction
+  // `nothing_declared` already draws, gated the same way.
+  //
+  // The two words ask for opposite things. `unknown` means LOOK AGAIN WITH BETTER COVERAGE, so an
+  // agent reading it reasonably concludes the engine could not see, and spends its remaining turns
+  // enabling capture, widening timeouts and re-driving — none of which can help, because the engine
+  // saw the whole window and there was nothing wrong with the evidence. The fault is in the
+  // ASSERTION: it named something that was true before the action, so it cannot tell success from a
+  // no-op. `no-fault` says exactly that, and `because` already carried the remedy that `unknown`
+  // was burying.
+  //
+  // Gated on `true === settled` for the same reason `nothing_declared` is: no-fault claims the whole
+  // window was seen, and a call that returned before the app stopped moving has not earned that.
+  // Unsettled stays `unknown`, which is then the honest word for it.
   if (true === inputs.alreadyTrue) {
     return {
-      verified: Verified.UNKNOWN,
+      verified: true === settled ? Verified.NO_FAULT : Verified.UNKNOWN,
       verifiedReason: VerifiedReason.ALREADY_TRUE,
       because:
         'the declared consequence was already true before this action, so it proves nothing about it — assert something the action CHANGES (a signal, a request, a route, or store state)',
@@ -262,7 +360,21 @@ export function decideVerified(inputs: VerifiedInputs): VerifiedVerdict {
   // Gated on `true === settled` rather than on a caller's say-so. A call that returned before the app
   // stopped moving has not earned this, whatever it declared — which is what stops `no-fault` from
   // becoming the green-forever button an always-available "nothing was wrong" would be.
-  if (honesty.grade === HonestyGrade.NONE) {
+  // Two ways to have proved nothing, and only one of them used to be caught. Grade NONE is the
+  // engine's own reading — no signal, no request, no state change, nothing pinned. An explicit
+  // `declaredConsequence: false` is the CALLER saying it asserted nothing, which `act_and_wait`
+  // reports whenever `until` is omitted (an omitted `until` becomes `{kind:"settled"}` — a
+  // sleep-replacement, not an assertion).
+  //
+  // Grading alone missed the second case, because a click that merely moves the DOM lifts the grade
+  // to PRESENCE and walks past this branch into a full green. Measured live: clicking a submit
+  // button, and an inert text input, with no `until` both returned `verified:"yes"` /
+  // `verifiedReason:"proved"`. The claim it printed — "assertion held at presence grade" — was true
+  // about a grade and false about an assertion, because there was no assertion.
+  //
+  // It compounds: `reticle_context` persists proven claims, so an undeclared green becomes
+  // established fact for the agent that re-enters after a compaction.
+  if (honesty.grade === HonestyGrade.NONE || false === inputs.declaredConsequence) {
     if (true === settled) {
       return {
         verified: Verified.NO_FAULT,
@@ -303,7 +415,15 @@ export function decideVerified(inputs: VerifiedInputs): VerifiedVerdict {
   //
   // UNKNOWN, not NO: nothing is known to have failed. The remedy is in the sentence, because an
   // agent that cannot act on a caveat will learn to skip it.
-  if (outcomeUnread !== undefined && outcomeUnread.length > 0) {
+  //
+  // Skipped when the caller declared a consequence that does not depend on the body and it held.
+  // The clause was written for the body being the ONLY remaining channel; a unique row on screen, a
+  // store path, or a signal that held is a different channel, and grading unknown there cost a real
+  // verdict (a 201 plus the exact message text, agent went to enable capture instead of finishing).
+  // The unread write still rides out in `because`. A net-only declaration does not skip: then the
+  // body is still the remaining channel.
+  const unreadHeldIndependently = declaredHeld && true === inputs.independentOfBody;
+  if (outcomeUnread !== undefined && outcomeUnread.length > 0 && !unreadHeldIndependently) {
     return {
       verified: Verified.UNKNOWN,
       verifiedReason: VerifiedReason.OUTCOME_UNREAD,
@@ -346,12 +466,16 @@ export function decideVerified(inputs: VerifiedInputs): VerifiedVerdict {
     false === settled
       ? ', though the page never went idle — this rests on the consequence you declared, not on the page going quiet'
       : '';
+  const unreadCaveat =
+    unreadHeldIndependently && outcomeUnread !== undefined && outcomeUnread.length > 0
+      ? `, though a write returned 2xx with a response body that was never recorded (${outcomeUnread.join('; ')}) — a 200 describes the transport, not the result`
+      : '';
   return {
     verified: Verified.YES,
     verifiedReason: VerifiedReason.PROVED,
     because:
       true === honesty.coverage?.partial
-        ? `assertion held at ${honesty.grade} grade with no channel disagreeing, but coverage was PARTIAL — see \`coverage\` for what went unobserved${notIdle}`
-        : `assertion held at ${honesty.grade} grade over a clean capture with no channel disagreeing${notIdle}`,
+        ? `assertion held at ${honesty.grade} grade with no channel disagreeing, but coverage was PARTIAL — see \`coverage\` for what went unobserved${notIdle}${unreadCaveat}`
+        : `assertion held at ${honesty.grade} grade over a clean capture with no channel disagreeing${notIdle}${unreadCaveat}`,
   };
 }

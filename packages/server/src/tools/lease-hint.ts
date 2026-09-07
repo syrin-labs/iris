@@ -36,6 +36,16 @@ export interface LeaseEvidence {
    * reported as a marker that was not found.
    */
   sdkMarker?: boolean;
+  /**
+   * The websocket URL the leased page actually tried, read from its own console.
+   *
+   * The only per-page proof there is about where the dial WENT. `refusal` proves a dial arrived
+   * HERE; this proves where one was aimed, which is the strictly more useful fact when it was aimed
+   * somewhere else — the case in which no refusal exists to be recorded, because nothing arrived.
+   *
+   * Absent means the page said nothing, never that it dialled correctly.
+   */
+  dialledUrl?: string;
 }
 
 const NUXT = 'nuxt';
@@ -76,6 +86,23 @@ function markerClause(sdkMarker: boolean | undefined): string {
         'points at a bundle that carries no Reticle at all, i.e. wiring that never took effect.';
 }
 
+/**
+ * The port a websocket URL names, or undefined when it names none we can read.
+ *
+ * `ws://host/path` with no explicit port is deliberately undefined rather than defaulted to 80: a
+ * guessed port compared against the daemon's would manufacture a mismatch out of nothing, and this
+ * branch outranks every other cause. No answer is correct here; a plausible one is not.
+ */
+function dialledPort(url: string | undefined): number | undefined {
+  if (url === undefined) return undefined;
+  try {
+    const port = new URL(url).port;
+    return '' === port ? undefined : Number(port);
+  } catch {
+    return undefined;
+  }
+}
+
 export function leaseNotConnectedHint(
   url: string,
   port: number,
@@ -83,6 +110,27 @@ export function leaseNotConnectedHint(
 ): string {
   const opening = `the leased tab loaded ${url} but never dialled this daemon (port ${String(port)}).`;
   const marker = markerClause(evidence.sdkMarker);
+
+  // 0. The page told us where it dialled, and it was not here. Proof, and it outranks the refusal
+  //    branch below: a refusal proves a dial reached THIS daemon, which is a fact about some page;
+  //    this is a fact about the page in hand. When they disagree, the specific one wins.
+  //
+  //    Neither side can reach this conclusion alone, which is why it went unsaid for so long. The
+  //    page's own warning deliberately refuses to diagnose the daemon — from inside a browser a
+  //    daemon that is absent and one that is unreachable are the same observation. The daemon cannot
+  //    see a dial that never arrived. Put the address the page names beside the port the daemon is
+  //    bound to and the ambiguity disappears.
+  const dialled = dialledPort(evidence.dialledUrl);
+  if (dialled !== undefined && dialled !== port) {
+    return (
+      `${opening} The page dialled ${String(evidence.dialledUrl)} (port ${String(dialled)}) and ` +
+      `this daemon is on ${String(port)}, so the dial never reached it. Nothing about the app's ` +
+      `wiring is in question. Either start the daemon on ${String(dialled)}, or point the app at ` +
+      `${String(port)} — the app's port comes from its build config (\`.reticle.json\`, ` +
+      `RETICLE_PORT, or the build plugin's \`port\`), and \`VITE_RETICLE_WS_URL\` overrides it ` +
+      `outright.${marker} ${RELEASE}`
+    );
+  }
 
   // 1. A recorded refusal. The only cause with proof behind it, so nothing outranks it.
   if (evidence.refusal !== undefined) {
@@ -93,12 +141,26 @@ export function leaseNotConnectedHint(
   //    about at install time — while this hint never mentioned it.
   const nuxt = evidence.framework?.toLowerCase() === NUXT ? ` ${NUXT_FIRST}` : '';
 
-  // 3. Proven wiring. Blaming the port here is the self-contradiction this rewrite exists to end.
+  // 3. Proven PORT. Blaming the port here is the self-contradiction this rewrite exists to end —
+  //    but "the wiring is correct" was a second claim, and it was not proven at all.
+  //
+  //    `previouslyConnected` is scoped to project + port, never to the app. In a monorepo, or for
+  //    anyone adding a second app, the thing that connected yesterday is a DIFFERENT app. Measured:
+  //    an uninstrumented app driven in exactly that situation was told its wiring was correct, and
+  //    handed four causes — a dev-mode guard, a stale dev server, a missing peer dependency, a
+  //    non-localhost page — every one of which presupposes the SDK is already installed. It was
+  //    not. That is the commonest failure there is, and `reticle init` appeared nowhere in the
+  //    answer, because the only branch that mentions it is the one reached when nothing is known.
   if (true === evidence.previouslyConnected) {
+    const notThisApp =
+      true === evidence.sdkMarker
+        ? ''
+        : ' That may have been a DIFFERENT app, though: this one may carry no Reticle SDK at all, ' +
+          'in which case run `reticle init` in ITS directory first — every cause below assumes the ' +
+          'SDK is already installed.';
     return (
-      `${opening} An app for this project HAS connected on this port before, so the port and the ` +
-      `wiring are both correct — what is failing is the SDK reaching initialise on the page.${nuxt}` +
-      `${marker} ${REAL_CAUSES} ${RELEASE}`
+      `${opening} An app for this project HAS connected on this port before, so the port is ` +
+      `proven.${notThisApp}${nuxt}${marker} ${REAL_CAUSES} ${RELEASE}`
     );
   }
 

@@ -22,6 +22,22 @@ This tool exists because of a measured problem: agents were driving forms one ca
 }
 ```
 
+Steps may also name a `target` instead of a `ref`, the same locator [`reticle_act`](/tools-act) takes. The sequence resolves each one before dispatch, so a login does not need a query round trip per field:
+
+```json
+{
+  "steps": [
+    { "target": { "label": "Email" }, "action": "fill", "args": { "value": "admin@reticle.dev" } },
+    {
+      "target": { "label": "Password" },
+      "action": "fill",
+      "args": { "value": "correct-horse-battery-staple" }
+    },
+    { "target": { "testid": "login-submit" }, "action": "click" }
+  ]
+}
+```
+
 Real response. Each `effects[]` entry also carries `targetMatched`, `visible`, `enabled`, `defaultPrevented`, `occluded`, `occludedBy` and `scrolledIntoView`, and each `steps[]` entry also carries `dispatched`, `settled`, `settleReason`, `component`, `role` and `name`. Those are trimmed here for length:
 
 ```json

@@ -33,6 +33,7 @@ import { platform } from 'node:os';
 import { getTelemetry } from './telemetry.js';
 import { noteFeedbackUndelivered } from './feedback-delivery.js';
 import { isReticleSourceCheckout } from './dev-repo.js';
+import { saveFeedbackLocally } from './feedback-local.js';
 import { SERVER_VERSION } from '../version/server-version.js';
 import { feedbackContext, type SessionFacts } from './feedback-context.js';
 import { markDelivered, outboxPath, queueFeedback } from './feedback-outbox.js';
@@ -126,12 +127,12 @@ const FIELD_CAPS: Record<string, number> = {
 };
 
 /** What the author supplies; the environment context is detected, never asked for. */
-export type FeedbackInput = Pick<
+type FeedbackInput = Pick<
   Feedback,
   'source' | 'kind' | 'text' | 'trace' | 'rating' | 'need' | 'impact' | 'currentApproach' | 'model'
 >;
 
-export interface FeedbackReceipt {
+interface FeedbackReceipt {
   /**
    * DELIVERY confirmed. Only ever true when the send was awaited and the endpoint accepted it —
    * never as an optimistic stand-in for "we handed it to the emitter". That distinction is the whole
@@ -148,6 +149,17 @@ export interface FeedbackReceipt {
    */
   accepted: boolean;
   reason?: string;
+  /**
+   * Where the report was written when it could not be SENT.
+   *
+   * A refusal used to be the end of the road: the report was already written by then, and throwing
+   * it away punished exactly the behaviour this channel exists to encourage. Worse, the commonest
+   * refusal is a Reticle SOURCE CHECKOUT — so the reporter best placed to name a file and a line was
+   * the only one who could not file at all.
+   */
+  savedTo?: string;
+  /** A ready-to-run command that turns the saved file into an issue. */
+  fileWith?: string;
   /** Which redaction rules fired. Empty when nothing needed removing. */
   redacted: string[];
   /** The exact context that went with it, echoed back so the send is never a black box. */
@@ -205,15 +217,27 @@ export async function submitFeedback(
   }
   const telemetry = getTelemetry();
   if (!telemetry.enabled) {
+    /*
+     * Cannot SEND is not the same as cannot FILE.
+     *
+     * The report is fully written and redacted by this point. Discarding it punishes the exact
+     * behaviour this channel exists to encourage, and it hits hardest where the reports are best: a
+     * Reticle source checkout disables telemetry by cwd, so a contributor who can name the file and
+     * the line was the one person who could not file at all.
+     *
+     * So it goes to disk and the receipt says where, plus a command that turns it into an issue.
+     * Nothing is lost, and the human is handed one thing to run rather than asked to retype it.
+     */
+    const cwd = opts.cwd ?? process.cwd();
+    const saved = saveFeedbackLocally(cwd, input, body.text, context);
     return {
       sent: false,
       accepted: false,
-      // Named precisely, because the commonest cause is not what the old wording suggested: a
-      // Reticle SOURCE CHECKOUT disables telemetry by cwd, and that is exactly where release runs and
-      // contributor sessions happen — so the reports most worth having were the ones silently lost.
-      reason: isReticleSourceCheckout(opts.cwd ?? process.cwd())
-        ? 'this is a Reticle source checkout, where telemetry is disabled by design, so feedback has nowhere to go. Open an issue at https://github.com/reticlehq/reticle/issues instead, or run from the app you are verifying.'
-        : `telemetry is disabled on this machine, so feedback has nowhere to go. Re-enable with \`reticle telemetry enable\`, or open an issue at https://github.com/reticlehq/reticle/issues.`,
+      // Named precisely, because the commonest cause is not what the old wording suggested.
+      reason: isReticleSourceCheckout(cwd)
+        ? 'this is a Reticle source checkout, where telemetry is disabled by design, so this could not be sent — it has been written to disk instead, and nothing was lost.'
+        : `telemetry is disabled on this machine, so this could not be sent — it has been written to disk instead. Re-enable with \`reticle telemetry enable\` to send directly.`,
+      ...(saved === undefined ? {} : { savedTo: saved.path, fileWith: saved.command }),
       redacted,
       context,
     };

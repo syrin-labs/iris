@@ -33,7 +33,7 @@ export const KillAction = {
 } as const;
 export type KillAction = (typeof KillAction)[keyof typeof KillAction];
 
-export interface KillPlan {
+interface KillPlan {
   action: KillAction;
   /** The single pid to signal. Present only for `kill`. */
   pid?: number;

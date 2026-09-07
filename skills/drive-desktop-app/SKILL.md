@@ -3,7 +3,7 @@ name: drive-desktop-app
 description: Drive and verify an Electron or Tauri desktop app from the inside, including the main-process and Rust IPC calls a browser tool cannot see. Use when a desktop app needs testing, when a feature works in the browser but not in the packaged app, when an IPC or invoke call needs proving, when a desktop screenshot or visual diff is wanted, or when you need a headless run of a desktop UI in CI.
 license: Apache-2.0
 metadata:
-  version: 2.9.0
+  version: 2.13.1
   homepage: https://www.reticle.sh
   repository: https://github.com/reticlehq/reticle
 ---

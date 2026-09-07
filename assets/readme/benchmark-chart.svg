@@ -1,73 +1,52 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="504" viewBox="0 0 960 504" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Benchmark: bugs caught by category, Reticle versus Playwright">
-<rect width="960" height="504" rx="14" fill="#15131f"/>
-<text x="28" y="40" fill="#f4f2ff" font-size="19" font-weight="700">Bugs caught, by category</text>
-<rect x="746" y="30" width="10" height="10" rx="3" fill="#8b7bff"/>
-<text x="762" y="39" fill="#9a93b8" font-size="12">Reticle</text>
-<rect x="828" y="30" width="10" height="10" rx="3" fill="#5b6273"/>
-<text x="844" y="39" fill="#9a93b8" font-size="12">Playwright</text>
-<text x="28" y="63" fill="#9a93b8" font-size="13">88 regressions injected into one app. The 2 false-positive traps (not real bugs) are excluded.</text>
-<rect x="28" y="78" width="196" height="38" rx="8" fill="#8b7bff" opacity="0.14"/><text x="42" y="95" fill="#9a93b8" font-size="11" letter-spacing="0.4">RETICLE</text><text x="42" y="110" fill="#f4f2ff" font-size="14" font-weight="700">86 / 86 caught</text>
-<rect x="236" y="78" width="196" height="38" rx="8" fill="#5b6273" opacity="0.14"/><text x="250" y="95" fill="#9a93b8" font-size="11" letter-spacing="0.4">PLAYWRIGHT</text><text x="250" y="110" fill="#f4f2ff" font-size="14" font-weight="700">60 / 86 caught</text>
-<rect x="444" y="78" width="240" height="38" rx="8" fill="#8b7bff" opacity="0.14"/>
-<text x="458" y="95" fill="#9a93b8" font-size="11" letter-spacing="0.4">FALSE GREENS — BROKEN, REPORTED OK</text>
-<text x="458" y="110" fill="#f4f2ff" font-size="14" font-weight="700">0 vs 26</text>
-<text x="28" y="145" fill="#f4f2ff" font-size="13" font-weight="600">state</text>
-<text x="28" y="160" fill="#9a93b8" font-size="11">UI shows a value that contradicts the app store</text>
-<rect x="312" y="132" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="132" width="396" height="12" rx="6" fill="#8b7bff"/>
-<text x="932" y="143" text-anchor="end" fill="#f4f2ff" font-size="12" font-weight="700">8/8</text>
-<rect x="312" y="148" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="148" width="0" height="12" rx="6" fill="#5b6273"/>
-<text x="932" y="159" text-anchor="end" fill="#9a93b8" font-size="12">0/8</text>
-<text x="28" y="185" fill="#f4f2ff" font-size="13" font-weight="600">business-logic</text>
-<text x="28" y="200" fill="#9a93b8" font-size="11">a never-rendered field is corrupted</text>
-<rect x="312" y="172" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="172" width="396" height="12" rx="6" fill="#8b7bff"/>
-<text x="932" y="183" text-anchor="end" fill="#f4f2ff" font-size="12" font-weight="700">6/6</text>
-<rect x="312" y="188" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="188" width="0" height="12" rx="6" fill="#5b6273"/>
-<text x="932" y="199" text-anchor="end" fill="#9a93b8" font-size="12">0/6</text>
-<text x="28" y="225" fill="#f4f2ff" font-size="13" font-weight="600">signal</text>
-<text x="28" y="240" fill="#9a93b8" font-size="11">the app's own success signal never fired</text>
-<rect x="312" y="212" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="212" width="396" height="12" rx="6" fill="#8b7bff"/>
-<text x="932" y="223" text-anchor="end" fill="#f4f2ff" font-size="12" font-weight="700">4/4</text>
-<rect x="312" y="228" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="228" width="0" height="12" rx="6" fill="#5b6273"/>
-<text x="932" y="239" text-anchor="end" fill="#9a93b8" font-size="12">0/4</text>
-<text x="28" y="265" fill="#f4f2ff" font-size="13" font-weight="600">net-status</text>
-<text x="28" y="280" fill="#9a93b8" font-size="11">a 4xx/5xx the catch block swallowed</text>
-<rect x="312" y="252" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="252" width="396" height="12" rx="6" fill="#8b7bff"/>
-<text x="932" y="263" text-anchor="end" fill="#f4f2ff" font-size="12" font-weight="700">4/4</text>
-<rect x="312" y="268" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="268" width="99" height="12" rx="6" fill="#5b6273"/>
-<text x="932" y="279" text-anchor="end" fill="#9a93b8" font-size="12">1/4</text>
-<text x="28" y="305" fill="#f4f2ff" font-size="13" font-weight="600">streams</text>
-<text x="28" y="320" fill="#9a93b8" font-size="11">an SSE / WebSocket frame anomaly</text>
-<rect x="312" y="292" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="292" width="396" height="12" rx="6" fill="#8b7bff"/>
-<text x="932" y="303" text-anchor="end" fill="#f4f2ff" font-size="12" font-weight="700">3/3</text>
-<rect x="312" y="308" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="308" width="132" height="12" rx="6" fill="#5b6273"/>
-<text x="932" y="319" text-anchor="end" fill="#9a93b8" font-size="12">1/3</text>
-<text x="28" y="345" fill="#f4f2ff" font-size="13" font-weight="600">perf</text>
-<text x="28" y="360" fill="#9a93b8" font-size="11">render storm — DOM identical, 60 commits/s</text>
-<rect x="312" y="332" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="332" width="396" height="12" rx="6" fill="#8b7bff"/>
-<text x="932" y="343" text-anchor="end" fill="#f4f2ff" font-size="12" font-weight="700">3/3</text>
-<rect x="312" y="348" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="348" width="132" height="12" rx="6" fill="#5b6273"/>
-<text x="932" y="359" text-anchor="end" fill="#9a93b8" font-size="12">1/3</text>
-<text x="28" y="385" fill="#f4f2ff" font-size="13" font-weight="600">deep-dom</text>
-<text x="28" y="400" fill="#9a93b8" font-size="11">a break deep in a subtree a snapshot elides</text>
-<rect x="312" y="372" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="372" width="396" height="12" rx="6" fill="#8b7bff"/>
-<text x="932" y="383" text-anchor="end" fill="#f4f2ff" font-size="12" font-weight="700">3/3</text>
-<rect x="312" y="388" width="396" height="12" rx="6" fill="#ffffff" opacity="0.06"/>
-<rect x="312" y="388" width="264" height="12" rx="6" fill="#5b6273"/>
-<text x="932" y="399" text-anchor="end" fill="#9a93b8" font-size="12">2/3</text>
-<line x1="28" y1="430" x2="932" y2="430" stroke="#ffffff" stroke-opacity="0.08"/>
-<text x="28" y="454" fill="#9a93b8" font-size="12">The other 13 categories (55 bugs — visual, DOM, console, storage, routing): both catch everything.</text>
-<text x="28" y="472" fill="#9a93b8" font-size="12">The gap is entirely where the screen looks right.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="588" viewBox="0 0 960 588" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Bugs caught by category: Reticle 85 of 86, Playwright 59 of 86. state 8 of 8 versus 0; business-logic 6 of 6 versus 0; signal 4 of 4 versus 0; streams 3 of 3 versus 0; net-status 4 of 4 versus 1; perf 3 of 3 versus 1. On the other 14 categories both catch everything.">
+<rect x="0" y="0" width="960" height="588" rx="14" fill="#ffffff"/>
+<text x="28" y="132" fill="#1a1726" font-size="104" font-weight="800" letter-spacing="-4">14×</text>
+<text x="28" y="176" fill="#615c7d" font-size="22" font-weight="600">more bugs caught where the screen looks right</text>
+<text x="28" y="204" fill="#615c7d" font-size="15">28 vs 2 across these categories · 85/86 vs 59/86 overall</text>
+<circle cx="728.0" cy="38.0" r="6" fill="#6b4bf0" stroke="#ffffff" stroke-width="2"/><text x="744" y="43" fill="#615c7d" font-size="14">Reticle</text><circle cx="822.0" cy="38.0" r="6" fill="#7d8494" stroke="#ffffff" stroke-width="2"/><text x="838" y="43" fill="#615c7d" font-size="14">Playwright</text>
+<text x="28" y="268" fill="#1a1726" font-size="17" font-weight="600">state</text>
+<rect x="300" y="244" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="244" width="380" height="17" rx="4" fill="#6b4bf0"/>
+<text x="932" y="258" fill="#1a1726" font-size="15" font-weight="700" text-anchor="end">8/8</text>
+<rect x="300" y="265" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="265" width="0" height="17" rx="4" fill="#7d8494"/>
+<text x="932" y="279" fill="#615c7d" font-size="15" text-anchor="end">0/8</text>
+<text x="312" y="257.18" fill="#ffffff" font-size="13" font-weight="600">Reticle</text>
+<text x="312" y="278.18" fill="#615c7d" font-size="13" font-weight="600">Playwright</text>
+<text x="28" y="316" fill="#1a1726" font-size="17" font-weight="600">business-logic</text>
+<rect x="300" y="292" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="292" width="380" height="17" rx="4" fill="#6b4bf0"/>
+<text x="932" y="306" fill="#1a1726" font-size="15" font-weight="700" text-anchor="end">6/6</text>
+<rect x="300" y="313" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="313" width="0" height="17" rx="4" fill="#7d8494"/>
+<text x="932" y="327" fill="#615c7d" font-size="15" text-anchor="end">0/6</text>
+<text x="28" y="364" fill="#1a1726" font-size="17" font-weight="600">signal</text>
+<rect x="300" y="340" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="340" width="380" height="17" rx="4" fill="#6b4bf0"/>
+<text x="932" y="354" fill="#1a1726" font-size="15" font-weight="700" text-anchor="end">4/4</text>
+<rect x="300" y="361" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="361" width="0" height="17" rx="4" fill="#7d8494"/>
+<text x="932" y="375" fill="#615c7d" font-size="15" text-anchor="end">0/4</text>
+<text x="28" y="412" fill="#1a1726" font-size="17" font-weight="600">streams</text>
+<rect x="300" y="388" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="388" width="380" height="17" rx="4" fill="#6b4bf0"/>
+<text x="932" y="402" fill="#1a1726" font-size="15" font-weight="700" text-anchor="end">3/3</text>
+<rect x="300" y="409" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="409" width="0" height="17" rx="4" fill="#7d8494"/>
+<text x="932" y="423" fill="#615c7d" font-size="15" text-anchor="end">0/3</text>
+<text x="28" y="460" fill="#1a1726" font-size="17" font-weight="600">net-status</text>
+<rect x="300" y="436" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="436" width="380" height="17" rx="4" fill="#6b4bf0"/>
+<text x="932" y="450" fill="#1a1726" font-size="15" font-weight="700" text-anchor="end">4/4</text>
+<rect x="300" y="457" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="457" width="95" height="17" rx="4" fill="#7d8494"/>
+<text x="932" y="471" fill="#615c7d" font-size="15" text-anchor="end">1/4</text>
+<text x="28" y="508" fill="#1a1726" font-size="17" font-weight="600">perf</text>
+<rect x="300" y="484" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="484" width="380" height="17" rx="4" fill="#6b4bf0"/>
+<text x="932" y="498" fill="#1a1726" font-size="15" font-weight="700" text-anchor="end">3/3</text>
+<rect x="300" y="505" width="380" height="17" rx="4" fill="#000000" opacity="0.05"/>
+<rect x="300" y="505" width="126.66666666666666" height="17" rx="4" fill="#7d8494"/>
+<text x="932" y="519" fill="#615c7d" font-size="15" text-anchor="end">1/3</text>
+<text x="28" y="558" fill="#615c7d" font-size="16">14 other categories, 58 bugs: tied</text>
 </svg>

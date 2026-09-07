@@ -106,6 +106,27 @@ export class IntentStore {
   }
 
   /** Attach the predicate that would prove an intent. False when the id names nothing. */
+  /**
+   * File a record under where it turned out to be about.
+   *
+   * Separate from `declare` because the two happen at different MOMENTS and know different things.
+   * An inline intent is declared BEFORE the action — deliberately, so a verdict can see it open —
+   * and at that instant the agent is still on the page it is leaving. The route that describes what
+   * the intent is ABOUT only exists after the consequence lands.
+   *
+   * Write-once: an existing surface is never overwritten. A record placed by an agent that named its
+   * own subject must not be re-filed by a later run that happened to be somewhere else.
+   */
+  async place(id: string, surface: IntentSurface): Promise<boolean> {
+    return withFileLock(this.#path(), async () => {
+      const file = await this.#load();
+      const existing = file.intents[id];
+      if (existing === undefined || existing.surface !== undefined) return false;
+      await this.#save(upsertIntent(file, { ...existing, surface }));
+      return true;
+    });
+  }
+
   async bind(id: string, binding: unknown): Promise<boolean> {
     return withFileLock(this.#path(), async () => {
       const file = await this.#load();

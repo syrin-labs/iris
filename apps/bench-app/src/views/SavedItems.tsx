@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../store/store.js';
+import { API_BASE } from '../lib/api.js';
+import { Ambient, ambientEnabled, STRICT_DUP_MOUNT_LABEL } from '../reticle-ambient.js';
 
 /**
  * Saved-items view: the fixture that gives response-ignored a real server write to reason against.
@@ -23,6 +25,23 @@ export function SavedItems(): React.ReactElement {
   const status = useApp((s) => s.savedItemsStatus);
   const saveItem = useApp((s) => s.saveItem);
   const [label, setLabel] = useState('');
+
+  /**
+   * A mount effect that writes — and that React StrictMode invokes TWICE in dev.
+   *
+   * Not a defect and not a simulation of one: this is the ordinary dev-mode shape of any
+   * "announce yourself on mount" call, and the second request exists only because StrictMode
+   * deliberately double-invokes effects to surface missing cleanup. A verdict about the user's
+   * save must not read it as a double submit. Off unless ?ambient=strictdup.
+   */
+  useEffect(() => {
+    if (!ambientEnabled(Ambient.STRICT_DUP)) return;
+    void fetch(`${API_BASE}/api/saved-items`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: STRICT_DUP_MOUNT_LABEL }),
+    }).catch(() => undefined);
+  }, []);
 
   // Read the render-delay knob from the URL so the e2e harness can set it without touching code.
   const params = new URLSearchParams(window.location.search);

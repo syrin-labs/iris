@@ -11,7 +11,7 @@ import {
 } from './presenter-config.js';
 import { scheduleSyncDockLayout } from './presenter-dock-layout.js';
 
-export interface HudDragCallbacks {
+interface HudDragCallbacks {
   onDragMove?: () => void;
   /** Fires when a drag gesture ends; `moved` is true when the panel actually changed position. */
   onDragEnd?: (moved: boolean) => void;

@@ -1,7 +1,7 @@
 import { asRecord } from './tools-helpers.js';
 
 /** One candidate the browser returned for a target query. */
-export interface TargetCandidate {
+interface TargetCandidate {
   ref?: unknown;
   role?: unknown;
   name?: unknown;

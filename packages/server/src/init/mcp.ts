@@ -59,7 +59,7 @@ const WINDOWS_SHELL_C = '/c';
  *
  * So it stays unpinned, and the skew is handled where it actually shows up: the contract fingerprint
  * makes a real mismatch loud on the next tool result (see version-skew), and a stale entry of our own
- * shape is now repaired on re-run rather than reported "already registered" (see cursor.ts).
+ * shape is now repaired on re-run rather than reported "already registered" (see mcp-clients.ts).
  */
 export function npxServerArgs(): string[] {
   return [RETICLE_PACKAGE, MCP_SUBCOMMAND];

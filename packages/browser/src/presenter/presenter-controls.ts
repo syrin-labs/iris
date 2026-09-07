@@ -33,7 +33,6 @@ const INPUT_PLACEHOLDER = 'Tell the agent something…';
 /** Accessible name for the composer (a placeholder is not an accessible name). */
 const INPUT_ARIA_LABEL = 'Message to the agent';
 const PAUSED_BADGE_TEXT = 'PAUSED';
-export const PAUSED_BADGE_LABEL = PAUSED_BADGE_TEXT;
 const ENDED_BANNER_TEXT = 'Session ended';
 const COPY_LABEL = 'Copy run';
 const EXPORT_LABEL = 'Export';
@@ -206,8 +205,6 @@ export const CONTROLS_TOOLBAR_HTML = [
   `<button type="button" data-reticle-export class="reticle-tb-btn reticle-tb-btn--export" title="${EXPORT_LABEL}" aria-label="${EXPORT_LABEL}" hidden>${hiIconHtml(PresenterIcon.DOWNLOAD, TB)}</button>`,
   '<span data-reticle-export-msg class="reticle-export-msg" aria-live="polite"></span>',
 ].join('');
-/** @deprecated Legacy head markup - replaced by CONTROLS_TOOLBAR_HTML in the morphing shell. */
-export const CONTROLS_HEAD_HTML = CONTROLS_TOOLBAR_HTML;
 /** Banner markup (between head and log, hidden unless ended). */
 export const CONTROLS_BANNER_HTML = `<div data-reticle-banner class="reticle-banner">${ENDED_BANNER_TEXT}</div>`;
 /** Replay-a-flow row (between log and footer); buttons are filled in by setFlows once flows arrive. */

@@ -1,7 +1,7 @@
 {
   "name": "@reticlehq/example-remix",
   "private": true,
-  "version": "2.10.0",
+  "version": "2.13.1",
   "type": "module",
   "description": "Minimal React Router 7 (Remix) app — verifies Reticle via a dev-only client connect (SSR, no plugin injection).",
   "scripts": {

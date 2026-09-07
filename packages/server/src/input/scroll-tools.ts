@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { QueryBy } from '@reticlehq/core';
 import { ReticleTool } from '../tools/tool-names.js';
 import { asNumber, asString } from '../tools/tools-helpers.js';
+import { listIndexSchema, scrollCountSchema } from '../tools/numeric-bounds.js';
 import { scrollToFind, type ScrollFindQuery } from './scroll-find.js';
 import type { ToolDef, ToolDeps } from '../tools/tools.js';
 
@@ -34,18 +35,15 @@ export const SCROLL_TOOLS: ToolDef[] = [
         .string()
         .optional()
         .describe('Element ref for the scrollable container. Omit to scroll the document.'),
-      maxScrolls: z
-        .number()
+      maxScrolls: scrollCountSchema
         .optional()
         .describe('Maximum number of scroll steps before giving up. Default: 20.'),
-      targetIndex: z
-        .number()
+      targetIndex: listIndexSchema
         .optional()
         .describe(
           'Known row index of the target in the list. Combine with totalCount for bisection — jumps directly to the estimated offset.',
         ),
-      totalCount: z
-        .number()
+      totalCount: listIndexSchema
         .optional()
         .describe(
           'Total item count in the virtualized list. Required for bisection with targetIndex.',

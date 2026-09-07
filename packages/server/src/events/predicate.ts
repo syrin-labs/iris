@@ -2,16 +2,19 @@ import {
   ElementState,
   PredicateKind,
   ReticleCommand,
+  THROTTLED_STARVED_NOTE,
   isSameDocument,
   type CommandResult,
   type ElementQuery,
   type ReticleEvent,
   type MatchResult,
 } from '@reticlehq/core';
+
 import { log } from '../log.js';
 import { bindSpanContext } from '../trace.js';
 import { selectPath, capDepth } from '../session/state-select.js';
 import { describeTestidMiss } from './testid-near-miss.js';
+import { describeSplitTextMiss } from './split-text-miss.js';
 import { predicateToExpectedLinks } from '../capsule/predicate-to-links.js';
 import type { ExpectedLink } from '../capsule/divergence.js';
 import { isAmbient, ambientKeyOf, type AmbientCounts } from '../journal/ambient.js';
@@ -76,6 +79,11 @@ export interface PredicateSession {
    * this hook (e.g. tests that never disconnect) simply leaves in-flight predicates until timeout.
    */
   onDisconnect?(listener: () => void): () => void;
+  /**
+   * True when the tab is hidden or stale enough that the browser is throttling it.
+   * Optional: a fake that never throttles simply omits it.
+   */
+  throttled?(): boolean;
 }
 
 /**
@@ -239,7 +247,12 @@ async function evalElement(
   const present = match.hint?.presentTestids ?? [];
   const alsoHere =
     query.testid === undefined ? undefined : describeTestidMiss(query.testid, present);
-  const suffix = alsoHere === undefined || '' === alsoHere ? '' : ` — ${alsoHere}`;
+  // A text miss where the string is on the page but split across children reads exactly like an
+  // element that never rendered. Naming the container is the difference between a retry and a bug
+  // report against working code. See split-text-miss.ts.
+  const splitText = describeSplitTextMiss(match.hint?.splitText, query.text);
+  const clause = splitText ?? (alsoHere === undefined || '' === alsoHere ? undefined : alsoHere);
+  const suffix = clause === undefined ? '' : ` — ${clause}`;
   return {
     pass: false,
     failureReason: `no element matched ${subject}${state === undefined ? '' : ` in state '${state}'`}${suffix}`,
@@ -524,7 +537,40 @@ function predicateSince(predicate: Predicate): number {
   return 'since' in predicate && 'number' === typeof predicate.since ? predicate.since : 0;
 }
 
+/**
+ * A miss on a throttled tab is not a missing render. The browser has starved the tab, so a timeout
+ * there may mean it never ran — which must not look like "the text is absent".
+ *
+ * Sets `inconclusive` only. The PROSE is already handled one layer up by
+ * `annotateStarvedFailure` (session-health.ts), which suffixes the same fact onto the
+ * failureReason so the concrete diagnosis still leads; writing it here as well would put the
+ * sentence in every throttled failure twice. What was missing was never the sentence — it was the
+ * FIELD an agent gates on, so a starved wait graded `assertion-failed` and sent somebody to fix
+ * working code.
+ *
+ * Idempotent, and a more specific `inconclusive` (unreadable locator, superseded window) is never
+ * overwritten.
+ */
+function annotateThrottledMiss(session: PredicateSession, result: EvalResult): EvalResult {
+  if (result.pass) return result;
+  if (true !== session.throttled?.()) return result;
+  if (result.inconclusive !== undefined) return result;
+  return { ...result, inconclusive: THROTTLED_STARVED_NOTE };
+}
+
 export async function evaluatePredicate(
+  session: PredicateSession,
+  predicate: Predicate,
+  since = 0,
+  diagnose = true,
+): Promise<EvalResult> {
+  return annotateThrottledMiss(
+    session,
+    await evaluatePredicateRaw(session, predicate, since, diagnose),
+  );
+}
+
+async function evaluatePredicateRaw(
   session: PredicateSession,
   predicate: Predicate,
   since = 0,
@@ -576,7 +622,11 @@ export async function evaluatePredicate(
         // with only `text` filled in, so scoping it needs the field, not a second code path.
         undefined === predicate.scope
           ? { text: predicate.contains }
-          : { text: predicate.contains, scope: predicate.scope },
+          : {
+              text: predicate.contains,
+              scope: predicate.scope,
+              ...(true === predicate.self ? { self: true } : {}),
+            },
         true === predicate.visible ? ElementState.VISIBLE : undefined,
         predicate.absent ?? false,
         diagnose,
@@ -696,7 +746,15 @@ function assertsExactCount(predicate: Predicate): boolean {
     return predicate.predicates.some(assertsExactCount);
   }
   if (PredicateKind.NOT === predicate.kind) return assertsExactCount(predicate.predicate);
-  return PredicateKind.NET === predicate.kind && predicate.count !== undefined;
+  // `signal` carries `count` for the same reason `net` does, and for the same defect: its schema
+  // calls the double-fire "the defect no state-only oracle can see", because a handler wired twice
+  // leaves the store in the right shape and a presence check green on both. Reading `net` alone
+  // meant a signal count resolved on its first match, so `count: 1` silently meant "at least 1" on
+  // the one channel able to see the bug. `evalSignal` counts correctly; the wait stopped early.
+  return (
+    (PredicateKind.NET === predicate.kind || PredicateKind.SIGNAL === predicate.kind) &&
+    predicate.count !== undefined
+  );
 }
 
 /**
@@ -882,11 +940,13 @@ export function waitForPredicate(
           // `{ pass, evidence, failureReason }` construction DISCARDED them on every timed-out wait and
           // assert. So the highest-value localization signal was computed and then thrown away exactly
           // on the failure path where it matters, no matter what the schema declared.
-          finish({
-            ...r,
-            pass: false,
-            failureReason: r.failureReason ?? 'timed out waiting for predicate',
-          });
+          finish(
+            annotateThrottledMiss(session, {
+              ...r,
+              pass: false,
+              failureReason: r.failureReason ?? 'timed out waiting for predicate',
+            }),
+          );
         })
         .catch((error: unknown) => {
           finish(failed(error));

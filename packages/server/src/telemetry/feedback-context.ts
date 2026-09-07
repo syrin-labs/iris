@@ -9,14 +9,22 @@
  * holds to. Detection is entirely best-effort: an unreadable package.json or an SDK too old to report
  * its runtime yields `undefined`, never a throw and never a guess.
  */
+import { mcpClientIdentity, setMcpClientIdentityHook } from '../mcp/client-identity.js';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { AppRuntime, McpScope, PageDriver, type Feedback } from '@reticlehq/core';
+import {
+  AppRuntime,
+  McpScope,
+  PageDriver,
+  StackUnknownReason,
+  type Feedback,
+} from '@reticlehq/core';
 import { parseMajor } from '../init/detect.js';
-import { findWorkspaceApps, type InitIo } from '../init/run.js';
+import { findWorkspaceApps } from '../init/workspace-apps.js';
+import type { InitIo } from '../init/run.js';
 
 /** The context fields — the whole `Feedback` shape minus what the author supplies. */
-export type FeedbackContext = Pick<
+type FeedbackContext = Pick<
   Feedback,
   'stack' | 'stackMajor' | 'runtime' | 'engine' | 'driver' | 'client' | 'clientVersion' | 'mcpScope'
 >;
@@ -51,41 +59,65 @@ const PROJECT_MCP_FILES = ['.mcp.json', join('.cursor', 'mcp.json'), join('.vsco
 interface PackageJsonLike {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  /** Read only to tell a monorepo root apart from an app we failed to recognise. */
+  workspaces?: unknown;
 }
 
 /**
- * The project's framework and its MAJOR version, or `{}` when package.json is absent, unreadable, or
- * names nothing we recognize. The major comes from `parseMajor` — the same range parser `reticle init`
- * uses to decide React 19 source mapping — so a range like `^15.0.0-canary.3` narrows the same way in
- * both places instead of via a second, subtly different reader.
+ * What one directory's manifest said: a stack, no manifest at all, or a manifest naming nothing known.
+ *
+ * The three used to be one empty object. That collapsed the two facts that need opposite fixes —
+ * "there is no app here" is a discovery problem, "we read this app and did not recognise it" is a
+ * one-line addition to STACK_BY_DEP — and it is why the unknown bucket could not be acted on.
  */
-function stackOfManifest(
-  dir: string,
-  read: (path: string) => string,
-): { stack?: string; stackMajor?: number } {
+type ManifestStack =
+  | { kind: 'found'; stack: string; stackMajor?: number }
+  | { kind: 'no-manifest' }
+  /** `declaresWorkspaces`: this is a monorepo ROOT, so naming nothing is expected, not diagnostic. */
+  | { kind: 'unrecognised'; declaresWorkspaces: boolean };
+
+/**
+ * The project's framework and its MAJOR version. The major comes from `parseMajor` — the same range
+ * parser `reticle init` uses to decide React 19 source mapping — so a range like `^15.0.0-canary.3`
+ * narrows the same way in both places instead of via a second, subtly different reader.
+ *
+ * `no-manifest` covers absent AND unreadable: both mean this directory could not answer, which is
+ * the distinction that matters to the caller. Unreadable is not separated because a manifest we
+ * cannot parse is not evidence about the app, and a reason nobody can act on is noise in a closed
+ * vocabulary.
+ */
+function stackOfManifest(dir: string, read: (path: string) => string): ManifestStack {
   let pkg: PackageJsonLike;
   try {
     pkg = JSON.parse(read(join(dir, PACKAGE_JSON))) as PackageJsonLike;
   } catch {
-    return {};
+    return { kind: 'no-manifest' };
   }
   const deps = { ...pkg.devDependencies, ...pkg.dependencies };
   for (const [dep, stack] of STACK_BY_DEP) {
     const range = deps[dep];
     if (range === undefined) continue;
     const stackMajor = parseMajor(range);
-    return { stack, ...(stackMajor !== undefined ? { stackMajor } : {}) };
+    return { kind: 'found', stack, ...(stackMajor !== undefined ? { stackMajor } : {}) };
   }
-  return {};
+  return { kind: 'unrecognised', declaresWorkspaces: pkg.workspaces !== undefined };
 }
 
 export function detectStack(
   cwd: string,
   read: (path: string) => string = readFile,
-): { stack?: string; stackMajor?: number; stackSource?: 'cwd' | 'workspace' } {
+): {
+  stack?: string;
+  stackMajor?: number;
+  stackSource?: 'cwd' | 'workspace';
+  stackUnknownReason?: StackUnknownReason;
+} {
   // The cwd wins when it IS an app — never redirect away from the real answer.
   const here = stackOfManifest(cwd, read);
-  if (here.stack !== undefined) return { ...here, stackSource: 'cwd' };
+  if ('found' === here.kind) {
+    const { stack, stackMajor } = here;
+    return { stack, ...(stackMajor !== undefined ? { stackMajor } : {}), stackSource: 'cwd' };
+  }
 
   // Otherwise look for the app. The daemon's cwd is wherever the agent's client happened to launch,
   // which for a real repo is the ROOT while the app sits in `frontend/`, `web/`, or a declared
@@ -97,17 +129,51 @@ export function detectStack(
   // declared workspaces (pnpm-workspace.yaml, package.json `workspaces`) AND scans top-level
   // directories, and it was widened once already for a repo shape a user hit twice. A second
   // detector here would drift from it the first time either changed.
+  //
+  // Every exit below carries WHY, because an empty result is not a cause. Four different facts used
+  // to arrive as one `{}`: no app anywhere, an app we read and did not recognise, workspace apps
+  // that were all unrecognised, and discovery erroring. They have different fixes, and the bucket
+  // was unusable while they were indistinguishable (#617).
+  let sawWorkspaceApp = false;
   try {
     for (const app of findWorkspaceApps(profileIo(cwd))) {
       const found = stackOfManifest(join(cwd, app), read);
       // Reported as `workspace` so the share of projects needing discovery is measurable — that
       // number is what says whether our inference needs an agent to correct it.
-      if (found.stack !== undefined) return { ...found, stackSource: 'workspace' };
+      if ('found' === found.kind) {
+        const { stack, stackMajor } = found;
+        return {
+          stack,
+          ...(stackMajor !== undefined ? { stackMajor } : {}),
+          stackSource: 'workspace',
+        };
+      }
+      // A manifest we READ and did not recognise is evidence about the app; a directory with no
+      // manifest is not an app at all and says nothing either way.
+      if ('unrecognised' === found.kind) sawWorkspaceApp = true;
     }
   } catch {
     // Discovery touches the filesystem; a permission error must never cost us the profile event.
+    // Named rather than folded into "found nothing": an error is not an absence, and a detector
+    // that reports one as the other sends the reader looking for a project that was there.
+    return { stackUnknownReason: StackUnknownReason.DISCOVERY_FAILED };
   }
-  return {};
+  if (sawWorkspaceApp) {
+    return { stackUnknownReason: StackUnknownReason.WORKSPACE_APPS_UNRECOGNISED };
+  }
+  // The cwd's own manifest is the stronger statement when it exists: we read this app and did not
+  // know it. Ranked below the workspace answer only because discovery may have found the REAL app.
+  if ('unrecognised' === here.kind) {
+    // A monorepo root naming no framework is not an unrecognised APP — the app is a directory down
+    // and discovery did not surface it. Reporting MANIFEST_UNRECOGNISED here would read as "add
+    // this framework to the table" about a manifest that describes no framework at all.
+    return {
+      stackUnknownReason: here.declaresWorkspaces
+        ? StackUnknownReason.WORKSPACE_ROOT_NO_APPS
+        : StackUnknownReason.MANIFEST_UNRECOGNISED,
+    };
+  }
+  return { stackUnknownReason: StackUnknownReason.NO_APP_FOUND };
 }
 
 /**
@@ -172,30 +238,19 @@ function fileExists(path: string): boolean {
  * client's own claim about itself, while an env-var table is a guess that silently rots every time a
  * vendor renames a variable. Unset (a CLI run with no MCP peer) simply reports no client.
  */
-let clientNameHook: (() => { name?: string; version?: string } | undefined) | undefined;
-
+/** Kept as the telemetry-facing name; the mechanism itself lives in mcp/client-identity.ts. */
 export function setMcpClientNameHook(
   hook: () => { name?: string; version?: string } | undefined,
 ): void {
-  clientNameHook = hook;
+  setMcpClientIdentityHook(hook);
 }
 
-/**
- * The client's own name and version from its handshake.
- *
- * Note what is NOT here and cannot be: the MODEL. MCP's `clientInfo` carries a name, a title and a
- * version and has no concept of a model, so the transport genuinely cannot tell us. The agent
- * self-reports it on the feedback itself, which is the only mechanism available and a reliable one
- * given the report is already something the agent authored.
- */
 function detectClient(): { client?: string; clientVersion?: string } {
   try {
-    const info = clientNameHook?.();
-    const name = info?.name;
-    const version = info?.version;
+    const info = mcpClientIdentity();
     return {
-      ...(name !== undefined && name !== '' ? { client: name.slice(0, 64) } : {}),
-      ...(version !== undefined && version !== '' ? { clientVersion: version.slice(0, 32) } : {}),
+      ...(info.name === undefined ? {} : { client: info.name }),
+      ...(info.version === undefined ? {} : { clientVersion: info.version }),
     };
   } catch {
     return {};

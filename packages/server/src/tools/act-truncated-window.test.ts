@@ -108,12 +108,19 @@ describe('act_and_wait declares a window that lost events', () => {
     expect(r.verifiedReason).toBe(VerifiedReason.UNCLEAN_CAPTURE);
   });
 
-  it('still grades proved when the window lost nothing, however much the session evicted', async () => {
+  it('does not caveat a clean window, however much the session evicted', async () => {
     // The control, and the field defect: `dropped` reads 9 here. A verdict that consults the
     // session-wide counter caveats every window on any page that has been open for a minute.
+    //
+    // Asserted as "not UNCLEAN_CAPTURE" rather than "is PROVED" because `ACT` declares
+    // `{kind:"settled"}`, and an explicit settle is the idle wait itself, not a declaration about
+    // the app — so it now correctly grades `nothing_declared`. Pinning PROVED here would pin the
+    // false green this fixture happened to sit on: an undeclared call reporting a full pass.
+    // The subject of this test is which COUNTER decides, and that contrast is intact.
     const deps = fakeDeps(fakeSession(false));
     const r = (await tool(ReticleTool.ACT_AND_WAIT).handler(deps, ACT)) as Verdict;
-    expect(r.verifiedReason).toBe(VerifiedReason.PROVED);
+    expect(r.verifiedReason).not.toBe(VerifiedReason.UNCLEAN_CAPTURE);
+    expect(r.verifiedReason).toBe(VerifiedReason.NOTHING_DECLARED);
   });
 
   it('asks about the window, not the session — the cursor is where the observation opened', async () => {

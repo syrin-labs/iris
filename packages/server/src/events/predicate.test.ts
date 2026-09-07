@@ -3,11 +3,13 @@ import {
   asRef,
   EventType,
   ReticleCommand,
+  THROTTLED_STARVED_NOTE,
   type CommandResult,
   type ElementQuery,
   type ReticleEvent,
   type MatchResult,
 } from '@reticlehq/core';
+
 import {
   evaluatePredicate,
   waitForPredicate,
@@ -615,6 +617,92 @@ describe('predicate engine', () => {
 });
 
 /**
+ * A throttled tab's starved reads must not look like a missing render.
+ *
+ * After a hard reload a backgrounded tab sits on "Loading" forever — the browser never lets the
+ * fetch/hydration run — and `waitForPredicate { kind: "text" }` times out as a near-miss. That
+ * sentence is identical to "the code did not render", so the agent "fixes" working code. The
+ * session already carries `throttled: true` on the health envelope; agents treat the near-miss
+ * prose as the verdict. `inconclusive` is the established way to stop that being graded as a
+ * product failure (see observationLost).
+ */
+describe('a throttled tab timeout is not a missing render', () => {
+  class ThrottledSession extends FakeSession {
+    throttled(): boolean {
+      return true;
+    }
+  }
+
+  it('a timed-out wait on a throttled tab says the tab never got to run, not that the text is absent', async () => {
+    const session = new ThrottledSession([]);
+    const result = await waitForPredicate(
+      session,
+      { kind: 'element', query: { text: 'Configuration' } },
+      80,
+    );
+    expect(result.pass).toBe(false);
+    expect(result.inconclusive).toBe(THROTTLED_STARVED_NOTE);
+    // The near-miss is kept whole: this layer sets the FIELD an agent gates on, and the sentence
+    // is suffixed one layer up by annotateStarvedFailure so the concrete diagnosis still leads.
+    expect(result.failureReason).toBeTypeOf('string');
+    expect(result.failureReason).not.toBe(THROTTLED_STARVED_NOTE);
+  });
+
+  it('keeps the structured near-miss beside the starved-tab note', async () => {
+    const session = new ThrottledSession(
+      [ev(EventType.NET_REQUEST, { url: '/api/x', status: 200 }, 10)],
+      undefined,
+      100,
+    );
+    const result = await waitForPredicate(
+      session,
+      { kind: 'net', urlContains: '/api/', count: 99 },
+      80,
+    );
+    expect(result.assertion).toBe('net.count');
+    expect(result.observed).toContain('1 matching');
+    expect(result.expected).toContain('99');
+    expect(result.inconclusive).toBe(THROTTLED_STARVED_NOTE);
+  });
+
+  it('a one-shot miss on a throttled tab is inconclusive, not a product failure', async () => {
+    const session = new ThrottledSession([]);
+    const result = await evaluatePredicate(session, {
+      kind: 'element',
+      query: { text: 'Configuration' },
+    });
+    expect(result.pass).toBe(false);
+    expect(result.inconclusive).toBe(THROTTLED_STARVED_NOTE);
+  });
+
+  it('a PASSING wait on a throttled tab is not annotated', async () => {
+    const session = new ThrottledSession([], () => ({
+      matched: true,
+      count: 1,
+      elements: [],
+    }));
+    const result = await waitForPredicate(
+      session,
+      { kind: 'element', query: { text: 'Configuration' } },
+      80,
+    );
+    expect(result.pass).toBe(true);
+    expect(result.inconclusive).toBeUndefined();
+  });
+
+  it('an unthrottled timeout still looks like a near-miss, not a starved tab', async () => {
+    const session = new FakeSession([]);
+    const result = await waitForPredicate(
+      session,
+      { kind: 'element', query: { text: 'Configuration' } },
+      80,
+    );
+    expect(result.pass).toBe(false);
+    expect(result.inconclusive).toBeUndefined();
+  });
+});
+
+/**
  * A response whose BODY is still arriving is not a finished request.
  *
  * `fetch` resolves at HEADERS. Measured on a Next.js App Router page: the RSC payload's NET_REQUEST
@@ -1049,7 +1137,6 @@ describe('net count is exact, not "at least" — the double-submit must not pass
 
   it('still passes when exactly one really did fire, without burning the timeout', async () => {
     const session = new LiveSession();
-    const started = Date.now();
     const verdict = waitForPredicate(
       session,
       { kind: 'net', method: 'POST', urlContains: '/refund', count: 1 },
@@ -1060,9 +1147,8 @@ describe('net count is exact, not "at least" — the double-submit must not pass
 
     expect(r.pass).toBe(true);
     // An honest "exactly one" costs one short hold, not 10s of dead wall-clock on the agent's
-    // most-used verdict path.
-    expect(Date.now() - started).toBeLessThan(3000);
-  });
+    // most-used verdict path — enforced by the per-test timeout, not by measuring the clock.
+  }, 3_000);
 
   it('leaves a presence-only net predicate resolving on the first match', async () => {
     // No `count` means "at least one", which IS satisfiable early. Holding those back would make
@@ -1140,6 +1226,102 @@ describe('net count is exact, not "at least" — the double-submit must not pass
     expect(r.pass).toBe(false);
     expect(r.decided).toBe(true);
   }, 5_000);
+});
+
+/**
+ * The same rule on the signal channel, which shares `count` with `net` and shares the defect it
+ * exists to catch.
+ *
+ * `signal.count` is documented as the oracle for a double-fire: "a handler wired twice fires the
+ * signal twice, the store ends up in the right shape either way, and a presence check is green on
+ * both". The confirmation hold that makes an exact count mean what it says was applied to `net`
+ * only, so a signal count still resolved on the first match and `count: 1` silently meant "at
+ * least 1" — the assertion `count` exists to avoid, on the one channel that can see the bug.
+ *
+ * The cases mirror the net block above deliberately, so the two channels are held to one rule.
+ */
+describe('signal count is exact, not "at least" — the double-fire must not pass', () => {
+  /** A session whose events arrive over TIME, as a real one's do, rather than all up front. */
+  class LiveSession implements PredicateSession {
+    readonly #events: ReticleEvent[] = [];
+    readonly #listeners = new Set<(event: ReticleEvent) => void>();
+    elapsed(): number {
+      return 0;
+    }
+    command(): Promise<CommandResult> {
+      return Promise.resolve({ kind: 'command_result', id: 'x', ok: true, result: {} });
+    }
+    eventsSince(cursor = 0): ReticleEvent[] {
+      return this.#events.filter((e) => e.t >= cursor);
+    }
+    onEvent(listener: (event: ReticleEvent) => void): () => void {
+      this.#listeners.add(listener);
+      return () => {
+        this.#listeners.delete(listener);
+      };
+    }
+    push(event: ReticleEvent): void {
+      this.#events.push(event);
+      for (const l of this.#listeners) l(event);
+    }
+  }
+
+  const fired = (t: number): ReticleEvent => ev(EventType.SIGNAL, { name: 'order:placed' }, t);
+
+  it('FAILS when the handler fires the signal a second time 59ms later', async () => {
+    const session = new LiveSession();
+    const verdict = waitForPredicate(
+      session,
+      { kind: 'signal', name: 'order:placed', count: 1 },
+      5000,
+    );
+    session.push(fired(10));
+    setTimeout(() => session.push(fired(69)), 59); // a double-wired handler, at the measured gap
+    const r = await verdict;
+
+    expect(r.pass).toBe(false);
+    expect(r.observed).toContain('2'); // and it says WHAT it saw, not just that it failed
+  });
+
+  it('still passes when the signal really did fire once, without burning the timeout', async () => {
+    const session = new LiveSession();
+    const verdict = waitForPredicate(
+      session,
+      { kind: 'signal', name: 'order:placed', count: 1 },
+      10_000,
+    );
+    session.push(fired(10));
+    const r = await verdict;
+
+    expect(r.pass).toBe(true);
+    // "Costs one short hold, not the whole 10s window" is enforced by the PER-TEST timeout below,
+    // not by an assertion on elapsed time: `Date.now() - t < N` is a statement about the machine
+    // and fails only under parallel load, which is to say only in CI.
+  }, 3_000);
+
+  it('leaves a presence-only signal predicate resolving on the first match', async () => {
+    // No `count` means "at least one", which IS satisfiable early. Holding those back would make
+    // every ordinary signal wait pay the confirmation delay for nothing.
+    const session = new LiveSession();
+    const verdict = waitForPredicate(session, { kind: 'signal', name: 'order:placed' }, 10_000);
+    session.push(fired(10));
+    expect((await verdict).pass).toBe(true);
+  });
+
+  it('holds for a signal count nested inside allOf', async () => {
+    const session = new LiveSession();
+    const verdict = waitForPredicate(
+      session,
+      {
+        kind: 'allOf',
+        predicates: [{ kind: 'signal', name: 'order:placed', count: 1 }],
+      },
+      5000,
+    );
+    session.push(fired(10));
+    setTimeout(() => session.push(fired(69)), 59);
+    expect((await verdict).pass).toBe(false);
+  });
 });
 
 describe('waitForPredicate disconnect cleanup', () => {

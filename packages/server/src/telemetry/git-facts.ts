@@ -43,7 +43,7 @@ const PUBLIC_FORGES: readonly (readonly [string, RepoForge])[] = [
   ['codeberg.org', RepoForge.CODEBERG],
 ];
 
-export interface GitFacts {
+interface GitFacts {
   /** none | local_only (init'd, never pushed) | remote (has an origin). */
   state: GitState;
   /** The NORMALIZED origin — hashed by the caller, never sent raw. Absent unless state is `remote`. */

@@ -2,9 +2,10 @@ import { z } from 'zod';
 import type { ToolDef, ToolDeps } from './tools.js';
 import { runTool } from './invoke-tool.js';
 import { buildErrorPayload } from './error-recovery.js';
-import { mergedNameRedirect, mergedNameMessage } from './merged-name-redirect.js';
+import { mergedNameRedirect, mergedNameMessage, retiredToolNames } from './merged-name-redirect.js';
+import { takeVersionSkewOnto } from '../version/version-nudge.js';
 import { ReticleTool } from './tool-names.js';
-import { TOOL_PROFILE_ENV, type ToolSurfaceOrigin } from './tool-surface.js';
+import { ADVERTISE_ALL_ENV, type ToolSurfaceOrigin } from './tool-surface.js';
 import { getSessionMetrics } from '../telemetry/session-metrics.js';
 import { isPredicateParam, predicateGrammar } from '../events/predicate-eval.js';
 
@@ -89,7 +90,7 @@ export function buildDynamicTools(allTools: ToolDef[], profile?: ToolSurfaceOrig
             // advertises the whole registry any more, so BOTH meta-tools are on every surface and
             // reticle_run is always the way to the tail. The old wording would now send an agent
             // away from the only tool that can reach half the registry.
-            note: `The surface is read once at daemon startup: change ${TOOL_PROFILE_ENV} and restart the daemon, or it has no effect. No surface advertises every tool — the advertised count is capped because editors budget tools across all connected MCP servers. Every tool listed here is callable through reticle_run { tool, args } whether or not it is advertised.`,
+            note: `The surface is read once at daemon startup: set ${ADVERTISE_ALL_ENV}=1 and restart the daemon, or it has no effect. No surface advertises every tool: the advertised count is capped because editors budget tools across all connected MCP servers. Every tool listed here is callable through reticle_run { tool, args } whether or not it is advertised.`,
           },
         };
 
@@ -128,11 +129,18 @@ export function buildDynamicTools(allTools: ToolDef[], profile?: ToolSurfaceOrig
           name: t.name,
           summary: firstSentence(t.description),
         }));
+        // Names that USED to be tools, against the call that replaces each. Instructions written
+        // against an earlier release are a permanent fact of the product — `reticle_crawl` is still
+        // named by guidance in the wild — and without this the catalogue is silent about them: the
+        // old name is simply absent, which reads as "no such capability" rather than "renamed".
+        // Reaching the new name then costs an error string, or never happens.
+        const retired = retiredToolNames();
         return Promise.resolve({
           total: catalog.length,
           tools: catalog,
+          retired,
           ...profileBlock,
-          next: `All ${catalog.length} tools above are callable, advertised or not. Load full params with reticle_tools { names:[…] }, then call reticle_run { tool, args }.`,
+          next: `All ${catalog.length} tools above are callable, advertised or not. Load full params with reticle_tools { names:[…] }, then call reticle_run { tool, args }. \`retired\` maps names that are no longer tools to the call that replaced each.`,
         });
       }
       // The grammar rides ONLY on a `names:[…]` reply that asked for a tool taking a predicate, so
@@ -144,9 +152,20 @@ export function buildDynamicTools(allTools: ToolDef[], profile?: ToolSurfaceOrig
       return Promise.resolve({
         tools: names.map((n) => {
           const t = byName.get(n);
-          return t === undefined
+          if (t !== undefined)
+            return { name: n, description: t.description, params: paramInfo(t.inputSchema) };
+          // `reticle_run` has answered a merged name with its replacement for a while; the tool
+          // asked to DISCOVER tools still said "unknown tool", which is the wrong answer in the one
+          // place an agent goes to resolve a name it is unsure of. Same redirect, same derivation.
+          const moved = mergedNameRedirect(n);
+          return moved === undefined
             ? { name: n, error: 'unknown tool' }
-            : { name: n, description: t.description, params: paramInfo(t.inputSchema) };
+            : {
+                name: n,
+                error: mergedNameMessage(n, moved),
+                tool: moved.tool,
+                ...(moved.action === undefined ? {} : { action: moved.action }),
+              };
         }),
         ...(carriesPredicate ? { predicateGrammar: predicateGrammar() } : {}),
       });
@@ -247,7 +266,7 @@ export function buildDynamicTools(allTools: ToolDef[], profile?: ToolSurfaceOrig
         // is reached through here: a stale ref, a paused session, a missing pairing token all came
         // back as the agent's arguments being wrong, which is advice that spends the retry.
         const message = error instanceof Error ? error.message : String(error);
-        return { ...buildErrorPayload(message), tool: name };
+        return { ...takeVersionSkewOnto(buildErrorPayload(message)), tool: name };
       }
     },
   };

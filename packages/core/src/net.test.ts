@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DevToolingChannel, isDevToolingUrl } from './net.js';
+import { DevToolingChannel, isDevToolingUrl, isThirdPartyUrl, urlForMatch } from './net.js';
 
 describe('isDevToolingUrl — traffic the framework makes about ITSELF', () => {
   it.each(Object.values(DevToolingChannel))('recognises %s', (pattern) => {
@@ -53,5 +53,51 @@ describe('isDevToolingUrl — traffic the framework makes about ITSELF', () => {
 
   it('is false for a missing url', () => {
     expect(false).toBe(isDevToolingUrl(undefined));
+  });
+});
+
+describe('isThirdPartyUrl — whose site is this call to?', () => {
+  const APP = 'http://localhost:3000/dashboard';
+
+  it('calls an analytics beacon third-party', () => {
+    expect(true).toBe(isThirdPartyUrl('https://www.google-analytics.com/g/collect', APP));
+    expect(true).toBe(isThirdPartyUrl('https://cdn.segment.com/analytics.js/v1/k/a.min.js', APP));
+  });
+
+  it('calls the app’s own traffic first-party, however it is written', () => {
+    // Relative, absolute, and absolute on another PORT — a dev app on :3000 talking to its API on
+    // :8787 is the ordinary local setup and must not read as a stranger's.
+    expect(false).toBe(isThirdPartyUrl('/api/todos', APP));
+    expect(false).toBe(isThirdPartyUrl('http://localhost:3000/api/todos', APP));
+    expect(false).toBe(isThirdPartyUrl('http://localhost:8787/api/todos', APP));
+  });
+
+  it('calls a sibling subdomain first-party — api.example.com IS app.example.com’s backend', () => {
+    expect(false).toBe(
+      isThirdPartyUrl('https://api.example.com/todos', 'https://app.example.com/dashboard'),
+    );
+  });
+
+  it('declines to judge what is not an http call at all', () => {
+    // A desktop IPC command and a page-made blob are the app's own machinery, not somebody's server.
+    expect(false).toBe(isThirdPartyUrl('ipc://todos:archive', APP));
+    expect(false).toBe(isThirdPartyUrl('blob:http://localhost:3000/abc', APP));
+  });
+
+  it('declines to judge at all when the app’s own page is unknown', () => {
+    expect(false).toBe(isThirdPartyUrl('https://www.google-analytics.com/g/collect', undefined));
+    expect(false).toBe(isThirdPartyUrl(undefined, APP));
+  });
+});
+
+describe('urlForMatch — grader haystack, not the transcript', () => {
+  it('prefers the raw URL when the observer kept one', () => {
+    expect(
+      urlForMatch({ url: '/auth/token/[REDACTED]', urlRaw: '/auth/token/refresh-context' }),
+    ).toBe('/auth/token/refresh-context');
+  });
+
+  it('falls back to the displayed URL when nothing was redacted', () => {
+    expect(urlForMatch({ url: '/api/users' })).toBe('/api/users');
   });
 });

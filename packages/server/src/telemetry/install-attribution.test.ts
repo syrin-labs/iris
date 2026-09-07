@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InstallSource } from '@reticlehq/core';
 import {
+  configWithInstallSource,
   declaredInstallSource,
   projectInstallSource,
   resolveInstallSource,
@@ -75,5 +76,47 @@ describe('the install source survives the install', () => {
     expect(projectInstallSource(dir, { [INSTALL_SOURCE_ENV]: '  Skill_File  ' })).toBe(
       InstallSource.SKILL_FILE,
     );
+  });
+});
+
+/**
+ * The half the config write could not reach: everyone who was already here.
+ *
+ * `installSource` is only written when `.reticle.json` is CREATED, and `init` reports that file as
+ * `already exists` on every re-run. So a user who arrived before the marker shipped — or who ran
+ * `init` once with no marker and again through a marked channel — kept an attribution of `unknown`
+ * forever, and re-running through the channel that actually brought them could not fix it. That is
+ * most of the population the field exists to describe.
+ */
+describe('a config written before the marker existed can still learn where it came from', () => {
+  it('adds the declared source to a config that has none', () => {
+    const backfilled = configWithInstallSource(
+      JSON.stringify({ framework: 'vite', projectId: 'p1' }),
+      InstallSource.SKILL_FILE,
+    );
+    expect(backfilled).not.toBeUndefined();
+    expect(JSON.parse(backfilled ?? '{}')).toMatchObject({
+      framework: 'vite',
+      projectId: 'p1',
+      installSource: InstallSource.SKILL_FILE,
+    });
+  });
+
+  it('leaves a config that already records one alone, so a re-run cannot re-attribute a user', () => {
+    // The FIRST channel is the one that brought them in. A later `init` through a different route
+    // would otherwise overwrite the acquisition it is not responsible for.
+    expect(
+      configWithInstallSource(
+        JSON.stringify({ installSource: InstallSource.DOCS_SITE }),
+        InstallSource.SKILL_FILE,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('does nothing when nothing is declared, and nothing to a config it cannot parse', () => {
+    expect(
+      configWithInstallSource(JSON.stringify({ framework: 'vite' }), undefined),
+    ).toBeUndefined();
+    expect(configWithInstallSource('{not json', InstallSource.SKILL_FILE)).toBeUndefined();
   });
 });

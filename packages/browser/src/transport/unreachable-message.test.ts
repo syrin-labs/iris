@@ -21,6 +21,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { unreachableUrlIn } from '@reticlehq/core';
 import { unreachableMessage } from './unreachable-message.js';
 
 const message = (): string => unreachableMessage('ws://localhost:4400/reticle', 12);
@@ -67,5 +68,19 @@ describe('the unreachable warning states an observation, not a cause', () => {
 
   it('says it is still retrying, so the reader does not act as though it stopped', () => {
     expect(message().toLowerCase()).toContain('retrying');
+  });
+});
+
+/**
+ * The daemon that leased this page reads the address back out of this line — it is the only way a
+ * port mismatch can be named, because the page cannot see the daemon and the daemon never saw the
+ * dial. That makes the sentence a wire format, and a rewording would break the lease hint with no
+ * type error and no other failing test.
+ */
+describe('as a contract the daemon parses', () => {
+  it('is readable by the shared parser, so a reword cannot silently break the lease hint', () => {
+    expect(unreachableUrlIn(unreachableMessage('ws://localhost:4460/reticle', 3))).toBe(
+      'ws://localhost:4460/reticle',
+    );
   });
 });

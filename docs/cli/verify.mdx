@@ -50,11 +50,10 @@ Call log:
 
 <Warning>
   `verify` binds the bridge port itself and has **no `--port` flag**: passing one is rejected as
-  `unknown argument '--port'`. If a daemon is already on the port, `verify` dies with a raw `Error:
-  listen EADDRINUSE: address already in use 127.0.0.1:4400` stack trace before it drives anything.
-  Stop the daemon first, or move `verify` with the `RETICLE_PORT` environment variable. This bites
-  most often on a developer machine, where an agent has usually left a daemon running; in CI the
-  port is normally free.
+  `unknown argument '--port'`. If a daemon is already on the port, `verify` does not start a second
+  one: it prints three ways out (ask the running daemon via `reticle_run`, stop it, or move with
+  `RETICLE_PORT`) rather than a raw listen error. This bites most often on a developer machine,
+  where an agent has usually left a daemon running; in CI the port is normally free.
 </Warning>
 
 ## Exit codes

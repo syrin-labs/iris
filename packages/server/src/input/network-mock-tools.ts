@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { CDP_NO_PROVIDER_REASON, CDP_NO_PROVIDER_RECOMMENDATION } from '@reticlehq/core';
 import { ReticleTool } from '../tools/tool-names.js';
 import { sessionIdShape } from '../tools/tool-kit.js';
+import { delayMsSchema, httpStatusSchema } from '../tools/numeric-bounds.js';
 import { asString } from '../tools/tools-helpers.js';
 import type { RealInputProvider } from './real-input.js';
 import type { MockRule } from './network-mock.js';
@@ -23,14 +24,10 @@ const ruleShape = z.object({
     .min(1)
     .describe('Substring the request URL must contain, e.g. "/api/pay".'),
   method: z.string().optional().describe('Optional method filter (GET/POST/…), case-insensitive.'),
-  status: z.number().int().optional().describe('Fulfill with this HTTP status (default 200).'),
+  status: httpStatusSchema.optional().describe('Fulfill with this HTTP status (default 200).'),
   body: z.string().optional().describe('Response body to fulfill with.'),
   contentType: z.string().optional().describe('Response content type (default application/json).'),
-  delayMs: z
-    .number()
-    .int()
-    .optional()
-    .describe('Delay (ms) before fulfilling — simulate a slow API.'),
+  delayMs: delayMsSchema.optional().describe('Delay (ms) before fulfilling — simulate a slow API.'),
   abort: z
     .boolean()
     .optional()
@@ -84,10 +81,11 @@ export const NETWORK_MOCK_TOOLS: ToolDef[] = [
   {
     name: ReticleTool.NETWORK_MOCK,
     description:
-      'Stub or intercept network requests on the DRIVEN page (needs `reticle drive`): return a 500, ' +
-      'force offline (abort), or delay a response — so you can deterministically test error and edge ' +
-      'states without touching the backend ("verify the app handles a failed payment"). Pass `mocks` ' +
-      '(first matching rule wins); pass an empty array or `clear: true` to turn mocking off.',
+      'Stub or intercept network requests on a driven page (`reticle drive` / RETICLE_CDP_URL) or a ' +
+      'leased Playwright tab (`reticle_lease acquire`): return a 500, force offline (abort), or delay ' +
+      'a response — so you can deterministically test error and edge states without touching the ' +
+      'backend ("verify the app handles a failed payment"). Pass `mocks` (first matching rule wins); ' +
+      'pass an empty array or `clear: true` to turn mocking off.',
     inputSchema: {
       // The rule fields each carry their own `.describe()` on `ruleShape`, but the params
       // view reads only the top-level description of each entry, so those are flattened
@@ -110,21 +108,25 @@ export const NETWORK_MOCK_TOOLS: ToolDef[] = [
       recommendation: z.string().optional(),
     },
     handler: async (deps, args) => {
-      const provider = mockProvider(deps);
-      if (provider === undefined) {
-        // Mocking needs a browser Reticle drives; a synthetic in-page session can't intercept the network.
-        return {
-          applied: false,
-          count: 0,
-          ok: false,
-          reason: CDP_NO_PROVIDER_REASON,
-          recommendation: CDP_NO_PROVIDER_RECOMMENDATION,
-        };
-      }
       const session = deps.sessions.resolve(asString(args['sessionId']));
       const rules = true === args['clear'] ? [] : toRules(args['mocks']);
-      const applied = await provider.setMocks(session.url, rules);
-      return { applied, count: applied ? rules.length : 0 };
+      const provider = mockProvider(deps);
+      if (provider !== undefined) {
+        const applied = await provider.setMocks(session.url, rules);
+        if (applied) return { applied: true, count: rules.length };
+      }
+      // A lease is a Playwright-owned page — CDP intercept was always there, this tool just had no
+      // route to it. Tried after the driven provider: when both exist, drive is the page the caller
+      // means, and a lease is the fallback rather than a competitor.
+      const leased = await deps.pool?.setMocksLease(session.id, rules);
+      if (true === leased) return { applied: true, count: rules.length };
+      return {
+        applied: false,
+        count: 0,
+        ok: false,
+        reason: CDP_NO_PROVIDER_REASON,
+        recommendation: CDP_NO_PROVIDER_RECOMMENDATION,
+      };
     },
   },
 ];

@@ -129,7 +129,7 @@ Deep detail on one element, including the signals a snapshot/a11y tree omits, so
 Perform one action / several in order.
 
 - **`reticle_act` args:** `ref`, `action`, `args?`, `refuseWhenThrottled?`, `sessionId?`. → `{ since, dispatched, settled, settleReason, result, session, warning? }` where `result = { ok, ref, action, dispatched, settled, settleReason, effect }`. The `session` block `{ lastSeenMs, throttled, focused }` reports tab health on every act; when `throttled` is true a `warning` string is also attached. Pass `refuseWhenThrottled: true` to hard-fail instead of warning (opt-in; default is warn-only so background testing never breaks).
-- **`reticle_act_sequence` args:** `steps: [{ ref, action, args? }]`. → `{ since, dispatched, result }` where `result = { ok, count, effects: [...], steps: [...] }` (one `effect` per step; each step carries its own `dispatched`/`settled`/`settleReason`).
+- **`reticle_act_sequence` args:** `steps: [{ ref | target, action, args? }]`. Each step takes `ref` (from a snapshot/query) or `target` (`{ testid }` / `{ label }` / `{ role, name }` / `{ text }`). That is the same locator `reticle_act` accepts. → `{ since, dispatched, result }` where `result = { ok, count, effects: [...], steps: [...] }` (one `effect` per step; each step carries its own `dispatched`/`settled`/`settleReason`).
 - See [§5](#5-actions-full-list) for the action list.
 
 **Dispatch vs settle.** The action is two phases: the **dispatch** (the synchronous click/fill, which is what can fail) and the **settle** (waiting one animation frame so React's commit lands before we return). The settle is **bounded** (~200ms): in a throttled/background tab `requestAnimationFrame` never fires, so Reticle falls back to a timer and resolves anyway. A settle timeout is therefore **never an error**: `reticle_act` resolves with `settled:false, settleReason:"timeout"` and the dispatch (the click) has still landed. Only a real dispatch failure (stale ref, wrong element type) throws.
@@ -183,7 +183,7 @@ The timeline + summary of what happened.
 
 Act, then wait for a predicate: the whole act→observe→assert loop in one hop.
 
-- **args:** `ref`, `action`, `args?`, `until: <predicate>`, `timeout_ms?` (default 4000; 0 = evaluate once), `refuseWhenThrottled?`, `sessionId?`.
+- **args:** `ref`, `action`, `args?`, `until: <predicate>`, `timeout_ms?` (default 4000; 0 = evaluate once), `refuseWhenThrottled?`, `intent?`, `sessionId?`.
 - **returns:** `{ effect, verdict, trace, session, warning? }`. `effect` is the action result (`{ ok, ref, action }`), `verdict` is `{ pass, evidence?, failureReason? }`, `trace` is the reaction report of everything the app did after the action, and `session` is the tab-health block `{ lastSeenMs, throttled, focused }` (with a `warning` when throttled). A failing `verdict` still returns `effect` + `trace` so you can see what _did_ happen. The predicate is automatically floored at this act's cursor, so it only matches events the action actually caused.
 
 ### `reticle_wait_for`
@@ -197,9 +197,10 @@ Block until a predicate holds (or time out). Looks both backward (recent buffer)
 
 Verify a predicate; optionally wait for it.
 
-- **args:** `predicate`, `timeout_ms?` (0 = evaluate once), `since?`, `sessionId?`.
+- **args:** `predicate`, `timeout_ms?` (0 = evaluate once), `since?`, `intent?`, `sessionId?`.
 - Same `since` default as `reticle_wait_for`: scoped to your last act so a stale buffered event can't fake a pass; override with an explicit `since`.
 - **returns:** `{ verified, because, pass, evidence, contradictions?, coverage?, failureReason?, session, warning? }`. On failure includes a **near-miss** (e.g. "found the dialog but not visible", or "no button named 'Submit'; saw: Cancel"). The `session` block `{ lastSeenMs, throttled, focused }` reports tab health on every assert; when throttled a `warning` is attached so you never assert against a tab that is silently no-oping.
+- **`intent` declares what the change was FOR, inline.** Pass a sentence in your own words and it lands in `.reticle/intent.json`, the same git-checked ledger `reticle_intent` writes, before the verdict is drawn; a green verdict then marks it proved and names itself as the proof. Pass the **id** of an intent you already declared instead, to point several verdicts at one statement rather than restating it. `reticle_act_and_wait` takes the same argument. Omit it and nothing is written.
 - **Read `verified`, not `pass`.** `pass` says the predicate held; `verified` says whether that means anything. It is `"no"` when a channel contradicts the assertion (a failed write under a green screen, a batch whose body reports per-item failures, a request still in flight), and `"unknown"` when the outcome could not be known yet: a `202 Accepted` that has not reconciled, or a write whose response body was never recorded. `because` names the deciding evidence in one sentence.
 
 ### `reticle_reconcile`
@@ -309,9 +310,9 @@ reticle_session {action:"review"}({ sessionId })
 
 Each pending mark carries the human note, the element label, the source **`file:line`** (when the framework stamped one), and a ready-to-act `fix` hint. Open the file, apply the fix, then `reticle_session {action:"review"}({ resolve: "m1" })`. The human watching the panel sees **"✓ fixed: …"** land. Reading never consumes a mark, so you can list → fix → verify → resolve. `reticle_sessions` also reports `pendingMarks` so you notice flagged bugs during normal orientation.
 
-### `reticle_network_mock`: stub the network for error-state testing (driven mode)
+### `reticle_network_mock`: stub the network for error-state testing
 
-On a page Reticle drives (`reticle drive`), make a request return a 500, force it offline, or delay it, so testing error/edge states is one declared rule, no backend changes:
+On a page Reticle drives (`reticle drive`) or a leased Playwright tab (`reticle_lease acquire`), make a request return a 500, force it offline, or delay it, so testing error/edge states is one declared rule, no backend changes:
 
 ```
 reticle_network_mock({ mocks: [{ urlContains: "/api/pay", method: "POST", status: 500 }] })
@@ -320,7 +321,7 @@ reticle_network_mock({ mocks: [{ urlContains: "/api/feed", abort: true }] })   /
 reticle_network_mock({ clear: true }) // turn mocking off
 ```
 
-First matching rule wins (`urlContains` + optional case-insensitive `method`). Needs a driven browser; without one it returns a `recommendation` pointing at `reticle drive`.
+First matching rule wins (`urlContains` + optional case-insensitive `method`). Needs a driven or leased browser; without one it returns a `recommendation` pointing at `reticle drive`.
 
 ### `reticle_viewport`: reproducible visual baselines (driven mode)
 

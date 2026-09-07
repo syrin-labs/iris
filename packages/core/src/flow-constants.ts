@@ -113,6 +113,14 @@ export const DriftReason = {
    * hunting for the nearest testid to the literal word "unresolved".
    */
   ANCHOR_DEGRADED: 'anchor_degraded',
+  /**
+   * The step's anchor resolved and its action ran; the testid its `expect.element` names was absent
+   * afterwards. Distinct from TESTID_NOT_FOUND for the same reason ANCHOR_DEGRADED is: "the element
+   * you clicked is gone" and "the thing you asserted afterwards never appeared" need different
+   * fixes, and reporting the second as the first sends the caller looking for a renamed anchor on a
+   * step whose anchor was fine.
+   */
+  EXPECT_ELEMENT_NOT_FOUND: 'expect_element_not_found',
 } as const;
 export type DriftReason = (typeof DriftReason)[keyof typeof DriftReason];
 

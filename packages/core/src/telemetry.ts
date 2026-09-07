@@ -16,6 +16,7 @@
  * `z.nativeEnum`, timestamps are epoch-ms NUMBERS, no `any`.
  */
 import { z } from 'zod';
+import { ToolRefusalSchema } from './telemetry-refusal.js';
 import {
   MachineSnapshotSchema,
   ProjectProfileSchema,
@@ -572,53 +573,6 @@ export const BugFoundSchema = z.object({
 });
 export type BugFound = z.infer<typeof BugFoundSchema>;
 
-/**
- * WHY a tool could not do what was asked.
- *
- * Derived from the refusal paths that actually exist rather than invented: every member below is a
- * bucket over `error-recovery.ts`'s recovery table, which is the single place a thrown message is
- * turned into a next action. That table is the vocabulary; this is its coarse grouping, and a new
- * entry there cannot compile without being classified here.
- *
- * The five that matter belong to four different owners, which is the whole reason for splitting
- * them: `no_session` is the install's second half never happening, `bad_args` is the agent's own
- * call, `not_ready` is the environment, and `no_match` / `unsupported` are the app and our own
- * capability surface. One undifferentiated "the agent stopped" number cannot be acted on by anyone.
- */
-export const RefusalReason = {
-  /** There was no app to reach: nothing connected, no session by that id, or several with none named. */
-  NO_SESSION: 'no_session',
-  /** The target did not exist: a stale ref, a missing baseline, an option value the select has not got. */
-  NO_MATCH: 'no_match',
-  /** Reticle refuses to pretend: a rich-text surface, a disabled field, a destructive control. */
-  UNSUPPORTED: 'unsupported',
-  /** The call did not match the schema, or named a value our own validators reject. */
-  BAD_ARGS: 'bad_args',
-  /** Nothing is wrong with the call; the world is not ready — a throttled tab, a timeout, no browser. */
-  NOT_READY: 'not_ready',
-  /** A refusal this list does not name. A classifier that cannot say "I don't know" lies instead. */
-  OTHER: 'other',
-} as const;
-export type RefusalReason = (typeof RefusalReason)[keyof typeof RefusalReason];
-
-/** One tool call that could not be served. */
-export const ToolRefusalSchema = z.object({
-  /** Which tool. A name from our own fixed namespace, never app data. */
-  tool: z.string().min(1).max(64),
-  reason: z.nativeEnum(RefusalReason),
-  /**
-   * TRUE when the call immediately before this one was the SAME tool, also refused.
-   *
-   * Reported on the RETRY rather than on the first refusal, because the first refusal has to be sent
-   * at the moment it happens: deferring it until the next call is known would lose it entirely for
-   * the agent that gives up, and that agent is the whole population this event exists to describe.
-   * So count `retried: true` for retries; the ratio against all refusals is whether our diagnosis
-   * gets anybody unstuck.
-   */
-  retried: z.boolean(),
-});
-export type ToolRefusal = z.infer<typeof ToolRefusalSchema>;
-
 /** An MCP client attaching. Separates "installed and running" from "someone is actually using it". */
 export const McpConnectionSchema = z.object({
   /** False the first time a client attaches to this daemon; true for every attach after. */
@@ -631,6 +585,23 @@ export const McpConnectionSchema = z.object({
   daemonAgeMs: z.number().int().nonnegative(),
   /** Which client, from its own handshake (`claude-code`, `cursor`). */
   client: z.string().min(1).max(64).optional(),
+  /**
+   * Was an app carrying the SDK already attached to this daemon when the agent arrived.
+   *
+   * The mirror of `AppInstrumentation.agentAttached`, and the closest thing we have to WHAT THE
+   * AGENT SAW. Most clients that attach never call a single tool, and that cohort was reachable only
+   * by subtraction — `tool_refused` cannot describe it, because an agent that reads the server
+   * instructions, learns nothing is wired and stops has refused nothing. It made no call at all.
+   *
+   * `false` means the handshake happened against a daemon with no app to look at, which is the state
+   * the first-move instructions describe and the state in which no tool could have answered
+   * anything. Split the never-drove population on this and the two halves need opposite fixes: one
+   * is an install that never finished, the other is an agent that had everything it needed and did
+   * not use it.
+   *
+   * OPTIONAL because an older sender has none. Absent means not measured, never `false`.
+   */
+  appConnected: z.boolean().optional(),
 });
 export type McpConnection = z.infer<typeof McpConnectionSchema>;
 
@@ -802,8 +773,23 @@ export const InitConfirmation = {
   CONNECTED: 'connected',
   /** Nothing was listening on the bridge port, so no session could arrive. Not a failed install. */
   NO_DAEMON: 'no_daemon',
-  /** A daemon was up and no app connected inside the window — the dev server is the outstanding step. */
+  /**
+   * A daemon was up, no app connected, and no instrumented dev server announced itself either — so
+   * the dev server is the outstanding step.
+   *
+   * Meaning unchanged, deliberately, so the funnel stays comparable across the change that added
+   * NO_PAGE below. It is also still the honest answer for every stack whose plugin does not announce
+   * yet: nothing was observed, and "not observed" must never be reported as "not running".
+   */
   NO_SESSION: 'no_session',
+  /**
+   * A dev server with Reticle loaded IS running, and no page dialled.
+   *
+   * The half of NO_SESSION that used to be invisible, and the one with a completely different fix:
+   * the config is right and the process was restarted, so telling this person to restart their dev
+   * server is an instruction they have already followed. They need to open the app.
+   */
+  NO_PAGE: 'no_page',
 } as const;
 export type InitConfirmation = (typeof InitConfirmation)[keyof typeof InitConfirmation];
 
@@ -946,5 +932,17 @@ export const TelemetryEventSchema = z.object({
   licenseId: z.string().min(1).max(64).optional(),
   /** How activation resolved. Absent on a build with no issuer key baked, i.e. every OSS install. */
   licenseStatus: z.nativeEnum(LicenseActivation).optional(),
+  /**
+   * A key was PLACED in the environment, whatever this build concluded about it.
+   *
+   * Rides even when `licenseStatus` is absent, and that combination is the entire reason it exists:
+   * a build with no issuer key baked reports no status at all, so a customer who pasted a real
+   * enterprise key into one produced no licence signal whatsoever and looked identical to someone
+   * who has never held a key. `licenseKeyPresent: true` with no `licenseStatus` is precisely the
+   * "their key is not taking effect" case, and it was previously unobservable.
+   *
+   * A boolean, never the key. The key is a credential and does not leave the machine.
+   */
+  licenseKeyPresent: z.boolean().optional(),
 });
 export type TelemetryEvent = z.infer<typeof TelemetryEventSchema>;

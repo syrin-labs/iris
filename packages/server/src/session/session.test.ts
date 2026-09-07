@@ -7,10 +7,12 @@ import {
   SESSION_HEALTH,
   SESSION_LIFECYCLE,
   SessionState,
-  UNSCRIPTABLE_TAB_RECOMMENDATION,
+  HIDDEN_TAB_RECOMMENDATION,
+  THROTTLED_TAB_RECOMMENDATION,
   type HelloMessage,
   type ReticleEvent,
 } from '@reticlehq/core';
+import { AppRuntime } from '@reticlehq/core';
 import { Session, SessionManager } from './session.js';
 
 const HELLO: HelloMessage = {
@@ -251,18 +253,21 @@ describe('SessionManager.resolve() auto-selection', () => {
   });
 });
 
-describe('un-scriptable tab recommendation', () => {
+describe('tab-health recommendation', () => {
   it('info() carries the recommendation when hidden', () => {
     const { session } = makeSession();
     session.applyHealth(true, false);
-    expect(session.info().recommendation).toBe(UNSCRIPTABLE_TAB_RECOMMENDATION);
+    expect(session.info().recommendation).toBe(HIDDEN_TAB_RECOMMENDATION);
   });
 
-  it('info() recommends when stale past the threshold', () => {
+  it('info() recommends when stale past the threshold — the NOT-hidden wording', () => {
+    // Stale is not hidden. `throttled` is `hidden || stale`, so a quiet visible tab trips it, and
+    // that tab is usually still driveable: telling it "you may be un-focusable, go lease one" sent
+    // agents off the only screen a human can watch, for a heartbeat that was merely late.
     const { session, tick } = makeSession();
     session.touch();
     tick(SESSION_HEALTH.STALE_THRESHOLD_MS + 1);
-    expect(session.info().recommendation).toBe(UNSCRIPTABLE_TAB_RECOMMENDATION);
+    expect(session.info().recommendation).toBe(THROTTLED_TAB_RECOMMENDATION);
   });
 
   it('info() omits recommendation when visible and recently seen', () => {
@@ -276,7 +281,7 @@ describe('un-scriptable tab recommendation', () => {
   it('health() carries the recommendation when throttled', () => {
     const { session } = makeSession();
     session.applyHealth(true, false);
-    expect(session.health().recommendation).toBe(UNSCRIPTABLE_TAB_RECOMMENDATION);
+    expect(session.health().recommendation).toBe(HIDDEN_TAB_RECOMMENDATION);
   });
 });
 
@@ -308,5 +313,25 @@ describe('an event observer that throws', () => {
 
     expect(() => session.pushEvent(anyEvent())).not.toThrow();
     expect(seen).toEqual(['before', 'after']);
+  });
+});
+
+// The WIRING, not the helper. `buildSessionRecommendation` grew a desktop branch and every unit test
+// for it passed while the branch was unreachable in production, because `Session` was not passing
+// its own `runtime` in. Deleting that one argument left all 506 session tests green — which is the
+// same shape of gap this repo has hit twice before: the decision is tested, the call is not.
+describe('the session hands its runtime to the recommendation', () => {
+  it('an Electron window in the background is not told to open a browser', () => {
+    const session = new Session(HELLO, fakeSocket, () => 0);
+    session.applyHealth(true, false, AppRuntime.ELECTRON);
+    const advice = String(session.health().recommendation ?? '');
+    expect(advice).not.toContain('reticle_lease');
+    expect(advice).toContain('window');
+  });
+
+  it('a plain web tab still gets the lease it can actually use', () => {
+    const session = new Session(HELLO, fakeSocket, () => 0);
+    session.applyHealth(true, false, AppRuntime.WEB);
+    expect(String(session.health().recommendation ?? '')).toContain('reticle_lease');
   });
 });

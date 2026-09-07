@@ -1,5 +1,9 @@
 pnpm-lock.yaml
 **/dist/**
+# electron-vite writes its bundle to `out/`, not `dist/`. The fixture gitignores it, but prettier
+# has its own ignore list and scanned the build output — so `format:check` went red on three
+# generated files nobody wrote, on a PR whose only crime was adding a fixture that builds.
+**/out/**
 **/node_modules/**
 **/.turbo/**
 plan/

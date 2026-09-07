@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { emptyImpactCounts } from '@reticlehq/core';
+import { IMPACT_DEFECT_LIMIT, emptyImpactCounts } from '@reticlehq/core';
 import { ImpactStore, applyDelta, isoDay, readScope } from './impact-store.js';
 
 const DAY = 86_400_000;
@@ -106,5 +106,111 @@ describe('the longest-run record', () => {
     expect(scope.records.longestRunMs).toBe(742_000);
     scope = applyDelta(scope, { calls: 1 }, now, { runMs: 9_000 });
     expect(scope.records.longestRunMs, 'a shorter run does not beat the record').toBe(742_000);
+  });
+});
+
+/**
+ * The short list of what broke.
+ *
+ * `counts.failed` says how many; this says which. The invariants that matter are that it stays
+ * SHORT (a counters file must not become a log), stays CURRENT (newest first, or after a week it is
+ * a list about the past), and that a record written by an older build still parses — a defect list
+ * is not worth losing somebody's whole history over.
+ */
+describe('the defect list', () => {
+  const defect = (title: string, at = 1) => ({ at, title });
+
+  it('remembers what broke, not just that something did', () => {
+    const now = Date.parse('2026-08-20T10:00:00');
+    const scope = applyDelta(scopeAt(now), { calls: 1, verdicts: 1, failed: 1 }, now, {
+      defect: defect('Sign In'),
+    });
+    expect(scope.counts.failed).toBe(1);
+    expect(scope.defects.map((d) => d.title)).toEqual(['Sign In']);
+  });
+
+  it('keeps the newest first, so the list is what is broken NOW', () => {
+    const now = Date.parse('2026-08-20T10:00:00');
+    let scope = scopeAt(now);
+    for (const title of ['first', 'second', 'third']) {
+      scope = applyDelta(scope, { failed: 1 }, now, { defect: defect(title) });
+    }
+    expect(scope.defects.map((d) => d.title)).toEqual(['third', 'second', 'first']);
+  });
+
+  it('stays bounded, however long the session runs', () => {
+    const now = Date.parse('2026-08-20T10:00:00');
+    let scope = scopeAt(now);
+    for (let i = 0; i < 50; i += 1) {
+      scope = applyDelta(scope, { failed: 1 }, now, { defect: defect(`d${String(i)}`) });
+    }
+    expect(scope.defects).toHaveLength(IMPACT_DEFECT_LIMIT);
+    expect(scope.defects[0]?.title, 'newest survives the cap').toBe('d49');
+    expect(scope.counts.failed, 'the COUNT is not capped — only the list is').toBe(50);
+  });
+
+  it('leaves the list alone on a call that caught nothing', () => {
+    const now = Date.parse('2026-08-20T10:00:00');
+    const withOne = applyDelta(scopeAt(now), { failed: 1 }, now, { defect: defect('Sign In') });
+    const after = applyDelta(withOne, { calls: 1, passed: 1, verdicts: 1 }, now);
+    expect(after.defects.map((d) => d.title)).toEqual(['Sign In']);
+  });
+
+  it('reads a record written before defects existed, rather than discarding it', () => {
+    // The whole point of defaulting the field: an older impact.json is somebody's history, and a
+    // parse failure here would silently reset their streak, their records and their totals.
+    const dir = mkdtempSync(join(tmpdir(), 'impact-old-'));
+    const path = join(dir, 'impact.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        counts: { ...emptyImpactCounts(), calls: 7, failed: 2 },
+        days: [],
+        records: {
+          longestRunMs: 5,
+          bestVerdictDay: 1,
+          bestDefectDay: 1,
+          streakDays: 3,
+          bestStreakDays: 3,
+        },
+        savings: { tokens: { value: 1, basis: 'b' }, minutes: { value: 1, basis: 'b' } },
+        since: 10,
+      }),
+      'utf8',
+    );
+    const scope = readScope(path, 999);
+    expect(scope.counts.calls, 'the old history survived').toBe(7);
+    expect(scope.records.streakDays).toBe(3);
+    expect(scope.defects).toEqual([]);
+  });
+});
+
+/** The HUD's link to the dashboard: present only when `reticle link` recorded one. */
+describe('the dashboard link', () => {
+  it('is absent for a project that is not linked', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'impact-nolink-'));
+    expect(new ImpactStore({ reticleRoot: dir }).snapshot().dashboardUrl).toBeUndefined();
+  });
+
+  it('is read from the link file `reticle link` writes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'impact-link-'));
+    writeFileSync(
+      join(dir, 'cloud.json'),
+      JSON.stringify({
+        projectId: 'web',
+        url: 'https://api.test',
+        dashboardUrl: 'https://console.test/issues?project=web',
+      }),
+      'utf8',
+    );
+    expect(new ImpactStore({ reticleRoot: dir }).snapshot().dashboardUrl).toBe(
+      'https://console.test/issues?project=web',
+    );
+  });
+
+  it('is absent — not crashed — when the link file is malformed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'impact-bad-'));
+    writeFileSync(join(dir, 'cloud.json'), '{not json', 'utf8');
+    expect(new ImpactStore({ reticleRoot: dir }).snapshot().dashboardUrl).toBeUndefined();
   });
 });

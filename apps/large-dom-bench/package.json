@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/large-dom-bench",
-  "version": "2.11.0",
+  "version": "2.13.1",
   "private": true,
   "description": "A deliberately large, non-virtualized DOM (thousands of nodes) used to measure the token wedge: full-snapshot cost vs a targeted verify loop.",
   "type": "module",

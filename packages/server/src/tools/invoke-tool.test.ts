@@ -342,6 +342,45 @@ describe('the feedback invitation is counted wherever friction actually happens'
   });
 
   /**
+   * #688: under skew, CDP tools used to surface Playwright's "Target page has been closed" while
+   * the page was still dialled in. Refuse with the skew sentence instead — before the provider runs,
+   * and if one still throws the closed-target class, rewrite it on the way out.
+   */
+  it('refuses a CDP tool with the session skew sentence before Playwright runs', async () => {
+    const SKEW = 'version skew: the page is 2.2.1; this daemon is 2.4.1. run reticle update';
+    let handlerRan = false;
+    const screenshot: ToolDef = {
+      name: ReticleTool.SCREENSHOT,
+      description: '',
+      inputSchema: {},
+      handler: () => {
+        handlerRan = true;
+        return Promise.resolve({ saved: true });
+      },
+    };
+    await expect(
+      runTool(screenshot, fakeDeps(throttledSession({ versionSkew: SKEW })), {}),
+    ).rejects.toThrow(SKEW);
+    expect(handlerRan).toBe(false);
+  });
+
+  it('rewrites a Playwright closed-target throw to the session skew sentence', async () => {
+    const SKEW = 'version skew: the page is 2.2.1; this daemon is 2.4.1. run reticle update';
+    const throwing: ToolDef = {
+      name: ReticleTool.SNAPSHOT,
+      description: '',
+      inputSchema: {},
+      handler: () =>
+        Promise.reject(
+          new Error('page.screenshot: Target page, context or browser has been closed'),
+        ),
+    };
+    await expect(
+      runTool(throwing, fakeDeps(throttledSession({ versionSkew: SKEW })), {}),
+    ).rejects.toThrow(SKEW);
+  });
+
+  /**
    * A recognised error gets a concrete recovery INSTEAD of the ask, so counting it would inflate the
    * denominator with invitations nobody was ever shown — the same error in the other direction.
    */

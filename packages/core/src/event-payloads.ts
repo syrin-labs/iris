@@ -86,6 +86,7 @@ const netRequestSchema = z
     ok: z.boolean(),
     durationMs: z.number(),
     initiator: z.string(),
+    urlRaw: z.string().optional(),
   })
   .passthrough();
 
@@ -108,6 +109,7 @@ export const EVENT_PAYLOAD_SCHEMAS = {
     method: z.string(),
     url: z.string(),
     initiator: z.string(),
+    urlRaw: z.string().optional(),
   }),
   [EventType.NET_STREAM]: netStreamSchema,
   [EventType.DOWNLOAD]: downloadSchema,
@@ -167,6 +169,9 @@ export const EVENT_PAYLOAD_SCHEMAS = {
       brand: z.nativeEnum(BrowserBrand).optional(),
     })
     .passthrough(),
+  // The page called window.open — the clicked consequence may continue in a context the SDK cannot
+  // enter (#508). `href` is what the page asked to open, omitted for the blank-tab form.
+  [EventType.CONTEXT_OPENED]: z.object({ href: z.string().optional() }).passthrough(),
   [EventType.RENDER_COMMIT]: z.object({ commits: z.number() }),
   [EventType.FOCUS_CHANGE]: z.object({
     to: z.string().optional(),

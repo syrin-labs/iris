@@ -16,6 +16,12 @@
  */
 interface ActEffect {
   action?: string | undefined;
+  /**
+   * The ref the action dispatched against. Recorded so the verdict nudge can suggest a call about
+   * the element the agent actually touched, rather than a worked example from a document. Written
+   * on the SAME success path as `action`, so a refused act leaves neither.
+   */
+  ref?: string | undefined;
   /** DOM mutations inside the acted element's own subtree. Undefined means nobody measured. */
   mutatedWithin?: number | undefined;
 }
@@ -41,9 +47,14 @@ export class LastAct {
    * Marking only on the success path is what makes that unrepeatable: a failure mode added later
    * cannot forget to clean up state that was never written.
    */
-  markActed(cursor: number, action: string | undefined, mutatedWithin: number | undefined): void {
+  markActed(
+    cursor: number,
+    action: string | undefined,
+    mutatedWithin: number | undefined,
+    ref?: string,
+  ): void {
     this.#cursor = cursor;
-    this.#effect = { action, mutatedWithin };
+    this.#effect = { action, mutatedWithin, ...(ref === undefined ? {} : { ref }) };
   }
 
   /**

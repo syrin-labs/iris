@@ -32,9 +32,28 @@ describe('installScroll — trailing edge captures the resting position', () => 
     const positions = (): Captured[] => events.filter((e) => e.type === EventType.SCROLL_POSITION);
     expect(positions().at(-1)?.data['y']).toBe(100); // only the leading sample so far
 
-    await new Promise((r) => setTimeout(r, 160)); // let the trailing timer fire
+    // Poll for the trailing emit rather than sleeping past it. A fixed `setTimeout(160)` is a
+    // statement about the MACHINE: it passed alone and failed inside the full unit gate, where the
+    // trailing timer competes with every other suite for the event loop. The invariant is that the
+    // resting position eventually arrives, not that it arrives within 160ms — see the note on
+    // timing assertions in CLAUDE.md.
+    const deadline = Date.now() + 5000;
+    while (positions().at(-1)?.data['y'] !== 500 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
 
     // The resting position (500) must be reported — a leading-only throttle dropped it entirely.
     expect(positions().at(-1)?.data['y']).toBe(500);
+  });
+
+  it('teardown removes the scroll listener', () => {
+    const events: Captured[] = [];
+    const td = installScroll((type, data) => events.push({ type, data }));
+    td();
+    events.length = 0;
+
+    setScrollY(200);
+    window.dispatchEvent(new Event('scroll'));
+    expect(events.filter((e) => e.type === EventType.SCROLL_POSITION)).toHaveLength(0);
   });
 });

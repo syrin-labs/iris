@@ -12,6 +12,37 @@ const DEV_OVERLAYS =
 
 let extraIgnore = '';
 
+/**
+ * Whether Reticle's OWN UI is visible to snapshots and queries.
+ *
+ * Off, always, unless an app opts in — and the opt-in exists for exactly one situation: the app
+ * under test IS Reticle. A HUD change is otherwise the only kind of change Reticle cannot be used to
+ * check, because the panel that renders it is invisible to every tool that could look at it.
+ *
+ * It stays off by default because the reason for hiding it is sound: an agent that can drive
+ * Reticle's own interface can fabricate its own impact report, and a snapshot full of Reticle chrome
+ * is noise in every other app on earth. This is a hatch for contributors, not a setting.
+ *
+ * Third-party dev overlays stay ignored either way — they are somebody else's furniture and were
+ * never the thing being verified.
+ */
+let presenterVisible = false;
+
+/**
+ * Make Reticle's own presenter visible to snapshots and queries. Contributors only.
+ *
+ * Deliberately a function rather than a field on the ignore set, so the one place that decides
+ * "is this ours" also decides "may it be seen", and no caller can half-apply it.
+ */
+export function setPresenterVisible(visible: boolean): void {
+  presenterVisible = visible;
+}
+
+/** Whether the hatch is open — reported in the app's capabilities so a verdict is never mistaken. */
+export function isPresenterVisible(): boolean {
+  return presenterVisible;
+}
+
 /** Let the host app add selectors to exclude from snapshots (e.g. its own dev widgets). */
 export function setIgnoreSelectors(selectors: string[]): void {
   extraIgnore = selectors.join(',');
@@ -43,9 +74,9 @@ export function isReticleUi(node: Element | null): boolean {
 
 /** True if the element should be excluded from snapshots/queries (Reticle overlay or dev overlay). */
 export function isIgnored(el: Element): boolean {
-  const sel =
-    extraIgnore.length > 0
-      ? `${RETICLE_OVERLAY},${DEV_OVERLAYS},${extraIgnore}`
-      : `${RETICLE_OVERLAY},${DEV_OVERLAYS}`;
+  // With the hatch open, Reticle's own overlay drops out of the ignore set — but the third-party
+  // dev overlays do not. They are somebody else's furniture and were never the thing being verified.
+  const ours = presenterVisible ? '' : RETICLE_OVERLAY;
+  const sel = [ours, DEV_OVERLAYS, extraIgnore].filter((part) => part.length > 0).join(',');
   return el.closest(sel) !== null;
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Server } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { asRunId, ReplayStatus, type FlowReplayResult } from '@reticlehq/core';
 import { ReticleRunner, type RunnerPort } from './reticle-runner.js';
 import { startVerifyServer, TOKEN_HEADER } from './verify-server.js';
@@ -67,5 +67,18 @@ describe('startVerifyServer (real socket, localhost)', () => {
       body: '{}',
     });
     expect(missing.status).toBe(404);
+  });
+
+  it('rejects a port it cannot bind, naming the port', async () => {
+    // Hold a port so the verify server cannot have it. The promise used to never settle here — the
+    // bind error escaped as an unhandled 'error' event and crashed the daemon with a raw stack.
+    const squatter = createServer();
+    await new Promise<void>((resolve) => squatter.listen(0, '127.0.0.1', () => resolve()));
+    const address = squatter.address();
+    const held = 'object' === typeof address && address !== null ? address.port : 0;
+    await expect(
+      startVerifyServer({ runner: new ReticleRunner(fakePort()), token: '' }, held),
+    ).rejects.toThrow(`could not bind 127.0.0.1:${String(held)}`);
+    await new Promise<void>((resolve) => squatter.close(() => resolve()));
   });
 });

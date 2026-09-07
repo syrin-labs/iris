@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { ProjectReadError, RunKind, RunStatus, type RunRecord } from '@reticlehq/core';
+import { ProjectReadError, RunStatus, type RunRecord } from '@reticlehq/core';
 import { ReticleTool } from '../tools/tool-names.js';
+import { countSchema } from '../tools/numeric-bounds.js';
 import { sessionIdShape } from '../tools/tool-kit.js';
 import { asNumber, asString } from '../tools/tools-helpers.js';
 import {
@@ -109,11 +110,10 @@ export const PROJECT_TOOLS: ToolDef[] = [
   {
     name: ReticleTool.PROJECT,
     description:
-      'Read cross-run history from .reticle/project.json — the memory of how past runs behaved. With { name } it also returns the last run for that flow plus a diff-vs-last summary (status change, regressed flag, consoleErrors/driftSteps deltas) so you can answer "did it behave like last time?". `diff` is the lightweight status/console/drift delta vs the previous run of that NAME; `runDiff` is the per-flow duration/status delta between the two most-recent full verification artifacts ("step 3: 412ms -> 987ms (+140%), +2 requests"). When logged in to Reticle Cloud, also returns `cloud`: the team\'s server-side regression report (broken/changed flows vs before) — the durable memory a fresh or context-lost agent can rely on even when local history is empty. Returns { runs, learned?, lastRun?, diff?, runDiff?, cloud? } or { error, reason, cloud? }.',
+      'Read cross-run history from .reticle/project.json — the memory of how past runs behaved. With { name } it also returns the last run for that flow plus a diff-vs-last summary (status change, regressed flag, consoleErrors/driftSteps deltas) so you can answer "did it behave like last time?". `diff` is the lightweight status/console/drift delta vs the previous run of that NAME; `runDiff` is the per-flow duration/status delta between the two most-recent full verification artifacts ("step 3: 412ms -> 987ms (+140%), +2 requests"). When logged in to Reticle, also returns `cloud`: the team\'s server-side regression report (broken/changed flows vs before) — the durable memory a fresh or context-lost agent can rely on even when local history is empty. Returns { runs, learned?, lastRun?, diff?, runDiff?, cloud? } or { error, reason, cloud? }.',
     inputSchema: {
       name: z.string().optional().describe('Filter runs by this name. Omit to return all runs.'),
-      limit: z
-        .number()
+      limit: countSchema
         .optional()
         .describe(
           'Most-recent N runs to return. Defaults to 25 — the full history is unbounded and grows with every run (measured at ~20KB / ~5,000 tokens on a modest project), which is a large slice of an agent context for data it mostly does not read. `totalRuns` always reports the true count, so a cap is never silent.',
@@ -181,36 +181,6 @@ export const PROJECT_TOOLS: ToolDef[] = [
         ...(pair !== undefined ? { diff: diffRuns(pair[0], pair[1]) } : {}),
         ...(runDiff === undefined ? {} : { runDiff }),
       });
-    },
-  },
-  {
-    name: ReticleTool.RUN_RECORD,
-    description:
-      'Explicitly record a run outcome into .reticle/project.json (the manual companion to the auto-record on reticle_flow_replay). Use it to log the result of an assertion sequence or a manual journey so future runs can diff against it. Returns { recorded:true, name, status }.',
-    inputSchema: {
-      name: z.string().describe('Run name for grouping in reticle_project history.'),
-      status: z.nativeEnum(RunStatus).describe('Outcome: pass | fail | drift | error'),
-      kind: z.nativeEnum(RunKind).optional(),
-      summary: z.string().optional().describe('One-line human summary of what this run covered.'),
-      ...sessionIdShape,
-    },
-    outputSchema: {
-      recorded: z.boolean(),
-      runName: z.string(),
-      status: z.string(),
-    },
-    handler: async (deps: ToolDeps, args) => {
-      const name = asString(args['name']) ?? '';
-      const status = args['status'] as RunStatus;
-      const kindArg = args['kind'];
-      const summary = asString(args['summary']);
-      await deps.project.recordRun({
-        kind: 'string' === typeof kindArg ? (kindArg as RunKind) : RunKind.MANUAL,
-        name,
-        status,
-        ...(summary !== undefined ? { summary } : {}),
-      });
-      return { recorded: true, runName: name, status };
     },
   },
 ];

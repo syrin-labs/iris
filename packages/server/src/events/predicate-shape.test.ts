@@ -18,7 +18,8 @@
 import { describe, expect, it } from 'vitest';
 import { PredicateKind } from '@reticlehq/core';
 import { parsePredicate } from './predicate-parse.js';
-import { predicateFieldsFor } from './predicate-eval.js';
+import { nestedKeysOf, predicateFieldsFor } from './predicate-eval.js';
+import { z } from 'zod';
 
 const messageOf = (input: unknown): string => {
   try {
@@ -135,5 +136,75 @@ describe('scoping the text predicate', () => {
 
   it('names `scope` among the fields the text predicate accepts', () => {
     expect(predicateFieldsFor(PredicateKind.TEXT)).toContain('scope');
+  });
+
+  it('accepts `self` for checking the scoped root subtree', () => {
+    expect(
+      parsePredicate({
+        kind: PredicateKind.TEXT,
+        contains: 'Move to Folder',
+        scope: 'e12',
+        self: true,
+      }),
+    ).toEqual({
+      kind: PredicateKind.TEXT,
+      contains: 'Move to Folder',
+      scope: 'e12',
+      self: true,
+    });
+  });
+});
+
+describe('nestedKeysOf reaches one level into an object field', () => {
+  it.each([
+    ['bare', z.object({ a: z.string() })],
+    ['optional', z.object({ a: z.string() }).optional()],
+    ['with a default', z.object({ a: z.string() }).default({ a: 'x' })],
+    ['nullable', z.object({ a: z.string() }).nullable()],
+    ['optional and nullable', z.object({ a: z.string() }).nullable().optional()],
+    ['behind an effect', z.object({ a: z.string() }).refine(() => true)],
+  ])('peels a %s object field', (_label, schema) => {
+    // No top-level predicate field is declared behind any of these today, so the real schema
+    // exercises none of them. That is the reason for a case each rather than one standing for the
+    // rest: the failure is silent — [] comes back, the old sentence prints, nothing reddens.
+    expect(nestedKeysOf(schema)).toEqual(['a']);
+  });
+
+  it.each([
+    ['a string', z.string()],
+    ['an array', z.array(z.string())],
+    ['a native enum', z.nativeEnum({ A: 'a' } as const)],
+    ['undefined', undefined],
+  ])('is empty for %s', (_label, schema) => {
+    expect(nestedKeysOf(schema)).toEqual([]);
+  });
+
+  it('does not expand transitively', () => {
+    // One level is the contract: the sentence exists to make the next call land, not to print the
+    // schema. `query.source` is an object too.
+    const nested = nestedKeysOf(z.object({ a: z.object({ b: z.string() }) }));
+    expect(nested).toEqual(['a']);
+  });
+});
+
+describe('the error expands only the field the caller got wrong', () => {
+  it('names query when query is what failed', () => {
+    const message = messageOf({ kind: PredicateKind.ELEMENT, query: 'a string' });
+    expect(message).toContain('query accepts:');
+    expect(message).toContain('role');
+  });
+
+  it('leaves query out when the mistake is somewhere else', () => {
+    // `element` is the only kind with an object-valued field today, so expanding-the-blamed-field
+    // and expanding-every-object-field agree almost everywhere. Here they do not: the rejection is
+    // an unknown top-level key, nothing to do with `query`, and dragging query's shape in makes the
+    // sentence longer without answering what was asked.
+    const message = messageOf({ kind: PredicateKind.ELEMENT, query: { role: 'button' }, bogus: 1 });
+    expect(message).toContain('bogus');
+    expect(message).toContain('element accepts:');
+    expect(
+      message,
+      `query was expanded for an error that is not about it: ${message}`,
+    ).not.toContain('query accepts:');
   });
 });

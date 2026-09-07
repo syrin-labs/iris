@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, isAbsolute, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 
 /** The React kit the host app imports the SDK from. Mirrors the constant in index.ts. */
@@ -30,7 +30,8 @@ const MANIFEST_SEARCH_DEPTH = 5;
  * `process.cwd()` default matches how Vite itself defaults the root when the config omits it.
  */
 function requireFromApp(from: string): NodeJS.Require {
-  return createRequire(join(from, 'package.json'));
+  const absoluteFrom = isAbsolute(from) ? from : resolve(process.cwd(), from);
+  return createRequire(join(absoluteFrom, 'package.json'));
 }
 
 /**
@@ -166,8 +167,7 @@ export const OPTIMIZER_OPTIONS_KEY = {
   ESBUILD: 'esbuildOptions',
   ROLLDOWN: 'rolldownOptions',
 } as const;
-export type OptimizerOptionsKey =
-  (typeof OPTIMIZER_OPTIONS_KEY)[keyof typeof OPTIMIZER_OPTIONS_KEY];
+type OptimizerOptionsKey = (typeof OPTIMIZER_OPTIONS_KEY)[keyof typeof OPTIMIZER_OPTIONS_KEY];
 
 /**
  * Which key carries optimizer options on this Vite.

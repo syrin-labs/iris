@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FEEDBACK_TEXT_MAX } from '@reticlehq/core';
+import { FEEDBACK_TEXT_MAX, StackUnknownReason } from '@reticlehq/core';
 import {
   FEEDBACK_ENV,
   REDACTED,
@@ -145,11 +145,15 @@ describe('feedback context detection', () => {
   });
 
   it('returns nothing rather than guessing when package.json is unreadable', () => {
-    expect(
-      detectStack('/p', () => {
-        throw new Error('ENOENT');
-      }),
-    ).toEqual({});
+    // No guessed stack, as before. The miss now names itself (#617); an unreadable manifest is not
+    // evidence ABOUT the app, so it reports NO_APP_FOUND rather than claiming we recognised nothing.
+    const got = detectStack('/p', () => {
+      throw new Error('ENOENT');
+    });
+    expect(got.stack).toBeUndefined();
+    expect(got.stackMajor).toBeUndefined();
+    expect(got.stackSource).toBeUndefined();
+    expect(got.stackUnknownReason).toBe(StackUnknownReason.NO_APP_FOUND);
   });
 
   it('reads project scope from a checked-in MCP registration, user scope otherwise', () => {

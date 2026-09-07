@@ -1,4 +1,4 @@
-// Render every src/*.html benchmark card to a crisp 2x PNG in this folder.
+// Render every src/*.html benchmark card to a crisp 2x PNG in assets/readme/.
 // Each HTML declares its size on line 1 as:  <!--SIZE:WIDTHxHEIGHT-->
 // Run: node assets/benchmarks/render.mjs
 import { chromium } from 'playwright';
@@ -21,10 +21,7 @@ for (const f of files) {
   await page.goto('file://' + join(srcDir, f));
   try { await page.evaluate(() => document.fonts.ready); } catch {}
   await page.waitForTimeout(500); // let fonts/layout settle
-  // `bench-*` and `readme-*` cards are committed README/docs images → assets/readme/.
-  // The rest (old numbered marketing-style cards) render locally into this folder (gitignored).
-  const outDir = f.startsWith('bench-') || f.startsWith('readme-') ? join(here, '..', 'readme') : here;
-  const out = join(outDir, f.replace(/\.html$/, '.png'));
+  const out = join(here, '..', 'readme', f.replace(/\.html$/, '.png'));
   await page.screenshot({ path: out });
   await page.close();
   ok++;

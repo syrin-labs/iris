@@ -15,6 +15,8 @@ export interface RecordedStep {
 interface ActiveRecording {
   cursor: number;
   steps: RecordedStep[];
+  /** The route the journey began on. See CompiledProgram.startPath. */
+  startPath?: string;
 }
 
 /** A finished, replayable program compiled from a recording. */
@@ -22,6 +24,23 @@ export interface CompiledProgram {
   name: string;
   version: number;
   steps: RecordedStep[];
+  /*
+   * The route recording STARTED on, so a saved flow can navigate there before step 1.
+   *
+   * Without it a replay begins wherever the page happens to be, and a first step whose whole
+   * consequence is "this navigation fetches" quietly fetches nothing when replay is already on the
+   * destination — the flow then fails for a reason that has nothing to do with the app. The human
+   * recorder has always captured this; the agent's did not, so agent-recorded flows were replayable
+   * only from the page they were recorded on. Observed: a green recording went red on replay purely
+   * because it started one route further along.
+   */
+  startPath?: string;
+  /**
+   * Pages the recording sat on, in order, consecutive stays collapsed. In-memory only — not written
+   * to the flow file. Lets save warn about a backtrack (a journey that cannot replay) without a
+   * format change.
+   */
+  routes?: string[];
 }
 
 /**
@@ -32,8 +51,12 @@ export class RecordingStore {
   readonly #active = new Map<string, ActiveRecording>();
   readonly #compiled = new Map<string, CompiledProgram>();
 
-  start(name: string, cursor: number): void {
-    this.#active.set(name, { cursor, steps: [] });
+  start(name: string, cursor: number, startPath?: string): void {
+    this.#active.set(name, {
+      cursor,
+      steps: [],
+      ...(startPath === undefined ? {} : { startPath }),
+    });
   }
 
   isRecording(name: string): boolean {
@@ -71,5 +94,17 @@ export class RecordingStore {
 
   active(): string[] {
     return [...this.#active.keys()];
+  }
+
+  /**
+   * Names of recordings that have been STOPPED and compiled.
+   *
+   * The mirror of `active()`, and needed for the same defaulting: after `reticle_record stop` a
+   * recording is no longer active, so resolving "the obvious one" from `active()` finds nothing.
+   * Saving it then demanded the exact name back from the caller, which is a thing to remember for
+   * no reason when exactly one recording exists.
+   */
+  compiled(): string[] {
+    return [...this.#compiled.keys()];
   }
 }

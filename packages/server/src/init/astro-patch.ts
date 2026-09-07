@@ -294,3 +294,36 @@ export function patchAstroLayout(
     code: `${source.slice(0, at)}${astroConnectScript(port, projectId, uiLibrary)}${source.slice(at)}`,
   };
 }
+
+/** Where Astro keeps ambient types — `create-astro` ships this file. */
+export const ASTRO_ENV_DTS_PATH = 'src/env.d.ts';
+
+/**
+ * The declarations `astro check` needs for the Vite `define` names (#677).
+ *
+ * Matching SvelteKit's `hooks.client.ts` typing: `string | undefined`, because the define can be
+ * absent when the pairing token file is missing.
+ */
+export const ASTRO_ENV_DTS_DECLARES =
+  'declare const __RETICLE_TOKEN__: string | undefined;\n' +
+  'declare const __RETICLE_ROOT__: string | undefined;\n';
+
+/** Present once either declare is in the file — both are written together. */
+const ENV_DTS_MARKER = '__RETICLE_TOKEN__';
+
+/**
+ * Append the Vite-define ambient declarations to `src/env.d.ts`, or create the file.
+ *
+ * Without this, `create-astro`'s default `"astro check && astro build"` fails with four
+ * `ts(2304) Cannot find name '__RETICLE_TOKEN__'` errors after a clean init (#677).
+ */
+export function patchAstroEnvDts(existing: string | null): SourcePatch {
+  if (null !== existing && existing.includes(ENV_DTS_MARKER)) {
+    return { kind: PatchKind.ALREADY };
+  }
+  if (null === existing || '' === existing.trim()) {
+    return { kind: PatchKind.APPLY, code: ASTRO_ENV_DTS_DECLARES };
+  }
+  const base = existing.endsWith('\n') ? existing : `${existing}\n`;
+  return { kind: PatchKind.APPLY, code: `${base}${ASTRO_ENV_DTS_DECLARES}` };
+}

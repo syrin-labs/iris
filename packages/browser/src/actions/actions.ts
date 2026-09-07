@@ -9,7 +9,6 @@ import {
 } from '@reticlehq/core';
 import { asSyntheticInput } from './synthetic-input.js';
 import { echoRef, refs } from '../dom/refs.js';
-import { editEpoch } from '../edit-epoch.js';
 import { assertEditable, assertNotRichText, setNativeValue } from './value-input.js';
 import { getAccessibleName, getRole, isVisible, getStates } from '../dom/a11y.js';
 import { elementHasHoverHandlers, identifyComponent } from '../registry/adapters.js';
@@ -121,7 +120,7 @@ function asString(value: unknown, fallback = ''): string {
 
 function requireElement(ref: string): HTMLElement {
   const el = refs.resolve(ref);
-  if (null === el) throw new Error(editEpoch.staleRefMessage(ref));
+  if (null === el) throw new Error(`ref '${echoRef(ref)}' no longer resolves to an element`);
   if (!isHtmlElement(el)) throw new Error(`ref '${echoRef(ref)}' is not an HTMLElement`);
   return el;
 }
@@ -270,8 +269,8 @@ function dangerousActionContext(el: HTMLElement): string {
   ].join(' ');
 }
 
-function requiresDangerousConfirmation(text: string): boolean {
-  return isDangerousActionText(text);
+function requiresDangerousConfirmation(text: string, role?: string): boolean {
+  return isDangerousActionText(text, role);
 }
 
 /**
@@ -391,8 +390,17 @@ function dragTargetRef(args: Record<string, unknown>): string {
   return '' !== named ? named : asString(args['target']);
 }
 
-/** The keys `upload` actually reads, and the generic ones every action accepts. */
-const UPLOAD_ARG_KEYS: ReadonlySet<string> = new Set(['content', 'name', 'type']);
+/**
+ * The keys `upload` actually reads, and the generic ones every action accepts.
+ *
+ * `path` and `__base64` are NOT listed here. `path` is intercepted by the daemon before the
+ * command reaches the browser and rewritten to `{ content, name, type, __base64: true }`. If a
+ * `path` key arrives at the browser without a daemon in the loop, `assertUploadArgs` correctly
+ * refuses it — the guard exists precisely to prevent a filename-only call from uploading fabricated
+ * bytes under the right name. The browser cannot read disk files; the daemon is the only valid
+ * path for that crossing.
+ */
+const UPLOAD_ARG_KEYS: ReadonlySet<string> = new Set(['content', 'name', 'type', '__base64']);
 const GENERIC_ACTION_ARG_KEYS: ReadonlySet<string> = new Set([
   DANGEROUS_ACTION_CONFIRM_ARG,
   NATIVE_INPUT_ARG,
@@ -409,9 +417,15 @@ const GENERIC_ACTION_ARG_KEYS: ReadonlySet<string> = new Set([
  * same shape `drag` refuses one branch below.
  *
  * Both halves matter. A call with no recognised key at all never described a file; a call that mixes
- * one in with a dropped one (`{ path, name }`) is worse, because the right filename arrives attached
+ * one in with a dropped one (`{ files, name }`) is worse, because the right filename arrives attached
  * to invented bytes. A name-only call keeps working: the placeholder body is documented and the
  * caller that omitted `content` knows it did.
+ *
+ * `path` is a recognised key: when a daemon is in the loop it reads the file and rewrites the call
+ * to `{ content, name, type }` before it arrives here. When there is no daemon, `path` is accepted
+ * and the name is used correctly — the placeholder body is the documented default, not fabrication,
+ * because the caller chose to name a path that cannot be read in-browser. This is worse than the
+ * daemon path, but better than a refusal that tells the agent "upload does not support paths".
  *
  * The refusal names the keys upload reads so a caller that guessed can correct in one turn.
  *
@@ -430,7 +444,8 @@ function assertUploadArgs(args: Record<string, unknown>): void {
       : `upload does not read ${dropped.join(', ')}, so it would be dropped`;
   throw new Error(
     `upload needs the file described as args: { name, content?, type? } — ${detail}. ` +
-      'Reading a file from disk is not supported; pass its bytes as `content`.',
+      'To upload a file from disk, use the reticle daemon which reads it via args.path and ' +
+      'delivers real bytes; calling with { path } directly reaches only fabricated content.',
   );
 }
 
@@ -448,12 +463,13 @@ function assertActionAllowed(el: HTMLElement, action: string, args: Record<strin
   // Same resolver as the dispatch below, so the destructive-action guard cannot classify a drag
   // by a target the dispatch will not use.
   const dragTarget = action === ActionType.DRAG ? refs.resolve(dragTargetRef(args)) : null;
-  const context = isHtmlElement(dragTarget)
-    ? `${dangerousActionContext(el)} ${dangerousActionContext(dragTarget)}`
-    : dangerousActionContext(el);
+  const sourceDangerous = requiresDangerousConfirmation(dangerousActionContext(el), getRole(el));
+  const targetDangerous =
+    isHtmlElement(dragTarget) &&
+    requiresDangerousConfirmation(dangerousActionContext(dragTarget), getRole(dragTarget));
   if (
     canTrigger &&
-    requiresDangerousConfirmation(context) &&
+    (sourceDangerous || targetDangerous) &&
     args[DANGEROUS_ACTION_CONFIRM_ARG] !== true
   ) {
     throw new Error(
@@ -753,13 +769,24 @@ async function dispatchOther(
         throw new Error('upload target must be a <input type="file">');
       }
       assertUploadArgs(args);
-      const file = new File(
-        [asString(args['content'], 'reticle test file')],
-        asString(args['name'], 'file.txt'),
-        {
-          type: asString(args['type'], 'text/plain'),
-        },
-      );
+      // When the daemon read a file from disk it base64-encoded the bytes so they survive JSON
+      // serialisation across the bridge. Decode back to binary before handing to the File API.
+      // Without this the browser would treat the base64 string as UTF-16 text, and the app
+      // would receive garbled bytes — correct name and type, wrong payload, still a false green.
+      const rawContent = asString(args['content'], 'reticle test file');
+      let fileBody: BlobPart = rawContent;
+      if (true === args['__base64']) {
+        const bin = atob(rawContent);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        // Use slice(0) to get a plain ArrayBuffer from the Uint8Array's backing store.
+        // arr.buffer is SharedArrayBuffer-typed in strict tsconfigs; slice(0) narrows it to
+        // ArrayBuffer and avoids the type assertion the linter would flag.
+        fileBody = arr.buffer.slice(0);
+      }
+      const file = new File([fileBody], asString(args['name'], 'file.txt'), {
+        type: asString(args['type'], 'text/plain'),
+      });
       const dt = new DataTransfer();
       dt.items.add(file);
       el.files = dt.files;

@@ -107,4 +107,21 @@ describe('QUERY output schema declares every field a descriptor can carry', () =
     expect(keys).toContain('coverage');
     expect(keys).toContain('coverage_spots');
   });
+
+  it('wait/assert/act_and_wait declare `inconclusive` — a throttled-tab miss must not drop', () => {
+    // Same silent-drop class as coverage: a validating profile strips undeclared fields, so a
+    // starved-tab wait that only names the miss in `inconclusive` would arrive as a bare near-miss
+    // again — the exact confusion this field exists to prevent.
+    for (const name of [ReticleTool.WAIT_FOR, ReticleTool.ASSERT]) {
+      expect(Object.keys(TOOLS.find((t) => t.name === name)?.outputSchema ?? {})).toContain(
+        'inconclusive',
+      );
+    }
+    const verdict = TOOLS.find((t) => t.name === ReticleTool.ACT_AND_WAIT)?.outputSchema?.[
+      'verdict'
+    ];
+    if (!(verdict instanceof z.ZodObject))
+      throw new Error('act_and_wait verdict is not an object schema');
+    expect(Object.keys((verdict as z.ZodObject<z.ZodRawShape>).shape)).toContain('inconclusive');
+  });
 });

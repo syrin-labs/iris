@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Verified, VerifiedReason } from '@reticlehq/core';
+import { Verified, VerifiedReason, ContradictionKind } from '@reticlehq/core';
 import { decideVerified } from './verified.js';
 
 type VerifiedVerdictInput = Parameters<typeof decideVerified>[0];
@@ -342,6 +342,17 @@ describe('every verdict names the clause that decided it', () => {
       settled: true,
       observationLost: true,
     },
+    [VerifiedReason.WINDOW_CLOSED_EARLY]: {
+      pass: false,
+      declaredConsequence: true,
+      honesty: clean(),
+      settled: false,
+      namedRequestInFlight: true,
+      unsettled: {
+        waitedFor: "a request POST matching '/api/v1/auth/register'",
+        stillInFlight: ['POST /api/v1/auth/register'],
+      },
+    },
     [VerifiedReason.CONTRADICTED]: {
       pass: true,
       honesty: clean(),
@@ -433,5 +444,113 @@ describe('an unread outcome names the write that decided the verdict', () => {
     expect(
       decideVerified({ pass: true, honesty: clean(), settled: true, outcomeUnread: [] }).verified,
     ).toBe(Verified.YES);
+  });
+});
+
+describe('a settle that never happened is not a failed assertion', () => {
+  /**
+   * Measured on the hard fixture: `reticle_act_and_wait` with NO `until` on a healthy pagination
+   * button returned `verified:"no"` because the page — which carries push updates and therefore
+   * never goes idle — did not settle inside the window. The sentence read "the declared consequence
+   * did not hold", naming a consequence the caller never declared.
+   *
+   * Every live app has this shape. Grading it NO accuses each of them of a defect for being alive,
+   * which is exactly the false NEGATIVE that ABSENCE_DERIVED_CONTRADICTIONS was written to prevent.
+   */
+  const settleTimedOut = {
+    pass: false,
+    declaredConsequence: false,
+    honesty: clean(HonestyGrade.PRESENCE),
+    settled: false,
+  } as VerifiedVerdictInput;
+
+  it('grades unknown, not no', () => {
+    expect(decideVerified(settleTimedOut).verified).toBe(Verified.UNKNOWN);
+  });
+
+  it('names the absence rather than a consequence nobody declared', () => {
+    const { verifiedReason, because } = decideVerified(settleTimedOut);
+    expect(verifiedReason).toBe(VerifiedReason.UNSETTLED);
+    expect(because).not.toMatch(/declared consequence did not hold/);
+    expect(because).toMatch(/until/);
+  });
+
+  it('still fails a consequence that WAS declared and did not hold', () => {
+    const declared = decideVerified({ ...settleTimedOut, declaredConsequence: true });
+    expect(declared.verified).toBe(Verified.NO);
+    expect(declared.verifiedReason).toBe(VerifiedReason.ASSERTION_FAILED);
+  });
+});
+
+/**
+ * A net predicate that misses while its own request is still open is not a failed assertion.
+ *
+ * Field: `verified: "no"` / `assertion_failed` beside `contradictions[0].kind: request-never-settled`
+ * naming `POST /api/v1/auth/register`, with `firstDivergence.observed: "no request to …"`. The
+ * request completed 200 ~500ms after the window. Cold backend → no; warm backend → yes. That red
+ * is a race, not a defect, and grading it `no` teaches the agent to weaken the check.
+ */
+describe('an in-flight named request is not a failed assertion', () => {
+  const inFlightMiss = {
+    pass: false,
+    declaredConsequence: true,
+    honesty: clean(),
+    settled: false,
+    namedRequestInFlight: true,
+    unsettled: {
+      waitedFor: "a request POST matching '/api/v1/auth/register'",
+      stillInFlight: ['POST /api/v1/auth/register'],
+    },
+  } as VerifiedVerdictInput;
+
+  it('grades unknown, not no', () => {
+    expect(decideVerified(inFlightMiss).verified).toBe(Verified.UNKNOWN);
+    expect(decideVerified(inFlightMiss).verifiedReason).toBe(VerifiedReason.WINDOW_CLOSED_EARLY);
+  });
+
+  it('does not say the declared consequence did not hold', () => {
+    expect(decideVerified(inFlightMiss).because).not.toMatch(/declared consequence did not hold/);
+    expect(decideVerified(inFlightMiss).because).toMatch(/in flight/i);
+  });
+
+  it('still fails when the named request is not the one left open', () => {
+    const unrelatedOpen = decideVerified({
+      ...inFlightMiss,
+      namedRequestInFlight: false,
+    });
+    expect(unrelatedOpen.verified).toBe(Verified.NO);
+    expect(unrelatedOpen.verifiedReason).toBe(VerifiedReason.ASSERTION_FAILED);
+  });
+});
+
+describe('a signal nothing corroborated explains itself', () => {
+  /**
+   * The verdict was already right — UNKNOWN, not the `yes` it used to be. The SENTENCE was wrong:
+   * the generic contradiction prose says the window "closed before the app finished" and blames a
+   * poll or a timer for keeping the page busy. Nothing kept this page busy. Nothing happened at
+   * all, which is the whole finding, and an agent told to wait longer goes to the wrong place.
+   */
+  const signalOnly = {
+    pass: true,
+    declaredConsequence: true,
+    honesty: clean(HonestyGrade.SIGNAL),
+    settled: true,
+    contradictions: [{ kind: ContradictionKind.SIGNAL_WITHOUT_CONSEQUENCE }],
+  } as VerifiedVerdictInput;
+
+  it('still refuses to call it proved', () => {
+    expect(decideVerified(signalOnly).verified).toBe(Verified.UNKNOWN);
+  });
+
+  it('does not blame a busy page for a page that did nothing', () => {
+    const { because } = decideVerified(signalOnly);
+    expect(because).not.toMatch(/closed before the app finished/);
+    expect(because).not.toMatch(/poll|timer|animation/);
+  });
+
+  it('names the fact and where to look instead', () => {
+    const { because } = decideVerified(signalOnly);
+    expect(because).toMatch(/NOTHING else moved/);
+    expect(because).toMatch(/reticle_snapshot|reticle_state/);
   });
 });

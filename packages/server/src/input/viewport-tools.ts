@@ -2,13 +2,14 @@ import { z } from 'zod';
 import { CDP_NO_PROVIDER_REASON, CDP_NO_PROVIDER_RECOMMENDATION } from '@reticlehq/core';
 import { ReticleTool } from '../tools/tool-names.js';
 import { sessionIdShape } from '../tools/tool-kit.js';
+import { MAX_VIEWPORT_PX, MIN_VIEWPORT_PX, viewportPxSchema } from '../tools/numeric-bounds.js';
 import { asString } from '../tools/tools-helpers.js';
 import type { RealInputProvider } from './real-input.js';
 import type { ToolDef, ToolDeps } from '../tools/tools.js';
 
 /** Bounds so a viewport request stays sane (and a typo can't ask for a 1px or 100k-px window). */
-const MIN_DIM = 64;
-const MAX_DIM = 10000;
+const MIN_DIM = MIN_VIEWPORT_PX;
+const MAX_DIM = MAX_VIEWPORT_PX;
 
 /** A provider that can set the viewport — narrows the optional capability so callers branch once. */
 type ViewportCapable = RealInputProvider & {
@@ -31,8 +32,8 @@ export const VIEWPORT_TOOLS: ToolDef[] = [
       'reticle_visual_diff `masks` and a frozen clock (reticle_clock). Set it once before reticle_screenshot / ' +
       'reticle_visual_diff. Returns { applied, width, height } or the no-provider recommendation.',
     inputSchema: {
-      width: z.number().int().describe('Viewport width in CSS px (e.g. 1280).'),
-      height: z.number().int().describe('Viewport height in CSS px (e.g. 800).'),
+      width: viewportPxSchema.describe('Viewport width in CSS px (e.g. 1280).'),
+      height: viewportPxSchema.describe('Viewport height in CSS px (e.g. 800).'),
       ...sessionIdShape,
     },
     outputSchema: {

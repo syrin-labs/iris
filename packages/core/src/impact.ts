@@ -90,6 +90,34 @@ export const ImpactSavingsSchema = z.object({
 });
 export type ImpactSavings = z.infer<typeof ImpactSavingsSchema>;
 
+/**
+ * How many recent defects a scope remembers.
+ *
+ * Small on purpose. `counts.failed` already says HOW MANY defects there have been; this list exists
+ * so the HUD can say WHICH ONES, and a panel in the corner of somebody's app is not a triage queue.
+ * Ten is enough to recognise what is currently broken and short enough that the record stays a
+ * counters file rather than becoming a log.
+ */
+export const IMPACT_DEFECT_LIMIT = 10;
+
+/**
+ * One defect, as the HUD shows it.
+ *
+ * Recorded at the moment a verdict comes back verified:"no" - so it is a thing that actually failed
+ * a declared consequence, never a heuristic read of the page afterwards.
+ */
+export const ImpactDefectSchema = z.object({
+  /** When it was caught (epoch ms). */
+  at: z.number().int().nonnegative(),
+  /** One line naming what failed, in the words the verdict used. */
+  title: z.string(),
+  /** Why it failed, when the verdict said. */
+  detail: z.string().optional(),
+  /** `file:line` of the element that was acted on, so the reader can go straight there. */
+  source: z.string().optional(),
+});
+export type ImpactDefect = z.infer<typeof ImpactDefectSchema>;
+
 /** One scope of the record: this project, or everything on this machine. */
 export const ImpactScopeSchema = z.object({
   counts: ImpactCountsSchema,
@@ -98,6 +126,11 @@ export const ImpactScopeSchema = z.object({
   savings: ImpactSavingsSchema,
   /** When this scope first recorded anything (epoch ms). */
   since: z.number().int().nonnegative(),
+  /**
+   * The most recent defects, newest first. Defaulted rather than required: a record written by an
+   * older build has no such field, and a counters file that fails to parse loses the whole history.
+   */
+  defects: z.array(ImpactDefectSchema).default([]),
 });
 export type ImpactScope = z.infer<typeof ImpactScopeSchema>;
 
@@ -108,6 +141,12 @@ export const ImpactSnapshotSchema = z.object({
   global: ImpactScopeSchema,
   /** Project name, for the report's title row. */
   projectName: z.string().optional(),
+  /**
+   * Where the full, triageable list of these defects lives - present only when this project is
+   * linked to a Reticle Cloud workspace. Absent is the normal case and the HUD simply shows its
+   * short list without a link: the free tool is complete on its own.
+   */
+  dashboardUrl: z.string().optional(),
 });
 export type ImpactSnapshot = z.infer<typeof ImpactSnapshotSchema>;
 

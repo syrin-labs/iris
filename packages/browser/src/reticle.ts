@@ -1,3 +1,4 @@
+import { setPresenterVisible } from './dom/dom-ignore.js';
 import {
   EventType,
   RETICLE_DEFAULT_PORT,
@@ -343,12 +344,20 @@ export class Reticle {
       // page observed rather than guessing at the daemon, which it cannot see from in here.
       onUnreachable: ({ url: tried, attempts }) => {
         nativeWarn(unreachableMessage(tried, attempts));
+        // And on screen, not only in a console nobody has open. An instrumented page with a dead
+        // bridge looked exactly like a page with no Reticle in it, so the user could not tell a
+        // daemon they forgot to start from an install that did not work.
+        this.#presenter?.showUnreachable(tried, attempts);
       },
     });
 
     // Capabilities registered AFTER connect (which is when they are registered, by design) must
     // reach the bridge, or an app that declared its whole testable surface reads as having none.
     setCapabilitiesListener(() => this.#transport?.reannounce());
+
+    // Contributors only, and reported in capabilities so a verdict drawn with it open is never
+    // mistaken for an ordinary one. See connect-options.ts.
+    setPresenterVisible(true === options.exposePresenter);
 
     const emit = this.#emit;
     this.#teardowns = installAllObservers(emit, {

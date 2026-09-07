@@ -56,6 +56,18 @@ describe('installHealth (jsdom)', () => {
     expect(blur?.[0]).toBe(EventType.PAGE_HEALTH);
     teardown();
   });
+
+  it('teardown removes focus and blur listeners from window', async () => {
+    const { installHealth } = await import('./health.js');
+    const emit = vi.fn();
+    const teardown = installHealth(emit);
+    teardown();
+    emit.mockClear();
+
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('blur'));
+    expect(emit).not.toHaveBeenCalled();
+  });
 });
 
 /**

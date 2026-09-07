@@ -8,13 +8,13 @@ import {
 import { captureMethod } from '../patching/capture-method.js';
 import type { Emit, Teardown } from './types.js';
 import { isCapturableType, projectBody, withBodyDeadline } from './network-body.js';
-import { redactUrl } from './network-redact.js';
+import { redactUrl, netUrlFields } from './network-redact.js';
 import { watchStreamedBody } from './network-stream.js';
 import { requireCapturedMethod } from '../util/captured-method.js';
 
 // Redaction moved to its own cohesive module (network.ts is at its line cap); re-exported so callers
 // and the existing test suite keep importing it from here.
-export { redactUrl };
+export { redactUrl, netUrlFields };
 
 /** Config for the network observer. Body capture is OFF by default and dev-only opt-in. */
 /**
@@ -297,10 +297,17 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
     const id = nextId();
     const start = performance.now();
     const method = methodOf(input, init);
-    const url = redactUrl(rawUrl);
+    const urlFields = netUrlFields(rawUrl);
+    const url = urlFields.url;
     const initiatorStack = initiatorFrame();
     const initiatorFields = initiatorStack === undefined ? {} : { initiatorStack };
-    emit(EventType.NET_PENDING, { id, method, url, initiator: 'fetch', ...initiatorFields });
+    emit(EventType.NET_PENDING, {
+      id,
+      method,
+      ...urlFields,
+      initiator: 'fetch',
+      ...initiatorFields,
+    });
     try {
       const res = await callFetch(input, init);
       // The app's fetch resolves HERE — at headers — like a native fetch. durationMs is measured to
@@ -314,7 +321,7 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
         emit(EventType.NET_REQUEST, {
           id,
           method,
-          url,
+          ...urlFields,
           status: res.status,
           ok: statusIsOk(res.status),
           durationMs: Math.round(headersAt - start),
@@ -436,7 +443,7 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
       emit(EventType.NET_PENDING, {
         id: m.id,
         method: m.method,
-        url: m.url,
+        ...netUrlFields(m.rawUrl),
         initiator: 'xhr',
         ...initiatorFields,
       });
@@ -463,7 +470,7 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
           emit(EventType.NET_REQUEST, {
             id: cur.id,
             method: cur.method,
-            url: cur.url,
+            ...netUrlFields(cur.rawUrl),
             status: this.status,
             ok: statusIsOk(this.status),
             durationMs: Math.round(performance.now() - cur.start),
@@ -495,17 +502,17 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
     window.EventSource = class extends origEventSource {
       constructor(u: string | URL, init?: EventSourceInit) {
         super(u, init);
-        const url = redactUrl(String(u));
+        const urlFields = netUrlFields(String(u));
         emit(EventType.NET_STREAM, {
           transport: StreamTransport.SSE,
           direction: StreamDirection.OPEN,
-          url,
+          ...urlFields,
         });
         this.addEventListener('message', (ev: MessageEvent) => {
           emit(EventType.NET_STREAM, {
             transport: StreamTransport.SSE,
             direction: StreamDirection.IN,
-            url,
+            ...urlFields,
             ...frameFields(ev.data, captureBodies),
           });
         });
@@ -521,17 +528,17 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
         super(u, protocols);
         this.#isBridge = isBridgeSocket(String(u));
         if (this.#isBridge) return;
-        const url = redactUrl(String(u));
+        const urlFields = netUrlFields(String(u));
         emit(EventType.NET_STREAM, {
           transport: StreamTransport.WS,
           direction: StreamDirection.OPEN,
-          url,
+          ...urlFields,
         });
         this.addEventListener('message', (ev: MessageEvent) => {
           emit(EventType.NET_STREAM, {
             transport: StreamTransport.WS,
             direction: StreamDirection.IN,
-            url,
+            ...urlFields,
             ...frameFields(ev.data, captureBodies),
           });
         });
@@ -548,7 +555,7 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
         emit(EventType.NET_STREAM, {
           transport: StreamTransport.WS,
           direction: StreamDirection.OUT,
-          url: redactUrl(this.url),
+          ...netUrlFields(this.url),
           ...frameFields(data, captureBodies),
         });
         super.send(data);
@@ -571,7 +578,7 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
   if (navProto !== null && origBeacon !== undefined) {
     patchedBeacon = function (this: Navigator, url: string | URL, data?: BodyInit | null): boolean {
       const id = nextId();
-      const redacted = redactUrl(String(url));
+      const urlFields = netUrlFields(String(url));
       const initiatorStack = initiatorFrame();
       const sent = origBeacon.call(this, url, data);
       // sendBeacon returns whether the payload was QUEUED, not an HTTP result — the response never
@@ -580,7 +587,7 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
       emit(EventType.NET_REQUEST, {
         id,
         method: 'POST',
-        url: redacted,
+        ...urlFields,
         status: 0,
         ok: sent,
         queued: sent,
@@ -623,7 +630,7 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
           emit(EventType.NET_REQUEST, {
             id: nextId(),
             method: 'GET',
-            url: redactUrl(rawUrl),
+            ...netUrlFields(rawUrl),
             durationMs: Math.round(entry.duration),
             initiator: type,
             ...(entry.transferSize > 0 ? { transferSize: entry.transferSize } : {}),

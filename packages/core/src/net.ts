@@ -90,3 +90,89 @@ export function isDevToolingUrl(url: string | undefined): boolean {
   if (url === undefined) return false;
   return DEV_TOOLING_PATTERNS.some((pattern) => url.includes(pattern));
 }
+
+/**
+ * Schemes whose "host" is not a host at all — the app's own machinery, never somebody else's server.
+ *
+ * `ipc://` is a desktop command (see IPC_URL_SCHEME), `data:`/`blob:` are bytes the page itself made.
+ * None of them can be third-party, so the axis below declines to judge them.
+ */
+const FIRST_PARTY_PROTOCOLS: readonly string[] = ['http:', 'https:'];
+
+/** How many trailing labels of a hostname stand in for the registrable domain. */
+const REGISTRABLE_LABELS = 2;
+
+function hostOf(url: string, base: string): string | undefined {
+  try {
+    const parsed = new URL(url, base);
+    if (!FIRST_PARTY_PROTOCOLS.includes(parsed.protocol)) return undefined;
+    return parsed.hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The registrable domain, approximated by the last two labels.
+ *
+ * ponytail: no public-suffix list. `foo.co.uk` and `bar.co.uk` read as the same site, which keeps a
+ * third-party call classified as first-party — i.e. it preserves today's behaviour rather than
+ * inventing a new one. The opposite approximation (hostname equality alone) would have broken the
+ * far more common `app.example.com` calling `api.example.com`, which is the app's OWN backend, and
+ * silenced the detector where it earns its keep. Swap in a PSL if a real app is ever mis-graded.
+ */
+function registrableDomain(host: string): string {
+  const labels = host.split('.');
+  if (labels.length <= REGISTRABLE_LABELS) return host;
+  // An IPv4 literal has four labels and no registrable domain — compare it whole.
+  if (/^[0-9.]+$/.test(host)) return host;
+  return labels.slice(-REGISTRABLE_LABELS).join('.');
+}
+
+/**
+ * Is this call to somebody ELSE's site — an analytics beacon, a vendor SDK bootstrap, a CDN ping?
+ *
+ * The axis a verdict needs and never had. A contradiction is a statement about the app under test,
+ * and a failed third-party request says nothing about whether the caller's action worked: reported
+ * from several apps, any analytics package installed was enough to grade a correct drive
+ * `contradicted`, and on one app every assertion came back that way forever.
+ *
+ * Deliberately NOT a vendor list. `DevToolingChannel` above states why a list is the wrong shape
+ * here: widening it until it can swallow an app endpoint turns a false negative into a false GREEN.
+ * An origin comparison has no list to widen — it asks one structural question about the page itself.
+ *
+ * Ports are deliberately ignored: a dev app on :3000 talking to its API on :8787 is the ordinary
+ * local setup, and grading that as a stranger's traffic would silence the detector on our own bench.
+ *
+ * Absence of `appUrl` disables the axis entirely — the same rule the document scoping follows, so a
+ * caller who cannot say which page is under test gets exactly the behaviour it had before this.
+ */
+export function isThirdPartyUrl(url: string | undefined, appUrl: string | undefined): boolean {
+  if (url === undefined || appUrl === undefined) return false;
+  const target = hostOf(url, appUrl);
+  const app = hostOf(appUrl, appUrl);
+  if (target === undefined || app === undefined) return false;
+  return registrableDomain(target) !== registrableDomain(app);
+}
+
+/**
+ * The unredacted URL, kept so a grader can match `urlContains` against the path the app actually
+ * requested. `url` is what is rendered to the agent and stored as the displayed value; this field
+ * is the match haystack and must not be projected back into a transcript.
+ *
+ * Redaction runs at emit time and there is otherwise no raw copy. Public REST segments that happen
+ * to follow a sensitive name (`/auth/token/refresh-context`, `/verify/CERT_INFY_10`) are rewritten
+ * to `[REDACTED]`, so matching only `url` reports "the request did not happen".
+ */
+export const URL_RAW = 'urlRaw';
+
+/**
+ * The URL a filter or predicate should match against: the raw request when the observer kept one,
+ * otherwise the displayed (possibly redacted) `url`.
+ */
+export function urlForMatch(data: Record<string, unknown>): string {
+  const raw = data[URL_RAW];
+  if ('string' === typeof raw && 0 < raw.length) return raw;
+  const url = data['url'];
+  return 'string' === typeof url ? url : '';
+}

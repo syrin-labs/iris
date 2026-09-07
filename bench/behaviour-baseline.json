@@ -1,0 +1,33 @@
+{
+  "probes": 28,
+  "shape": {
+    "reticle_snapshot | an argument the tool does not declare | {\"thisArgDoesNotExist\":1}": "refused (names the fix)",
+    "reticle_query | an argument the tool does not declare | {\"thisArgDoesNotExist\":1}": "refused (names the fix)",
+    "reticle_network | an argument the tool does not declare | {\"thisArgDoesNotExist\":1}": "refused (names the fix)",
+    "reticle_console | an argument the tool does not declare | {\"thisArgDoesNotExist\":1}": "refused (names the fix)",
+    "reticle_state | an argument the tool does not declare | {\"thisArgDoesNotExist\":1}": "refused (names the fix)",
+    "reticle_observe | an argument the tool does not declare | {\"thisArgDoesNotExist\":1}": "refused (names the fix)",
+    "reticle_snapshot | the documented call | {\"mode\":\"interactive\"}": "ran",
+    "reticle_snapshot | a value outside the allowed set | {\"mode\":\"not-a-mode\"}": "refused (names the fix)",
+    "reticle_query | the documented call | {\"by\":\"role\",\"value\":\"button\"}": "ran",
+    "reticle_query | a value outside the allowed set | {\"by\":\"telepathy\",\"value\":\"x\"}": "refused (names the fix)",
+    "reticle_network | the documented call | {\"limit\":5}": "ran",
+    "reticle_network | a number outside its range | {\"limit\":-1}": "refused (names the fix)",
+    "reticle_state | a number outside its range | {\"depth\":-5}": "refused (names the fix)",
+    "reticle_state | the documented call | {\"depth\":2}": "ran",
+    "reticle_act_and_wait | no expectation declared | {\"ref\":\"<ref>\",\"action\":\"click\"}": "verified:no-fault",
+    "reticle_act_and_wait | the documented call | {\"ref\":\"<ref>\",\"action\":\"click\",\"until\":{\"kind\":\"text\",\"value\":\"Invalid email or password\"},\"timeout_ms\":6000}": "verified:yes",
+    "reticle_act_and_wait | no expectation declared | {\"ref\":\"<ref>\",\"action\":\"click\",\"until\":{\"kind\":\"settled\"}}": "verified:no-fault",
+    "reticle_act_and_wait | a value outside the allowed set | {\"ref\":\"<ref>\",\"action\":\"click\",\"until\":[{\"kind\":\"text\",\"value\":\"x\"}]}": "refused (names the fix)",
+    "reticle_act_and_wait | a ref that no longer resolves | {\"ref\":\"e999999\",\"action\":\"click\"}": "refused (names the fix)",
+    "reticle_act | a required argument omitted | {\"ref\":\"<ref>\"}": "refused (names the fix)",
+    "reticle_act | a value outside the allowed set | {\"ref\":\"<ref>\",\"action\":\"teleport\"}": "refused (names the fix)",
+    "reticle_act | an argument the tool does not declare | {\"ref\":\"<ref>\",\"action\":\"fill\",\"value\":\"x\"}": "refused (names the fix)",
+    "reticle_act | the documented call | {\"ref\":\"<ref>\",\"action\":\"fill\",\"args\":{\"value\":\"probe\"}}": "refused (names the fix)",
+    "reticle_assert | a required argument omitted | {}": "refused (names the fix)",
+    "reticle_assert | the documented call | {\"predicate\":{\"kind\":\"text\",\"value\":\"Sign in\"},\"timeout_ms\":3000}": "verified:yes",
+    "reticle_tools | the documented call | {}": "refused (names the fix)",
+    "reticle_run | a value outside the allowed set | {\"tool\":\"reticle_nope\",\"args\":{}}": "refused (names the fix)",
+    "reticle_run | the documented call | {\"tool\":\"reticle_context\",\"args\":{}}": "ran"
+  }
+}

@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ReticleEnv } from '@reticlehq/core';
 import {
+  defaultPairingTokenDir,
   pairingTokenPath,
   readOrCreatePairingToken,
+  readOrCreatePairingTokenSync,
   type PairingTokenDeps,
 } from './pairing-token.js';
 
@@ -62,5 +68,28 @@ describe('readOrCreatePairingToken', () => {
   it('returns undefined rather than an empty token when randomness yields nothing', async () => {
     const { deps } = memDeps({}, () => '');
     expect(await readOrCreatePairingToken(DIR, deps)).toBeUndefined();
+  });
+});
+
+describe('readOrCreatePairingTokenSync — the same mint, for init and Next', () => {
+  it('creates a token when the file is missing, and reuses it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reticle-pairing-sync-'));
+    const first = readOrCreatePairingTokenSync(dir);
+    expect(typeof first).toBe('string');
+    expect((first ?? '').length).toBeGreaterThan(0);
+    expect(readOrCreatePairingTokenSync(dir)).toBe(first);
+  });
+
+  it('honours RETICLE_PAIRING_TOKEN_DIR rather than always reading $HOME', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reticle-pairing-override-'));
+    writeFileSync(join(dir, 'pairing-token'), 'from-override\n');
+    const prev = process.env[ReticleEnv.PAIRING_TOKEN_DIR];
+    process.env[ReticleEnv.PAIRING_TOKEN_DIR] = dir;
+    try {
+      expect(readOrCreatePairingTokenSync(defaultPairingTokenDir())).toBe('from-override');
+    } finally {
+      if (prev === undefined) delete process.env[ReticleEnv.PAIRING_TOKEN_DIR];
+      else process.env[ReticleEnv.PAIRING_TOKEN_DIR] = prev;
+    }
   });
 });

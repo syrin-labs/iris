@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import {
   EventType,
@@ -176,6 +176,36 @@ describe('Bridge security boundary', () => {
     );
   });
 
+  // A scheme-less entry (`RETICLE_ALLOWED_ORIGINS=myapp.test`) fails URL construction and used to
+  // be filtered out with NO trace: the allow-list looked configured, every dial was refused, and
+  // nothing anywhere said the entry had been dropped. The drop stands (fail closed), but it must
+  // be loud and name the accepted form, so the fix is copy-pasteable from the log.
+  it('warns with the copy-pasteable form when an allow-list entry has no scheme', async () => {
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    });
+    let port: number;
+    try {
+      ({ port } = await makeBridge({ allowedOrigins: ['myapp.test', 'https://app.example'] }));
+    } finally {
+      spy.mockRestore();
+    }
+    const line = written.find((entry) => entry.includes('allowed_origin_ignored'));
+    expect(line, 'dropping a configured origin must leave a trace').toBeDefined();
+    const parsed = JSON.parse(line ?? '{}') as Record<string, unknown>;
+    expect(parsed['entry']).toBe('myapp.test');
+    expect(String(parsed['warning'])).toContain('http://myapp.test');
+    // The drop itself is unchanged — the scheme-less entry does not allow-list anything…
+    await expect(openSocket(port, 'http://myapp.test')).rejects.toThrow(
+      /Unexpected server response: 403/,
+    );
+    // …and the valid sibling entry still made it into the allow-list.
+    const socket = await openSocket(port, 'https://app.example');
+    socket.close();
+  });
+
   it('rejects protocol mismatches with a distinct "upgrade" reason (not a generic drop)', async () => {
     const { bridge, port } = await makeBridge();
     const socket = await openSocket(port);
@@ -191,8 +221,47 @@ describe('Bridge security boundary', () => {
     const { code, reason } = await closed;
     expect(code).toBe(1008);
     // The distinct reason is what stops the agent misdiagnosing a version skew as a port mismatch.
-    expect(reason).toContain('protocol version mismatch');
+    expect(reason).toContain('protocol mismatch');
+    /*
+     * And it names the RIGHT side. This fixture sends `RETICLE_PROTOCOL_VERSION + 1` — a page AHEAD
+     * of the daemon, which is the skew that actually happens (a current SDK in the app dialling a
+     * daemon npx served from cache). The reason used to be a fixed "upgrade @reticlehq/browser",
+     * sending that user to upgrade the one component that was already current.
+     */
+    expect(reason).toContain('daemon is older');
+    expect(reason).not.toContain('upgrade @reticlehq/browser');
     expect(bridge.sessions.count()).toBe(0);
+  });
+
+  it('closes the socket when the message handler throws, rather than hanging open', async () => {
+    /*
+     * A throw inside the handler used to leave the socket OPEN and unresponsive. The agent's next
+     * tool call then answers "no browser session connected" — indistinguishable from an app nobody
+     * started, which is the exact invisible failure the close reasons in this file exist to prevent.
+     *
+     * Found by accident: a missing import made `protocolSkewReason` undefined, and the symptom was
+     * not an error anywhere but a test that timed out waiting for a close that never came.
+     *
+     * The clock is the seam because the handler reads it on its first line, so a clock that throws
+     * reproduces "any exception at all" without needing a specific malformed payload.
+     */
+    let calls = 0;
+    const { port } = await makeBridge({
+      clock: () => {
+        calls += 1;
+        // Let the handshake through; blow up once the first message is being handled.
+        if (calls > 3) throw new Error('clock exploded');
+        return 1_700_000_000_000;
+      },
+    });
+    const socket = await openSocket(port);
+    const closed = new Promise<number>((resolve) => {
+      socket.once('close', (code) => resolve(code));
+    });
+
+    socket.send(JSON.stringify(hello('boom-client')));
+
+    await expect(closed).resolves.toBeGreaterThan(0);
   });
 
   it('keeps a replacement session when the older duplicate socket closes', async () => {
@@ -327,16 +396,24 @@ describe('Bridge security boundary', () => {
   });
 
   it('caps and expires unauthenticated pending handshakes', async () => {
+    // The hello timeout has to outlast the SECOND connect, not merely be short. At 50ms this raced
+    // on a loaded runner: `idle` expired before `excess` finished connecting, which freed the one
+    // pending slot, so `excess` was ACCEPTED and later closed 1008 (hello timeout) instead of 1013
+    // (too many pending). The assertion then read `expected 1008 to be 1013` — a real cap reported
+    // as broken because the machine was slow, which is the failure mode a duration-based test has.
+    // A second is far longer than a loopback connect and still expires well inside the test.
     const limited = await makeBridge({
       maxPendingConnections: 1,
-      helloTimeoutMs: 50,
+      helloTimeoutMs: 1_000,
     });
     const idle = await openSocket(limited.port);
     const idleClosed = waitForClose(idle);
 
     const excess = await openSocket(limited.port);
     const excessClosed = waitForClose(excess);
+    // Refused by the cap while `idle` still holds the slot — not by its own timeout.
     expect(await excessClosed).toBe(1013);
+    // And the slot is not held for ever: the idle handshake still expires on its own.
     expect(await idleClosed).toBe(1008);
     expect(limited.bridge.sessions.count()).toBe(0);
   });
@@ -410,7 +487,7 @@ describe('a session closed by the bridge explains itself to the agent', () => {
  * already knows:
  *
  *   PROTOCOL_MISMATCH: 'protocol version mismatch — upgrade @reticlehq/browser'
- *   AUTH_FAILED:       'authentication failed — reload the page to pick up the current pairing token'
+ *   AUTH_FAILED:       'authentication failed' (or 'no pairing token on the page' when none was sent)
  *
  * The SDK prints those and stops retrying. The agent, meanwhile, calls a tool and is told "no
  * browser session connected" — indistinguishable from an app nobody started. An outdated SDK and a

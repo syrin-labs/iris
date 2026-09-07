@@ -74,7 +74,9 @@ export const RECOVERY = {
     'That sessionId is not connected. Call reticle_sessions for the current ids and retry with a valid one.',
   THROTTLED:
     'The target tab is backgrounded/throttled, so actions may silently no-op. Ask the human to bring ' +
-    'the tab to the front, or run `reticle drive <url>` for a guaranteed scriptable context.',
+    'the tab to the front, or acquire a guaranteed scriptable context yourself with ' +
+    '`reticle_run { tool: "reticle_lease", action: "acquire", url }` (a human can equivalently run ' +
+    '`reticle drive <url>`).',
   MISSING_BASELINE:
     'That baseline does not exist yet. Call reticle_baseline { action: "list" } to see saved names, or ' +
     'reticle_baseline { action: "save", name } to capture one before diffing against it.',
@@ -101,6 +103,19 @@ export const RECOVERY = {
     '64 characters. No slashes, no "..", no leading dot: the name becomes a filename under ' +
     '.reticle/, so anything that could escape that directory is refused. Retry with a slug like ' +
     '"checkout-happy-path". This is an invalid call, not a Reticle defect: there is nothing to report.',
+  /**
+   * The call was well-formed and the SELECTOR missed. Nothing about the arguments was wrong, so the
+   * BAD_ARGUMENTS answer ("re-read that tool's parameters") sends the reader to the one place that
+   * holds no answer — measured live on a `target: { testid }` that simply was not on the page yet.
+   *
+   * The error text already names the two moves that work, so this adds the fact the text cannot
+   * carry: which of them to reach for, and that nothing was acted on.
+   */
+  TARGET_MISSED:
+    'The call was valid — the selector matched nothing on the page RIGHT NOW, and nothing was ' +
+    'acted on. Take a reticle_snapshot to see what is actually there (a view may still be ' +
+    'rendering, or the control may be named differently), then retry with what it shows. This is ' +
+    'a miss, not a Reticle defect: there is nothing to report.',
   NO_SUCH_OPTION:
     'That <select> has no option with the value you asked for, and the message above lists the ones ' +
     'it does have. Reticle refuses rather than assigning it: an unmatched value deselects everything, ' +
@@ -123,15 +138,37 @@ export const RECOVERY = {
     'telling you something: drive whatever ENABLES the field (open the editor, satisfy the ' +
     'precondition) and act again. If the field should have been editable, that is a bug in the app, ' +
     'not in Reticle.',
+  /**
+   * Written as the ARGUMENT OBJECT the caller has to send, not as a dotted path.
+   *
+   * Measured on a benchmark run that spent its entire budget here: the refusal said "retry with
+   * args.confirmDangerous=true", and the agent went looking for a parameter by that name, could not
+   * find one at the top level of the schema, and re-read the tool list rather than retrying. The
+   * flag IS documented — inside the `args` object's own description — so a dotted path pointing at
+   * something that is not a top-level parameter is the whole distance between a one-line retry and
+   * a lost budget.
+   *
+   * The classifier is also wider than "destructive": it matches `deploy` and `publish`, so an
+   * ordinary "New deploy" button trips it. Naming a real trigger word here keeps that from reading
+   * as a malfunction on an app where nothing is being deleted.
+   */
   CONFIRM_DANGEROUS:
-    'Reticle blocked a potentially destructive control (delete, remove, revoke…) on purpose. If you ' +
-    'mean it, retry the same action with args.confirmDangerous set to true. This is a deliberate ' +
-    'refusal, not a defect: there is nothing to report.',
+    'Reticle blocked a control whose label reads as consequential (delete, remove, revoke, deploy, ' +
+    'publish, pay…) on purpose. If you mean it, send the SAME call again with ' +
+    '`args: { confirmDangerous: true }` — it goes inside the `args` object, not beside it. This is ' +
+    'a deliberate refusal, not a defect: there is nothing to report.',
   UNSUPPORTED_SURFACE:
     'That surface is not supported yet, and Reticle refuses rather than pretending — a rich-text ' +
     'editor keeps its own document model, so writing to the DOM would look right and submit the old ' +
     'content. Drive the same outcome another way (a plain input, a command, a keyboard action) or ' +
     'assert on the result instead of typing it. Known gap, already reported: no need to file it.',
+  HOVER_NEEDS_POINTER:
+    'Hover needs a real pointer: a synthetic mouseover does not apply CSS :hover, and Reticle ' +
+    'refuses rather than reporting the styles as applied. Acquire a tab with ' +
+    'reticle_run { tool: "reticle_lease", action: "acquire", url } — reticle_lease is not ' +
+    'advertised under the default profile, so it is reached through reticle_run, not called ' +
+    'directly — or ask the human to drive with `reticle drive` / RETICLE_CDP_URL. This is a ' +
+    'deliberate refusal, not a defect: there is nothing to report.',
   TOKEN_REQUIRED:
     'The bridge binds beyond localhost and requires a pairing token. Set the same token in the SDK ' +
     'init (@reticlehq/core) and the Reticle server config, then reconnect.',
@@ -195,8 +232,10 @@ const REASON_OF: Record<keyof typeof RECOVERY, RefusalReason> = {
   STALE_REF: RefusalReason.NO_MATCH,
   STALE_REF_AFTER_EDIT: RefusalReason.NO_MATCH,
   NO_SUCH_OPTION: RefusalReason.NO_MATCH,
+  TARGET_MISSED: RefusalReason.NO_MATCH,
   FLOW_STEP_MISSING: RefusalReason.NO_MATCH,
   UNSUPPORTED_SURFACE: RefusalReason.UNSUPPORTED,
+  HOVER_NEEDS_POINTER: RefusalReason.UNSUPPORTED,
   NOT_EDITABLE: RefusalReason.UNSUPPORTED,
   CONFIRM_DANGEROUS: RefusalReason.UNSUPPORTED,
   WRONG_TARGET: RefusalReason.UNSUPPORTED,
@@ -246,6 +285,7 @@ const RULES: readonly { readonly match: RegExp; readonly hint: string }[] = [
   // broken. Order matters: contenteditable and disabled/readonly are `cannot <verb> …` messages too,
   // so they must be tested before the general wrong-target rule.
   { match: /contenteditable/i, hint: RECOVERY.UNSUPPORTED_SURFACE },
+  { match: /cannot hover without a real pointer/i, hint: RECOVERY.HOVER_NEEDS_POINTER },
   { match: /cannot \w+ a (disabled|readonly) </i, hint: RECOVERY.NOT_EDITABLE },
   // Three spellings ship — "action", "native action", "WebMCP tool" — and the rule matched one, so
   // two thirds of the same deliberate refusal still read as a possible defect.
@@ -262,15 +302,37 @@ const RULES: readonly { readonly match: RegExp; readonly hint: string }[] = [
     match: /no form to submit|upload target must be|is not an HTMLElement/i,
     hint: RECOVERY.WRONG_TARGET,
   },
+  // BEFORE the catch-all, which would otherwise claim this one.
+  //
+  // "target matched no element ... take a reticle_snapshot" names a `reticle_*` tool in its own
+  // advice, so the catch-all below matched it and answered "That call did not match the tool's
+  // schema". The call matched the schema perfectly; the element was not on the page. Sending an
+  // agent to re-read arguments that were already correct costs it a turn, and this is the commonest
+  // refusal there is.
+  { match: /target matched no element/i, hint: RECOVERY.TARGET_MISSED },
   // Authored by Reticle, about the caller's arguments: the message already names the valid answers.
   { match: /^unknown action '/i, hint: RECOVERY.BAD_ARGUMENTS },
   { match: /^unsupported query strategy '/i, hint: RECOVERY.BAD_ARGUMENTS },
   { match: /^\w+ requires a string `\w+`/i, hint: RECOVERY.BAD_ARGUMENTS },
-  // A message naming a `reticle_*` tool is one WE authored about our own API — an invalid call, not
-  // an unanticipated failure. Left unmatched it collected the feedback ask, which pushed agents to
-  // file reports about their own bad arguments. Kept LAST so a specific rule above always wins.
+  // A message naming a `reticle_*` tool or an `args.*` parameter is one WE authored about our own
+  // API — an invalid call, not an unanticipated failure. Left unmatched it collected the feedback
+  // ask, which pushed agents to file reports about their own bad arguments. Kept LAST so a specific
+  // rule above always wins.
+  //
+  // Keyed on the tool/parameter NAME rather than on a sentence shape. The previous form wanted
+  // `reticle_x { ... }` with braces AND requires/must/expected, which is one phrasing out of many;
+  // measured live, a drag refusal reading "pass a ref from reticle_snapshot or reticle_query as
+  // args.toRef" fell straight through and told the agent its own malformed call might be a Reticle
+  // defect worth a root-cause report. That is the FOURTH patch to this same default, after the
+  // executeAction guards, the destructive-action block, and two of the three spellings of
+  // "potentially destructive ... blocked" — each one added a phrasing instead of changing the key.
+  //
+  // A path is deliberately excluded: `@reticlehq/server/dist/...` in a stack trace is a crash we did
+  // NOT anticipate, and silencing the feedback ask there would lose the reports worth having. Hence
+  // a word boundary before `reticle_` and a required space-or-punctuation after the name, so a tool
+  // named in prose matches and a module path does not.
   {
-    match: /reticle_[a-z_]+\s*\{[^}]*\}.*\b(requires|must|expected)\b/i,
+    match: /(?:^|[\s'"`(])reticle_[a-z_]+(?![\w/.-])|(?:^|[\s'"`(])args\.[a-z][\w]*/i,
     hint: RECOVERY.BAD_ARGUMENTS,
   },
 ];
@@ -366,7 +428,7 @@ function issueClause(issue: ZodIssueShape): string {
  * Conservative by construction: it only rewrites a JSON ARRAY whose every element carries both
  * `code` and `message`. A tool that legitimately returns JSON is left alone.
  */
-export function zodArrayAsSentence(message: string): string {
+function zodArrayAsSentence(message: string): string {
   const text = message.trim();
   if (!text.startsWith('[')) return message;
   let parsed: unknown;

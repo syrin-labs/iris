@@ -56,24 +56,43 @@ async function queryFirst(
 }
 
 /**
- * A note attached to `{ found: false, exhausted: true }` only when the failure is
- * actually informative: the document itself had nothing to scroll (scrolled:false with
- * no explicit container), so the target is likely inside a list with its own scroll
- * container. Reaching the genuine end of a scrolled container stays quiet.
+ * A note attached to `{ found: false, exhausted: true }` only when the failure is actually
+ * informative: nothing in the container ever moved (so the "list" being searched was never
+ * scrollable and the target is likely inside one with its own scroll container). Reaching the
+ * genuine ends of a container that DID scroll stays quiet — that is exhaustion, not confusion.
  */
-function exhaustNote(q: ScrollFindQuery, data: Record<string, unknown>): { note?: string } {
+function exhaustNote(
+  q: ScrollFindQuery,
+  data: Record<string, unknown>,
+  nothingEverScrolled: boolean,
+): { note?: string } {
   if (q.container !== undefined) return {};
-  if (false !== data['scrolled']) return {};
+  if (true === data['scrolled'] || !nothingEverScrolled) return {};
   return {
     note: "The document did not scroll — the target may be inside a list with its own scroll container. Pass that container's ref as `container`.",
   };
 }
 
+/** One viewport-height step upward when the last result carried no clientHeight to size it by. */
+const UP_STEP_FALLBACK_PX = 400;
+
 /**
- * Reveal an element that a windowed/virtualized list has not mounted yet. Queries
- * once (it may already be visible), then scrolls the container ~one viewport at a time, re-querying
- * after each, until the element appears, the list ends, or the maxScrolls budget is spent. Pure
- * orchestration over the session command seam — fully unit-testable with a fake.
+ * Size the upward step off the container the SCROLL result just described, falling back to a
+ * plain viewport height when the result did not carry one.
+ */
+function upStepPx(last: Record<string, unknown>): number {
+  const h = last['clientHeight'];
+  return 'number' === typeof h && h > 0 ? h : UP_STEP_FALLBACK_PX;
+}
+
+/**
+ * Reveal an element that a windowed/virtualized list has not mounted yet. Queries once (it may
+ * already be visible), optionally jumps straight to a bisection estimate, then walks the container
+ * a viewport at a time re-querying after each step. Downward first; when the bottom is reached the
+ * walk TURNS AROUND and continues upward, because a list that is already scrolled to its end keeps
+ * its earlier rows mounted above the viewport and a downward-only search answered "exhausted" on
+ * its first step (#505). `exhausted` therefore means BOTH directions are spent, not "the bottom is
+ * here". Pure orchestration over the session command seam — fully unit-testable with a fake.
  */
 export async function scrollToFind(
   session: ScrollFindSession,
@@ -85,40 +104,66 @@ export async function scrollToFind(
   const first = await queryFirst(session, q);
   if (first !== undefined) return { found: true, element: first, scrolls: 0, exhausted: false };
 
-  // Bisection: if the caller knows the target index and list size, jump to the estimated offset
-  // in one scroll command rather than stepping a viewport at a time. Then refine linearly.
+  const baseArgs = (): Record<string, unknown> =>
+    q.container !== undefined ? { ref: q.container } : {};
+
   let scrolls = 0;
+  let last: Record<string, unknown> = {};
+
+  // Bisection: if the caller knows the target index and list size, jump to the estimated offset in
+  // one scroll command rather than stepping a viewport at a time. The estimate can land on either
+  // side of the target, so refinement below still searches both directions from wherever this put us.
   if (q.targetIndex !== undefined && q.totalCount !== undefined && q.totalCount > 1) {
     const fraction = Math.min(1, Math.max(0, q.targetIndex / q.totalCount));
-    const sr = await session.command(ReticleCommand.SCROLL, {
-      ...(q.container !== undefined ? { ref: q.container } : {}),
-      fraction,
-    });
+    const sr = await session.command(ReticleCommand.SCROLL, { ...baseArgs(), fraction });
     scrolls += 1;
+    last = asRecord(sr.result);
     const hit = await queryFirst(session, q);
     if (hit !== undefined) return { found: true, element: hit, scrolls, exhausted: false };
-    // Fall through to linear refinement from current position (already near the target).
-    const data = asRecord(sr.result);
-    if (true === data['atEnd'] || false === data['scrolled']) {
-      return { found: false, scrolls, exhausted: true, ...exhaustNote(q, data) };
-    }
   }
 
+  let downwardSpent = false;
+  let everScrolled = false;
+
+  // The downward pass. Spending its whole budget without reaching the end means rows may remain
+  // further down, so that answer is `exhausted:false` and the upward pass never runs.
+  for (let i = 0; i < max && !downwardSpent; i += 1) {
+    const sr = await session.command(ReticleCommand.SCROLL, baseArgs());
+    scrolls += 1;
+    const data = asRecord(sr.result);
+    last = data;
+    if (true === data['scrolled']) everScrolled = true;
+
+    const hit = await queryFirst(session, q);
+    if (hit !== undefined) return { found: true, element: hit, scrolls, exhausted: false };
+
+    // Reached the bottom, or the container would not move downward — turn around before giving up.
+    if (true === data['atEnd'] || true !== data['scrolled']) downwardSpent = true;
+  }
+
+  // If the downward pass spent its budget it never saw the end, so there is nothing to turn around
+  // for; report honestly rather than doubling a call whose caller asked for `max` steps.
+  if (!downwardSpent) {
+    return { found: false, scrolls, exhausted: false };
+  }
+
+  // The upward pass gets the caller's budget again, not what is left of it: a list at the bottom of
+  // 14k px needs ~90 scrolls to reach its end and ~90 more to get back, so sharing one budget would
+  // strand the search halfway and answer `exhausted:false` about a list both of whose ends are known.
   for (let i = 0; i < max; i += 1) {
-    const sr = await session.command(
-      ReticleCommand.SCROLL,
-      q.container !== undefined ? { ref: q.container } : {},
-    );
+    const sr = await session.command(ReticleCommand.SCROLL, { ...baseArgs(), dy: -upStepPx(last) });
     scrolls += 1;
     const data = asRecord(sr.result);
+    last = data;
+    if (true === data['scrolled']) everScrolled = true;
 
     const hit = await queryFirst(session, q);
     if (hit !== undefined) return { found: true, element: hit, scrolls, exhausted: false };
 
-    // Reached the bottom or the container would not move — no more rows to reveal.
-    if (true === data['atEnd'] || false === data['scrolled']) {
-      return { found: false, scrolls, exhausted: true, ...exhaustNote(q, data) };
+    // The top refusing to move means both directions are spent.
+    if (true !== data['scrolled']) {
+      return { found: false, scrolls, exhausted: true, ...exhaustNote(q, data, !everScrolled) };
     }
   }
-  return { found: false, scrolls, exhausted: false }; // spent the budget; more may lie further down
+  return { found: false, scrolls, exhausted: false }; // spent the upward budget; more may lie above
 }

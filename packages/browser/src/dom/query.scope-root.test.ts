@@ -57,6 +57,15 @@ describe('scope root as a target', () => {
     const result = runQuery({ self: true });
     expect(result.elements).toEqual([]);
   });
+
+  it('checks combined subtree text when a scoped root is used by a text predicate', () => {
+    document.body.innerHTML =
+      '<div id="split"><span>Move to </span><span>Reticle </span><span>Repro Folder</span></div>';
+    expect(
+      runQuery({ scope: '#split', self: true, text: 'Move to Reticle Repro Folder' }).count,
+    ).toBe(1);
+    expect(runQuery({ scope: '#split', self: true, text: 'A different sentence' }).count).toBe(0);
+  });
 });
 
 describe('a scope root that satisfies a predicate is still findable by it', () => {

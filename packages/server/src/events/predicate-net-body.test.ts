@@ -187,3 +187,84 @@ describe('a body mismatch reports the body, not a count of zero', () => {
     expect(r.failureReason).toContain('bodyContains');
   });
 });
+
+/**
+ * A truncated body cannot decide the assertion (#614).
+ *
+ * The observer caps a recorded body at MAX_BODY_CHARS and sets `responseBodyTruncated`. The grader
+ * was the one reader that ignored the flag, so a needle missing from the recorded PREFIX fell
+ * through to the hard-fail branch and reported "the request fired, the response value is what
+ * differed" — a decided verdict on an undecidable observation, against a response that was very
+ * likely correct.
+ */
+describe('evalNet — bodyContains against a truncated body', () => {
+  const TRUNCATED = netEvent(10, {
+    method: 'GET',
+    url: '/api/report',
+    status: 200,
+    ok: true,
+    responseBody: '{"rows":[{"id":1},{"id":2}',
+    responseBodyTruncated: true,
+  });
+
+  it('does not decide against a needle missing from the recorded prefix', () => {
+    const r = evalNet([TRUNCATED], {
+      kind: PredicateKind.NET,
+      urlContains: '/api/report',
+      bodyContains: 'grand_total',
+    });
+    // Not a pass — nothing here proves the needle was present either.
+    expect(r.pass).toBe(false);
+    expect(r.inconclusive).toBeDefined();
+    expect(r.inconclusive).toContain('TRUNCATED');
+    // The wording that made this a bug: it must not claim the value differed.
+    expect(r.failureReason).toBeUndefined();
+  });
+
+  it('names an action the caller can take, not just a diagnosis', () => {
+    const r = evalNet([TRUNCATED], {
+      kind: PredicateKind.NET,
+      urlContains: '/api/report',
+      bodyContains: 'grand_total',
+    });
+    expect(r.inconclusive).toContain('cap');
+  });
+
+  it('still passes when the needle IS inside the recorded prefix', () => {
+    // Truncation only blocks a NEGATIVE conclusion; a hit is a hit.
+    const r = evalNet([TRUNCATED], {
+      kind: PredicateKind.NET,
+      urlContains: '/api/report',
+      bodyContains: '"id":1',
+    });
+    expect(r.pass).toBe(true);
+  });
+
+  it('still decides against a full body, so the ordinary mismatch verdict is intact', () => {
+    const r = evalNet([REFUND], {
+      kind: PredicateKind.NET,
+      urlContains: '/api/refund',
+      bodyContains: '1187.01',
+    });
+    expect(r.pass).toBe(false);
+    expect(r.failureReason).toContain('the response value is what differed');
+    expect(r.inconclusive).toBeUndefined();
+  });
+
+  it('prefers the undecidable verdict when a truncated and a full body both miss', () => {
+    const FULL_MISS = netEvent(11, {
+      method: 'GET',
+      url: '/api/report',
+      status: 200,
+      ok: true,
+      responseBody: '{"rows":[]}',
+    });
+    const r = evalNet([TRUNCATED, FULL_MISS], {
+      kind: PredicateKind.NET,
+      urlContains: '/api/report',
+      bodyContains: 'grand_total',
+    });
+    expect(r.inconclusive).toBeDefined();
+    expect(r.failureReason).toBeUndefined();
+  });
+});

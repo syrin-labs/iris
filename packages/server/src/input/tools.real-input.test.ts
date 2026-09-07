@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { LastAct } from '../session/last-act.js';
 import { ActionWarning, InputMode, InputModeReason, SessionState } from '@reticlehq/core';
 import type { CommandResult } from '@reticlehq/core';
@@ -12,6 +12,8 @@ import { ProjectStore } from '../project/project-store.js';
 import { AnnotationStore } from '../flows/annotation-store.js';
 import { boxCenter, type ElementBox, type RealInputProvider } from './real-input.js';
 import type { Session, SessionManager } from '../session/session.js';
+import type { BrowserPool } from '../pool/browser-pool.js';
+import { HOVER_NEEDS_POINTER_MSG } from '../tools/real-input-attempt.js';
 
 const SESSION_URL = 'http://localhost:5173/app';
 const SOURCE_BOX: ElementBox = { x: 0, y: 0, width: 200, height: 100 };
@@ -201,6 +203,78 @@ describe('reticle_act real-input routing', () => {
 
     expect(res.inputMode).toBe(InputMode.REAL);
     expect(provider.calls[0]?.action).toBe('hover');
+    expect(state.actCalls).toBe(0);
+  });
+
+  /**
+   * The false-success this product exists to catch: a synthetic mouseover reports dispatched and
+   * settled while CSS :hover never applies. Same shape as a coordinate-less drag reporting done.
+   * Hover without a real pointer must refuse, not fall through to the in-page dispatch.
+   */
+  it('refuses hover when no real pointer is available, rather than reporting synthetic dispatch as done', async () => {
+    const state: FakeSessionState = { actCalls: 0, inspectRefs: [] };
+    await expect(
+      runAct(fakeDeps(undefined, state), { ref: 'e1', action: 'hover' }),
+    ).rejects.toThrow(HOVER_NEEDS_POINTER_MSG);
+    expect(state.actCalls).toBe(0);
+  });
+
+  it('hovers a leased tab through the pool when no real-input provider is configured', async () => {
+    const hoverLease = vi.fn(() => Promise.resolve(true));
+    const state: FakeSessionState = { actCalls: 0, inspectRefs: [] };
+    const deps = fakeDeps(undefined, state);
+    deps.pool = { hoverLease } as unknown as BrowserPool;
+    const res = await runAct(deps, { ref: 'e1', action: 'hover' });
+
+    expect(res.inputMode).toBe(InputMode.REAL);
+    expect(hoverLease).toHaveBeenCalledWith('demo', 100, 50);
+    expect(state.actCalls).toBe(0);
+  });
+
+  it('prefers a configured real-input provider over the pool for hover', async () => {
+    const provider = makeProvider(true);
+    const hoverLease = vi.fn(() => Promise.resolve(true));
+    const state: FakeSessionState = { actCalls: 0, inspectRefs: [] };
+    const deps = fakeDeps(provider, state);
+    deps.pool = { hoverLease } as unknown as BrowserPool;
+    const res = await runAct(deps, { ref: 'e1', action: 'hover' });
+
+    expect(res.inputMode).toBe(InputMode.REAL);
+    expect(provider.calls).toHaveLength(1);
+    expect(hoverLease).not.toHaveBeenCalled();
+  });
+
+  it('hovers through the pool when the real-input provider throws', async () => {
+    const provider = makeProvider(true, { throws: true });
+    const hoverLease = vi.fn(() => Promise.resolve(true));
+    const state: FakeSessionState = { actCalls: 0, inspectRefs: [] };
+    const deps = fakeDeps(provider, state);
+    deps.pool = { hoverLease } as unknown as BrowserPool;
+    const res = await runAct(deps, { ref: 'e1', action: 'hover' });
+
+    expect(res.inputMode).toBe(InputMode.REAL);
+    expect(hoverLease).toHaveBeenCalledWith('demo', 100, 50);
+    expect(state.actCalls).toBe(0);
+  });
+
+  it('refuses hover when the provider throws and no lease pointer is available', async () => {
+    const provider = makeProvider(true, { throws: true });
+    const state: FakeSessionState = { actCalls: 0, inspectRefs: [] };
+    await expect(runAct(fakeDeps(provider, state), { ref: 'e1', action: 'hover' })).rejects.toThrow(
+      HOVER_NEEDS_POINTER_MSG,
+    );
+    expect(state.actCalls).toBe(0);
+  });
+
+  it('refuses hover when the pool cannot drive a pointer on this session', async () => {
+    const hoverLease = vi.fn(() => Promise.resolve(false));
+    const state: FakeSessionState = { actCalls: 0, inspectRefs: [] };
+    const deps = fakeDeps(undefined, state);
+    deps.pool = { hoverLease } as unknown as BrowserPool;
+    await expect(runAct(deps, { ref: 'e1', action: 'hover' })).rejects.toThrow(
+      HOVER_NEEDS_POINTER_MSG,
+    );
+    expect(state.actCalls).toBe(0);
   });
 
   it('falls back to synthetic when the provider has no matching page', async () => {

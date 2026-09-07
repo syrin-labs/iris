@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { StackUnknownReason } from '@reticlehq/core';
 import { detectStack } from './feedback-context.js';
 
 /**
@@ -64,6 +65,13 @@ describe('detectStack finds the app when it is not in the daemon cwd', () => {
 
   it('reports nothing for a directory with no app anywhere — silence beats a guess', () => {
     mkdirSync(join(root, 'src'), { recursive: true });
-    expect(detectStack(root)).toEqual({});
+    // Still no guessed stack, which is what this has always guarded. The failure now carries a
+    // REASON alongside the silence (#617) — that is metadata about the miss, not an answer to it,
+    // so it is asserted here rather than allowed to weaken the no-guessing property.
+    const got = detectStack(root);
+    expect(got.stack).toBeUndefined();
+    expect(got.stackMajor).toBeUndefined();
+    expect(got.stackSource).toBeUndefined();
+    expect(got.stackUnknownReason).toBe(StackUnknownReason.NO_APP_FOUND);
   });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { buildDynamicTools } from './dynamic-tools.js';
 import { ReticleTool } from './tool-names.js';
-import { TOOL_SURFACE } from './tool-surface.js';
+import { ADVERTISE_ALL_ENV, TOOL_PROFILE_ENV, TOOL_SURFACE } from './tool-surface.js';
 import type { ToolDef, ToolDeps } from './tools.js';
 
 /**
@@ -60,6 +60,46 @@ describe('buildDynamicTools — the dynamic profile meta-tools', () => {
   });
 
   /**
+   * A renamed tool has to be reachable FROM THE SURFACE, not only from an error string.
+   *
+   * Guidance in the wild still names `reticle_crawl`. `reticle_run` has answered that name with its
+   * replacement for a while, but the tool asked to DISCOVER tools said "unknown tool" — the wrong
+   * answer in the one place an agent goes to resolve a name it is unsure of — and the catalogue
+   * omitted the old name entirely, which reads as "no such capability" rather than "renamed".
+   *
+   * Instructions written against a previous version are a permanent fact of the product, so this is
+   * not about `reticle_crawl`: it is about every tool that has been merged or will be.
+   */
+  it('reticle_tools names the replacement for a retired tool, not "unknown tool"', async () => {
+    const tools = buildDynamicTools(fakeTools);
+    const discover = tools.find((t) => t.name === ReticleTool.TOOLS);
+    const out = (await discover?.handler(NO_DEPS, { names: [ReticleTool.CRAWL] })) as {
+      tools: { name: string; error?: string; tool?: string; action?: string }[];
+    };
+    const crawl = out.tools.find((t) => ReticleTool.CRAWL === t.name);
+    expect(crawl?.error).not.toBe('unknown tool');
+    expect(crawl?.tool).toBe(ReticleTool.VERIFY);
+    expect(crawl?.action).toBe('crawl');
+    expect(crawl?.error).toContain(ReticleTool.VERIFY);
+  });
+
+  it('the catalog carries the tombstones, so a rename is discoverable without guessing it', async () => {
+    const tools = buildDynamicTools(fakeTools);
+    const discover = tools.find((t) => t.name === ReticleTool.TOOLS);
+    const out = (await discover?.handler(NO_DEPS, {})) as {
+      retired: Record<string, string>;
+      tools: { name: string }[];
+    };
+    expect(out.retired[ReticleTool.CRAWL]).toContain(ReticleTool.VERIFY);
+    expect(out.retired[ReticleTool.CRAWL]).toContain('crawl');
+    // A name that was retired outright, with no action to pass, still says where it went.
+    expect(out.retired[ReticleTool.REFRESH]).toContain(ReticleTool.NAVIGATE);
+    // Tombstones are the names that are NO LONGER tools — a live one must not appear among them.
+    expect(out.retired).not.toHaveProperty(ReticleTool.VERIFY);
+    for (const listed of out.tools) expect(out.retired).not.toHaveProperty(listed.name);
+  });
+
+  /**
    * The surface is read by the DAEMON at startup, not by the client. Setting it in an agent's
    * environment while a daemon is already running changes nothing — which is how "standard and full
    * are the same 46 tools" got reported. The setting not taking effect must be OBSERVABLE, so the
@@ -77,6 +117,8 @@ describe('buildDynamicTools — the dynamic profile meta-tools', () => {
     expect(out.profile.active).toBe(TOOL_SURFACE.DEFAULT);
     expect(out.profile.source).toContain('RETICLE_ADVERTISE_ALL_TOOLS');
     expect(out.profile.note).toContain('restart');
+    expect(out.profile.note).toContain(ADVERTISE_ALL_ENV);
+    expect(out.profile.note).not.toContain(TOOL_PROFILE_ENV);
   });
 
   it('reticle_run on an unknown tool returns the available names (no invocation)', async () => {

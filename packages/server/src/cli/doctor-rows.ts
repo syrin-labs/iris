@@ -32,6 +32,15 @@ export const DoctorRow = {
   DAEMON: 'daemon',
   VERSION: 'version',
   SESSIONS: 'sessions',
+  /**
+   * The agent-to-daemon hop, which every other row here is blind to.
+   *
+   * Reported from the field: a user with the SDK injected, the overlay visible, a live session on
+   * the daemon and every tool listed in their client was still told by three separate agents that
+   * Reticle was not present. Their words: "four green checkmarks that don't add up to a working
+   * verification." Every row in this list checks a COMPONENT; none checked a LINK.
+   */
+  AGENT_LINK: 'agent link',
   BRIDGE_PORT: 'bridge port',
   PORT_CHECK: 'port check',
   SIBLING: 'sibling',
@@ -40,7 +49,7 @@ export const DoctorRow = {
   DESKTOP: 'desktop',
 } as const;
 
-export type DoctorRowLabel = (typeof DoctorRow)[keyof typeof DoctorRow];
+type DoctorRowLabel = (typeof DoctorRow)[keyof typeof DoctorRow];
 
 export const DOCTOR_ROW_LABELS: readonly DoctorRowLabel[] = Object.values(DoctorRow);
 

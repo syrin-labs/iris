@@ -15,8 +15,7 @@ const VersionChangeDirection = {
   UPDATE: 'update',
   ROLLBACK: 'rollback',
 } as const;
-export type VersionChangeDirection =
-  (typeof VersionChangeDirection)[keyof typeof VersionChangeDirection];
+type VersionChangeDirection = (typeof VersionChangeDirection)[keyof typeof VersionChangeDirection];
 
 /**
  * Report a completed version move. Never throws — an install that worked must still be reported done.

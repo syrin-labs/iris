@@ -33,3 +33,40 @@ export async function allSessionIntents(
 ): Promise<Intent[]> {
   return new IntentStore(deps.fs, sessionRoot(deps, sessionId), { now: deps.now }).read();
 }
+
+/** What the ledger still owes once this verdict's own intent is discharged, and how old it is. */
+interface IntentDebt {
+  openIntentCount: number;
+  /**
+   * Age of the OLDEST open intent, in ms. Absent when nothing is open.
+   *
+   * A count alone cannot tell "declared a minute ago and not proved yet" from "this project has
+   * owed eighteen things since last week", and only the first is actionable on the result being
+   * read. A number that is always large is one people learn to skip, which is how an honest gap
+   * gets filtered out along with the noise.
+   */
+  oldestOpenIntentAgeMs?: number;
+}
+
+/**
+ * The debt a verdict should report, MINUS the intent it is about to discharge.
+ *
+ * The discharge happens after the gaps are built, so counting the raw ledger would include the
+ * intent this very call proves — measured live: an inline intent was declared, asserted and proved
+ * by one verdict, and the result still said "1 declared intent(s) are still unproved".
+ */
+export function intentDebt(
+  open: readonly Intent[],
+  dischargedId: string | undefined,
+  now: number,
+): IntentDebt {
+  const stillOpen = open.filter((i) => dischargedId === undefined || i.id !== dischargedId);
+  const oldest = stillOpen.reduce<number | undefined>(
+    (min, i) => (min === undefined || i.declaredAt < min ? i.declaredAt : min),
+    undefined,
+  );
+  return {
+    openIntentCount: stillOpen.length,
+    ...(oldest === undefined ? {} : { oldestOpenIntentAgeMs: now - oldest }),
+  };
+}

@@ -23,7 +23,7 @@ import {
 } from './a11y.js';
 import { isIgnored } from './dom-ignore.js';
 import { isSensitiveKey } from '../security/serialization.js';
-import { getCapabilities } from '../registry/capabilities.js';
+import { declaredTestids } from '../registry/capabilities.js';
 import { identifyComponent } from '../registry/adapters.js';
 import { refs } from './refs.js';
 
@@ -366,10 +366,15 @@ function findCandidates(query: ElementQuery): { candidates: HTMLElement[]; scope
   // `self: true` asks for the container ITSELF, which every other path excludes by construction.
   // A layout element with no role, name, testid or own text is unreachable by any semantic locator,
   // and it is routinely the element carrying the handler - "click the empty space in this row" is a
-  // real user action that was simply not expressible. Requires a scope: without one there is no root
-  // to return, and answering `document.body` would be a wrong answer wearing the shape of one.
+  // real user action that was simply not expressible. When `text` is also present, check the root's
+  // combined subtree text: that is the recovery for prose split across child elements, which no
+  // ordinary text query can match. Requires a scope: without one there is no root to return, and
+  // answering `document.body` would be a wrong answer wearing the shape of one.
   if (true === query.self) {
     if (query.scope === undefined) return { candidates: [], scopeMissing };
+    if (query.text !== undefined && !fuzzyVisibleText(container.textContent ?? '', query.text)) {
+      return { candidates: [], scopeMissing };
+    }
     return { candidates: isIgnored(container) ? [] : [container], scopeMissing };
   }
   const seen = new Set<HTMLElement>();
@@ -554,6 +559,45 @@ function buildPresentRegions(query: ElementQuery): PresentRegion[] {
   return regions;
 }
 
+/**
+ * The tightest single element whose SUBTREE text carries `wanted`, when no element's OWN text does.
+ *
+ * `by: text` matches an element's direct text nodes (`directText`), so a label rendered across
+ * several child nodes — `v-html`, an inline `<span>` per word, a highlighted substring — exists on
+ * the page and matches nothing. The two channels disagree by construction: `act_and_wait` reports
+ * `appeared` by concatenating an added subtree, so the string an agent is most likely to copy into
+ * its next predicate is exactly the shape this query cannot find.
+ *
+ * That failure is indistinguishable from the element being absent, which is the expensive half: the
+ * agent reads "no element matched", concludes the app did not render, and reports a bug against
+ * correct code.
+ *
+ * Returns the DEEPEST container rather than the first, because every ancestor up to `<body>` also
+ * contains the string and naming `<body>` is not a locator. The deepest one is the tightest scope
+ * that still holds the whole string, which is the one worth pasting back.
+ */
+function splitTextOwner(container: HTMLElement, wanted: string): HTMLElement | undefined {
+  let best: HTMLElement | undefined;
+  let bestDepth = -1;
+  for (const el of elementsUnder(container)) {
+    if (isIgnored(el)) continue; // never point an agent at Reticle's own UI
+    if (!fuzzyVisibleText(el.textContent ?? '', wanted)) continue;
+    let depth = 0;
+    for (let parent = el.parentElement; parent !== null; parent = parent.parentElement) depth++;
+    if (depth > bestDepth) {
+      best = el;
+      bestDepth = depth;
+    }
+  }
+  return best;
+}
+
+/** The text this query searched for, in either spelling, or undefined when it searched by something else. */
+function wantedTextOf(query: ElementQuery): string | undefined {
+  if (query.text !== undefined) return query.text;
+  return QueryBy.TEXT === query.by ? query.value : undefined;
+}
+
 /** Diagnostic hint for a zero-match query: what testids ARE present in the searched scope. */
 function buildEmptyHint(query: ElementQuery): QueryEmptyHint {
   const container = resolveContainer(query.scope).container ?? document.body;
@@ -567,15 +611,25 @@ function buildEmptyHint(query: ElementQuery): QueryEmptyHint {
       if (present.length >= MAX_PRESENT_TESTIDS) break;
     }
   }
-  const registered = getCapabilities().testids;
+  // DECLARED, not observed: see declaredTestids. Every present testid is also an observed one, so
+  // the merged list would make this flag true for any page that has a testid at all.
+  const registered = declaredTestids();
   const knownEmptyState = present.some((id) => registered.includes(id));
   const route = `${location.pathname}${location.search}`;
-  return {
+  const hint: QueryEmptyHint = {
     route,
     presentTestids: present,
     presentRegions: buildPresentRegions(query),
     knownEmptyState,
   };
+  // Only for a text search, and only when the string IS here — otherwise this is an ordinary miss
+  // and the extra clause would lengthen every failure to say nothing.
+  const wanted = wantedTextOf(query);
+  if (wanted !== undefined) {
+    const owner = splitTextOwner(container, wanted);
+    if (owner !== undefined) hint.splitText = describe(owner);
+  }
+  return hint;
 }
 
 /**

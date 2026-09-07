@@ -20,6 +20,8 @@ function toBody(el: EventTarget | null): boolean {
  * FOCUS_CHANGE {to, from, toBody}. Reversible.
  */
 export function installFocus(emit: Emit): Teardown {
+  const ac = new AbortController();
+  const { signal } = ac;
   let last: EventTarget | null = null;
 
   const onFocusIn = (event: FocusEvent): void => {
@@ -44,10 +46,7 @@ export function installFocus(emit: Emit): Teardown {
     });
   };
 
-  document.addEventListener('focusin', onFocusIn);
-  document.addEventListener('focusout', onFocusOut);
-  return () => {
-    document.removeEventListener('focusin', onFocusIn);
-    document.removeEventListener('focusout', onFocusOut);
-  };
+  document.addEventListener('focusin', onFocusIn, { signal });
+  document.addEventListener('focusout', onFocusOut, { signal });
+  return () => ac.abort();
 }

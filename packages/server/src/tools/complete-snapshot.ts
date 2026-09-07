@@ -47,9 +47,9 @@ const SnapshotShape = z.object({
 });
 
 /** Reads one snapshot — whole page when `scope` is undefined, that branch when it is not. */
-export type SnapshotReader = (scope: string | undefined) => Promise<unknown>;
+type SnapshotReader = (scope: string | undefined) => Promise<unknown>;
 
-export interface CompletedRead {
+interface CompletedRead {
   /** The union of every subtree that was read. Never a lie about what it contains — only about how much. */
   tree: string;
   /** True only when every branch the page cut was read back. A negative conclusion needs this. */

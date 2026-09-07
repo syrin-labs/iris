@@ -57,15 +57,29 @@ jobs:
           # package's shipped code (source maps included), NOT the bundled+deps figure; for that, add
           # size-limit later.
           #
-          # 950KB, raised from 900KB in 2.9.0, and only AFTER taking the waste out rather than to paper
-          # over it: the artwork, the icon set and the HUD's style strings were each being copied a
-          # second time into the emitted .d.ts as literal types — 19.6KB of type information no caller
-          # can use — and annotating them `: string` gave that back. The package is ~902KB after that,
-          # so this leaves ~48KB of headroom: enough for ordinary growth, tight enough that another
-          # 5% jump still stops here and gets explained.
+          # 950KB was raised from 900KB in 2.9.0, and only AFTER taking the waste out rather than to
+          # paper over it: the artwork, the icon set and the HUD's style strings were each being
+          # copied a second time into the emitted .d.ts as literal types — 19.6KB of type information
+          # no caller can use — and annotating them `: string` gave that back.
+          #
+          # 1000KB in 2.13.0, on the same terms. The waste came out first: MCP_DOCS_URL,
+          # HUD_DRAG_IGNORE_SEL and HUD_LOG_WELL_CSS had reacquired exactly the defect above and were
+          # annotated, which returned ~1.3KB. What remained is code somebody chose to ship, and the
+          # release names it:
+          #
+          #   - registry/auto-testids.ts, new
+          #   - registry/capabilities.ts, extended
+          #   - the HUD's unreachable state — an instrumented page whose bridge never answered used to
+          #     be indistinguishable from a page with no Reticle in it
+          #   - desktop capture for the Electron and Tauri shells
+          #
+          # The package is ~954KB after that, so this leaves ~46KB of headroom — the same shape of
+          # margin 2.9.0 left, and the same rule: the next 5% stops here and gets explained. A raise
+          # to make a red check green is the thing this comment exists to prevent, so if the reason
+          # above is not in the diff, do not move the number.
           bytes=$(cd packages/browser && npm pack --dry-run --json 2>/dev/null | node -e "process.stdin.resume();let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d)[0].unpackedSize))")
           echo "browser SDK unpacked: $bytes bytes"
-          if [ "$bytes" -gt 950000 ]; then
-            echo "::error::@reticlehq/browser unpacked size $bytes exceeds the 950KB budget"
+          if [ "$bytes" -gt 1000000 ]; then
+            echo "::error::@reticlehq/browser unpacked size $bytes exceeds the 1000KB budget"
             exit 1
           fi

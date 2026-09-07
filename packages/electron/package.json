@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/electron",
-  "version": "2.11.0",
+  "version": "2.13.1",
   "description": "Reticle adapter for Electron: makes main-process IPC observable and the window screenshottable, from the two places the renderer cannot reach.",
   "type": "module",
   "exports": {

@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/browser",
-  "version": "2.11.0",
+  "version": "2.13.1",
   "description": "Reticle browser SDK — installs observers, builds semantic snapshots, executes actions, talks to the bridge.",
   "type": "module",
   "main": "./dist/index.js",
@@ -18,7 +18,7 @@
     "lint": "eslint src",
     "test:unit": "vitest run src --passWithNoTests",
     "test:coverage": "vitest run src --passWithNoTests --coverage.enabled --coverage.provider=v8 --coverage.reporter=text-summary --coverage.include='src/**/*.ts' --coverage.exclude='src/**/*.test.ts'",
-    "prepack": "tsc -b && find dist -name \"*.test.*\" -delete && node ../../scripts/strip-maps.mjs dist"
+    "prepack": "tsc -b && node ../../scripts/prepare-dist.mjs dist"
   },
   "dependencies": {
     "@reticlehq/core": "workspace:*"
@@ -29,11 +29,11 @@
     "@tanstack/query-core": "^5.101.4",
     "jotai": "^2.20.2",
     "jsdom": "^30.0.1",
-    "mobx": "^7.0.0",
+    "mobx": "^7.0.3",
     "pinia": "^4.0.3",
     "react": "^19.2.8",
     "recoil": "^0.7.7",
-    "svelte": "^5.56.8",
+    "svelte": "^5.56.10",
     "valtio": "^2.3.2",
     "vue": "^3.5.41",
     "xstate": "^5.32.5"

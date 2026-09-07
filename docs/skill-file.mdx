@@ -5,7 +5,7 @@ description: One URL you paste into any coding agent to teach it Reticle. How it
 icon: graduation-cap
 ---
 
-Paste `https://raw.githubusercontent.com/reticlehq/reticle/main/SKILL.md` into any coding agent and say "read this and set up Reticle". The document installs Reticle, wires it into your app, and then drives a proper verification loop, choosing setup mode or test mode itself based on whether `.reticle.json` already exists. You often do not need it: `npx @reticlehq/server init` configures Claude Code and Cursor directly.
+Paste `https://raw.githubusercontent.com/reticlehq/reticle/main/SKILL.md` into any coding agent and say "read this and set up Reticle". The document tells the agent to run `npx @reticlehq/server init --flow "<what>"`, which does the whole install and ends with a verdict, and gives it the rules for verifying afterwards. You often do not need the file at all: that one command configures Claude Code, Cursor and nine other agents directly, and the file mostly exists to tell an agent which journey to prove and how to read what comes back.
 
 `SKILL.md` is a single document you hand to a coding agent. It teaches the agent to install Reticle, wire it into your app, and then drive a verification loop properly. Without you explaining any of it.
 
@@ -40,8 +40,8 @@ One document, two jobs, no flag for you to remember. The second time you invoke 
 | Phase | What the agent does |
 | --- | --- |
 | Save the skill | Store it as `/reticle` so the loop is one word away from then on |
-| Run `init` | Without asking you questions it can answer itself |
-| Manual fallbacks | Per-agent MCP config, per-framework SDK wiring, for anything `init` marked `⚠` |
+| Run `init --flow` | Without asking you questions it can answer itself, passing the journey worth proving |
+| Manual fallbacks | Only when `init` could not run: an older CLI that stops after writing files, or the same failure twice |
 | Validate | Confirm a session actually connected. Not that a checklist went green |
 | Prove it | Drive one real flow while you watch, so the install ends in evidence |
 

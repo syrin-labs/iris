@@ -13,9 +13,14 @@ const DAEMON_READY_TIMEOUT_MS =
     ? envDaemonReadyTimeoutMs
     : DEFAULT_DAEMON_READY_TIMEOUT_MS;
 const DAEMON_POLL_INTERVAL_MS = 100;
+const DAEMON_POLL_MAX_INTERVAL_MS = 1_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function daemonPollDelayMs(attempt: number): number {
+  return Math.min(DAEMON_POLL_INTERVAL_MS * attempt, DAEMON_POLL_MAX_INTERVAL_MS);
 }
 
 /**
@@ -43,10 +48,12 @@ export function probeDaemon(port: number): Promise<boolean> {
 /** Poll until the daemon's HTTP port accepts connections or the deadline is reached. */
 export async function waitForDaemon(port: number): Promise<void> {
   const deadline = Date.now() + DAEMON_READY_TIMEOUT_MS;
+  let attempt = 0;
   while (Date.now() < deadline) {
     const reachable = await probeDaemon(port);
     if (reachable) return;
-    await delay(DAEMON_POLL_INTERVAL_MS);
+    attempt++;
+    await delay(daemonPollDelayMs(attempt));
   }
   throw new Error(
     `reticle daemon did not become ready on port ${port} within ${DAEMON_READY_TIMEOUT_MS}ms`,

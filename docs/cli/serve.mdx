@@ -21,8 +21,10 @@ Most people never type this. Your agent runs [`reticle mcp`](/cli/mcp), which st
 | `--headless` | boolean | `true` for `serve` | Hide the browser |
 | `--headed` | boolean | `false` | Show it. `serve` owns the pooled browser behind leases, which is batch work, so it hides by default |
 | `--http` | boolean | `false` | Also expose the HTTP verify endpoint |
-| `--http-port N` | number | unset | Port for that endpoint |
-| `--http-token T` | string | unset | Bearer token the endpoint requires |
+| `--http-port N` | number | unset (`7331`) | Port for that endpoint. Requires `--http`. |
+| `--http-token T` | string | unset | Bearer token the endpoint requires. Requires `--http`. |
+
+The HTTP flags are honoured or refused, never silently dropped: against an already-running daemon that does not serve the requested verify port, `serve --http` exits 1 and names both ports. A running daemon keeps the flags it was started with, so `reticle stop`, then serve again. A verify port that cannot be bound fails the daemon start with a `reticle_daemon_start_failed` line naming that port.
 
 ## What it prints
 

@@ -5,6 +5,7 @@ import {
   open,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -44,7 +45,9 @@ export interface FileSystemPort {
   /** Idempotent remove (no throw if absent) — for retention pruning + cleaning temp files. */
   rm(path: string): Promise<void>;
   /** Modification time in epoch ms — for recency-based retention pruning. Rejects if absent. */
-  stat(path: string): Promise<{ mtimeMs: number }>;
+  stat(path: string): Promise<{ mtimeMs: number; size: number }>;
+  /** Resolve symlinks to their real path — for upload trust-boundary checks. Rejects if absent. */
+  realpath(path: string): Promise<string>;
   /** ENOENT classifier — narrows unknown without `any`, so callers can distinguish missing-file. */
   isNotFound(error: unknown): boolean;
 }
@@ -93,8 +96,9 @@ export function createNodeFileSystem(): FileSystemPort {
     },
     stat: async (path) => {
       const s = await stat(path);
-      return { mtimeMs: s.mtimeMs };
+      return { mtimeMs: s.mtimeMs, size: s.size };
     },
+    realpath: (path) => realpath(path),
     isNotFound: (error) => 'ENOENT' === (error as NodeJS.ErrnoException | undefined)?.code,
   };
 }

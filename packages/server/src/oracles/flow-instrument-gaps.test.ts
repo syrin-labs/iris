@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ActionType, AnchorKind, type FlowStep } from '@reticlehq/core';
+import { ActionType, AnchorKind, InstrumentationGapKind, type FlowStep } from '@reticlehq/core';
 import { instrumentationGapsForFlows, lastSource } from './flow-instrument-gaps.js';
 import { proposeInstrumentation } from './self-instrument.js';
 
@@ -26,12 +26,12 @@ describe('lastSource', () => {
 });
 
 describe('instrumentationGapsForFlows', () => {
-  it('turns an unasserted flow into a located missing-signal gap → a real proposal', () => {
+  it('turns an unasserted flow into a located no-signal-on-mutation gap → a real proposal', () => {
     const steps = new Map<string, FlowStep[]>([['checkout', [componentStep('Checkout.tsx', 114)]]]);
     const gaps = instrumentationGapsForFlows(['checkout'], steps);
     expect(gaps).toEqual([
       {
-        kind: 'missing-signal',
+        kind: InstrumentationGapKind.NO_SIGNAL_ON_MUTATION,
         file: 'Checkout.tsx',
         line: 114,
         name: 'checkout:done',

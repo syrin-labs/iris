@@ -71,3 +71,71 @@ describe('the destructive-action classifier does not tax ordinary verbs', () => 
     expect(isDangerousActionText(label)).toBe(true);
   });
 });
+
+/**
+ * Signing out is reversible, and the word fires on almost every authenticated drive.
+ *
+ * Reported from the field: a `role=menuitem` labelled `Log out` was blocked on every session, and
+ * `Payment` as a Radix Select option (a document type on a petty-cash form) was blocked as
+ * money-moving. A guard that costs a turn on a control it was never written to catch trains agents
+ * to pass `confirmDangerous` reflexively, which is worse than not having it.
+ *
+ * Logout comes off the list. `payment` stays — "Send payment" / "Confirm payment" are still money —
+ * but an `option` is a value picker, not an action, so the role is consulted before the text.
+ */
+describe('the destructive-action classifier does not tax logout or a Payment option', () => {
+  it.each(['Log out', 'Logout', 'Sign out', 'sign_out'])('does not block %s', (label) => {
+    expect(isDangerousActionText(label)).toBe(false);
+  });
+
+  it('does not block Payment when the control is an option in a select', () => {
+    expect(isDangerousActionText('Payment', 'option')).toBe(false);
+  });
+
+  it('still blocks a Payment button, which is the money-moving case the list is for', () => {
+    expect(isDangerousActionText('Send payment', 'button')).toBe(true);
+    expect(isDangerousActionText('Confirm payment')).toBe(true);
+  });
+
+  it('still blocks a destructive menuitem — the role exemption is for value pickers, not menus', () => {
+    expect(isDangerousActionText('Delete account', 'menuitem')).toBe(true);
+  });
+});
+
+describe('consequential is not the same as destructive', () => {
+  /**
+   * The guard's own contract, at the top of act-danger.ts: it exists to stop "a money-moving or
+   * destructive control". A deploy is neither — nothing is destroyed and no money moves. It is
+   * consequential and it is CREATIVE, and the list is not a list of consequential things or half
+   * the buttons in a dev tool would be on it.
+   *
+   * Measured, which is why this changed: three benchmark runs lost their whole budget to "New
+   * deploy" being refused. Improving the refusal's wording did not rescue the last of them — the
+   * agent spent its remaining turns weighing a bug report about the block and hunting a webmcp
+   * workaround. A guard that costs a run on a control it was never written to catch is not
+   * protecting anything; it is teaching agents to route around it.
+   */
+  it('does not block a deploy or a publish', () => {
+    expect(isDangerousActionText('New deploy')).toBe(false);
+    expect(isDangerousActionText('Deploy to production')).toBe(false);
+    expect(isDangerousActionText('Publish')).toBe(false);
+    expect(isDangerousActionText('publish-post')).toBe(false);
+  });
+
+  /** Everything the guard IS for stays exactly as it was. */
+  it('still blocks destruction and money', () => {
+    for (const label of [
+      'Delete account',
+      'Remove member',
+      'Revoke token',
+      'Terminate instance',
+      'Refund payment',
+      'Transfer funds',
+      'Withdraw',
+      'Place order',
+      'Cancel subscription',
+    ]) {
+      expect(isDangerousActionText(label)).toBe(true);
+    }
+  });
+});

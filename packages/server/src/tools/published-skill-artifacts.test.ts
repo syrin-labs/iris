@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import {
   existsSync,
   mkdtempSync,
@@ -48,22 +49,46 @@ const MANIFEST: Record<string, string> = {
   'marketplace.json': join(REPO, '.claude-plugin', 'marketplace.json'),
 };
 
-/** `name:` and `description:` out of a SKILL.md's YAML frontmatter, or null when there is none. */
+/**
+ * The skills CLI's OWN reading of a SKILL.md's frontmatter, or null when there is none.
+ *
+ * This used to pull `name:` and `description:` out with a regex, and that is precisely how two
+ * skills shipped uninstallable through a whole release with every gate green. A regex returns a
+ * description happily; the CLI runs `parse()` from the `yaml` package over the same block, and an
+ * unquoted `description: … false greens: a green suite …` is not valid YAML — the colon opens a
+ * nested mapping. `YAMLParseError: Nested mappings are not allowed in compact mappings` is what the
+ * CLI hits, and its failure mode is to drop the skill and carry on, so the listing is simply two
+ * skills shorter and nothing says which.
+ *
+ * A guard that validates with a DIFFERENT parser than the tool it protects against cannot see the
+ * one failure it exists for. So this uses the same regex and the same parser the CLI does; `yaml` is
+ * a devDependency for exactly that reason, and writing our own would recreate the bug.
+ *
+ * The line-ending note that used to live here still applies: git on Windows checks text out as CRLF,
+ * which once made EVERY skill read as having no frontmatter — green on macOS and Linux, red on
+ * Windows only, accusing the skills rather than the parser. The CLI's regex tolerates `\r\n`, so
+ * matching it exactly keeps that fixed too.
+ */
 function frontmatter(
   file: string,
 ): { name: string | undefined; description: string | undefined } | null {
-  // Line endings normalised before anything looks at the bytes. Git on Windows checks text out as
-  // CRLF, so `---\r\n` failed the test below and EVERY shipped skill read as having no frontmatter:
-  // green on macOS and Linux, red on Windows only, and the message accused the skills rather than
-  // the parser. `.gitattributes` now pins LF in the working tree, which is the real fix; this is the
-  // second lock, because a file can still arrive with CRLF from an editor or a patch.
-  const text = readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
-  if (!text.startsWith('---\n')) return null;
-  const end = text.indexOf('\n---', 4);
-  if (-1 === end) return null;
-  const block = text.slice(4, end);
-  const read = (key: string): string | undefined =>
-    block.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'))?.[1]?.trim();
+  // The CLI's own expression, character for character — see parseFrontmatter in its bundle.
+  const match = readFileSync(file, 'utf8').match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (null === match) return null;
+  const block = match[1] ?? '';
+  let data: unknown;
+  try {
+    data = parseYaml(block);
+  } catch {
+    // What the CLI sees: unparseable frontmatter is no frontmatter, and the skill is dropped. Null
+    // rather than a throw so the caller reports WHICH skill, not merely that something failed.
+    return null;
+  }
+  if ('object' !== typeof data || null === data) return null;
+  const read = (key: string): string | undefined => {
+    const value = (data as Record<string, unknown>)[key];
+    return 'string' === typeof value ? value : undefined;
+  };
   return { name: read('name'), description: read('description') };
 }
 

@@ -30,7 +30,7 @@ export interface IssueState {
 }
 
 /** The label that means "fixed, waiting for a release" — an honest reason to still be open. */
-export const PENDING_RELEASE_LABEL = 'fixed-pending-release';
+const PENDING_RELEASE_LABEL = 'fixed-pending-release';
 
 /**
  * Issue numbers a commit message CLAIMS to have closed.

@@ -5,15 +5,14 @@
  * projectId, drop dead daemons — is the pure `pickDaemonPort` in core; this file is just the fs plumbing.
  */
 import { readdirSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   daemonRegistryPort,
   DaemonRegistryEntrySchema,
   pickDaemonPort,
-  ReticleDir,
   type DaemonRegistryEntry,
 } from '@reticlehq/core';
+import { stateHome } from './state-home.js';
 
 /** process.kill(pid, 0) throws iff the process is gone — the same liveness probe the daemon uses. */
 function isAlive(pid: number): boolean {
@@ -32,7 +31,7 @@ function isAlive(pid: number): boolean {
  */
 export function discoverDaemonPort(
   projectId: string | undefined,
-  home: string = join(homedir(), ReticleDir.ROOT),
+  home: string = stateHome(),
   alive: (pid: number) => boolean = isAlive,
 ): number | undefined {
   const entries: DaemonRegistryEntry[] = [];

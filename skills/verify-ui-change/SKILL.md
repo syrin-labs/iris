@@ -3,7 +3,7 @@ name: verify-ui-change
 description: Check that a change to a web app actually works in the running app before calling it done. Drives the real page and returns a pass/fail verdict with the request that fired, the state that moved, and the file:line to fix. Use after editing a component, a form, a route, or an API call; when you have said "fixed" but have not opened the app; when the user asks "does it actually work?"; or when a change looks right on screen and you cannot prove it.
 license: Apache-2.0
 metadata:
-  version: 2.9.0
+  version: 2.13.1
   homepage: https://www.reticle.sh
   repository: https://github.com/reticlehq/reticle
 ---

@@ -8,6 +8,9 @@ const REVEAL_SELECTOR = '[data-reticle-reveal], [data-reveal], section';
 
 /** Observe scroll position + reveal-on-scroll for modern scroll-reactive UIs. */
 export function installScroll(emit: Emit): Teardown {
+  const ac = new AbortController();
+  const { signal } = ac;
+
   let lastEmit = 0;
   let lastY = 0;
   let trailingTimer: number | undefined;
@@ -44,7 +47,7 @@ export function installScroll(emit: Emit): Teardown {
       }, THROTTLE_MS - elapsed);
     }
   };
-  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('scroll', onScroll, { passive: true, signal });
 
   let io: IntersectionObserver | undefined;
   if ('function' === typeof IntersectionObserver) {
@@ -73,7 +76,7 @@ export function installScroll(emit: Emit): Teardown {
   }
 
   return () => {
-    window.removeEventListener('scroll', onScroll);
+    ac.abort();
     if (trailingTimer !== undefined) nativeClearTimeout(trailingTimer);
     io?.disconnect();
   };

@@ -3,9 +3,12 @@ import {
   PredicateKind,
   StreamDirection,
   isDevToolingUrl,
+  urlForMatch,
+  REDACTED_VALUE,
   type ReticleEvent,
 } from '@reticlehq/core';
 import { describeObserved } from './observed-in-window.js';
+import { withoutUrlRaw } from './event-filters.js';
 import type { Predicate } from './predicate-schema.js';
 
 // The predicate SHAPE — the discriminated union, its aliases and its zod schema — lives in
@@ -201,6 +204,32 @@ function describeCall(e: ReticleEvent): string {
 }
 
 /**
+ * What a miss should say when the displayed URL was redacted. Matching uses `urlRaw` when present;
+ * an older SDK has no copy, and this is the sentence both reporters asked for.
+ */
+const REDACTED_PATH_HINT =
+  'this path segment was redacted — the literal you matched may be here, try bodyContains';
+
+function observedNetCalls(
+  events: readonly ReticleEvent[],
+  urlContains: string | undefined,
+): string {
+  const calls = events.filter((e) => e.type === EventType.NET_REQUEST);
+  const base = describeObserved('calls', calls.map(describeCall));
+  if (urlContains === undefined) return base;
+  const encoded = encodeURIComponent(REDACTED_VALUE);
+  const redacted = calls.some((e) => {
+    const url = str(e.data['url']) ?? '';
+    return url.includes(REDACTED_VALUE) || url.includes(encoded);
+  });
+  return redacted ? `${base}; ${REDACTED_PATH_HINT}` : base;
+}
+
+function netEvidence(data: Record<string, unknown>): unknown {
+  return (withoutUrlRaw({ data }) as { data: unknown }).data;
+}
+
+/**
  * How much of a response body a failure may quote. Enough to see the value that differed on the
  * bodies this field is used against (a JSON answer), and not a whole payload in every verdict.
  */
@@ -368,6 +397,36 @@ function unobservedChannelReason(
   );
 }
 
+/**
+ * Appended to a zero-match `net` negative whose window starts at SDK attach.
+ *
+ * Every event's `t` is stamped `performance.now() - #start`, where `#start` is taken when the SDK
+ * is constructed, so `t` is never negative and a window with `since === 0` begins AT attach — never
+ * before it. Whatever the page did between navigation start and attach left no event at all, so
+ * "no matching call" over such a window cannot be told apart from "the call was made while nothing
+ * was watching yet".
+ *
+ * The gap is routine rather than exotic: a `fetch` from an effect in a root provider, or a classic
+ * `<script>` at the end of `<body>`, fires before a deferred module script has run. Reported from
+ * the field, the verdict then read as proof the request was never made, and reporters went looking
+ * for the defect in code that was working — restarting dev servers and re-reading providers to
+ * establish the request was invisible rather than absent.
+ *
+ * Same argument as DOCUMENT_ONLY_SUFFIXES one axis over: that one is a channel Reticle does not
+ * watch, this is a stretch of TIME it was not yet watching.
+ *
+ * The grade is deliberately NOT downgraded to `inconclusive`. A missing API call is the finding this
+ * oracle exists to make, and it is the strongest grade available for the startup class — session
+ * restore, feature flags, bootstrap config — which is exactly the class that silently breaks on
+ * reload. Every window an action opens carries `since > 0` and is untouched. What changes is only
+ * what the negative CLAIMS: it stops asserting the request never happened, and names the assertion
+ * that can settle it, because the state such a request produces IS observable after attach.
+ */
+const PRE_ATTACH_CAVEAT =
+  ' — note that this window starts where the SDK attached, and requests made before that are never ' +
+  'captured, so a miss here cannot tell a call that was never made apart from one made before the ' +
+  'page connected; if the call is expected during startup, assert on the state it produces instead';
+
 export function evalNet(
   events: ReticleEvent[],
   p: Extract<Predicate, { kind: typeof PredicateKind.NET }>,
@@ -398,13 +457,19 @@ export function evalNet(
    * a UI wiring bug that did not exist, when the defect was the value the server answered with.
    */
   let bodyMismatch: string | undefined;
+  /**
+   * The prefix of a TRUNCATED body the needle was not found in. Held apart from `bodyMismatch`
+   * because the two are different verdicts: a full body without the needle decides the assertion,
+   * a truncated one cannot (#614).
+   */
+  let truncatedBody: string | undefined;
   const matches = events.filter((e) => {
     if (e.type !== EventType.NET_REQUEST || e.t < since) return false;
     const d = e.data;
     if (p.method !== undefined && str(d['method'])?.toUpperCase() !== p.method.toUpperCase()) {
       return false;
     }
-    if (p.urlContains !== undefined && !(str(d['url']) ?? '').includes(p.urlContains)) {
+    if (p.urlContains !== undefined && !urlForMatch(d).includes(p.urlContains)) {
       return false;
     }
     if (p.status !== undefined) {
@@ -431,6 +496,15 @@ export function evalNet(
         return false;
       }
       if (!response.includes(p.bodyContains)) {
+        // A needle missing from a body we only hold the FIRST N BYTES of is undecidable, not
+        // absent: the rest of the response was never recorded, so nothing here can say whether it
+        // was in there (#614). Grading it `pass: false` with "the response value is what differed"
+        // is the inversion the honesty rules exist to prevent — an unknown reported as decided,
+        // against a response that was very likely correct.
+        if (true === d['responseBodyTruncated']) {
+          truncatedBody ??= response;
+          return false;
+        }
         bodyMismatch ??= response;
         return false;
       }
@@ -455,6 +529,18 @@ export function evalNet(
       failureReason: `a call matched but its body was not recorded, so \`bodyContains\` could not be checked — enable it where the app calls connect(): reticle({ captureNetworkBodies: true })`,
       observed: 'a matching call with no recorded body',
       expected: `a body containing ${JSON.stringify(p.bodyContains)}`,
+      assertion: 'net.bodyContains',
+    };
+  }
+  // Ranked ABOVE the mismatch branch: when both a truncated and a full body missed the needle,
+  // the honest verdict is the undecidable one. Deciding on the full body would report a failure
+  // the truncated call may well contradict.
+  if (truncatedBody !== undefined && 0 === matches.length) {
+    return {
+      pass: false,
+      inconclusive: `a call matching ${describeNetFilter(p)} was answered with a body that was TRUNCATED before it was recorded, and ${JSON.stringify(p.bodyContains)} is not in the part that was kept — so this is undecidable, not a failure. Raise the capture cap or assert on something inside the recorded prefix`,
+      observed: `the first ${String(truncatedBody.length)} characters of a truncated response body ${JSON.stringify(clipBody(truncatedBody))}`,
+      expected: `a response body containing ${JSON.stringify(p.bodyContains)}`,
       assertion: 'net.bodyContains',
     };
   }
@@ -486,13 +572,20 @@ export function evalNet(
         assertion: 'net.count',
       };
     }
-    return evalExactCount({
+    const counted = evalExactCount({
       matched: matches.length,
       want: p.count,
       noun: 'network call(s)',
       filter: describeNetFilter(p),
       assertion: 'net.count',
     });
+    // Same blind head, second door: "saw 0" over a whole-session window is the same claim the
+    // presence branch makes, and just as unable to see a startup call. A `count: 0` assertion is
+    // left alone on purpose — it PASSES here, and turning that green into a non-pass is a grade
+    // change, not a wording one.
+    return 0 === matches.length && 0 === since && counted.failureReason !== undefined
+      ? { ...counted, failureReason: `${counted.failureReason}${PRE_ATTACH_CAVEAT}` }
+      : counted;
   }
   const hit = matches[0];
   if (hit === undefined && targetsUnobservedChannel(p) && !sawSubresources) {
@@ -501,25 +594,19 @@ export function evalNet(
       pass: false,
       failureReason: reason,
       inconclusive: reason,
-      observed: describeObserved(
-        'calls',
-        events.filter((e) => e.type === EventType.NET_REQUEST).map(describeCall),
-      ),
+      observed: observedNetCalls(events, p.urlContains),
       expected: `at least one call matching ${describeNetFilter(p)}`,
       assertion: 'net.unobserved-channel',
     };
   }
   return hit !== undefined
-    ? { pass: true, evidence: hit.data }
+    ? { pass: true, evidence: netEvidence(hit.data) }
     : {
         pass: false,
-        failureReason: `no network call matched ${JSON.stringify(p)}`,
+        failureReason: `no network call matched ${JSON.stringify(p)}${0 === since ? PRE_ATTACH_CAVEAT : ''}`,
         // Same reasoning as the signal miss: "no matching call" cannot be told apart from "the app
         // made no calls at all", and those need different fixes.
-        observed: describeObserved(
-          'calls',
-          events.filter((e) => e.type === EventType.NET_REQUEST).map(describeCall),
-        ),
+        observed: observedNetCalls(events, p.urlContains),
         expected: `at least one call matching ${JSON.stringify(p)}`,
         assertion: 'net.present',
       };

@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/core",
-  "version": "2.11.0",
+  "version": "2.13.1",
   "description": "The Reticle foundation: the shared wire contract — types, zod schemas, constants, messages, and the isomorphic kernel that every Reticle package (browser SDK, server, kits, test harness) imports. Depends only on zod.",
   "type": "module",
   "main": "./dist/index.js",
@@ -15,15 +15,19 @@
       "types": "./dist/desktop-contract.d.cts",
       "default": "./dist/desktop-contract.cjs"
     },
+    "./source-constants": {
+      "types": "./dist/source-constants.d.cts",
+      "default": "./dist/source-constants.cjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "tsc -b && node scripts/gen-schema.mjs && node scripts/gen-desktop-contract.mjs",
+    "build": "tsc -b && node scripts/gen-schema.mjs && node scripts/gen-desktop-contract.mjs && node scripts/gen-source-constants.mjs",
     "typecheck": "tsc -b",
     "lint": "eslint src",
     "test:unit": "vitest run src --passWithNoTests",
     "test:coverage": "vitest run src --passWithNoTests --coverage.enabled --coverage.provider=v8 --coverage.reporter=text-summary --coverage.include='src/**/*.ts' --coverage.exclude='src/**/*.test.ts'",
-    "prepack": "tsc -b && node scripts/gen-schema.mjs && node scripts/gen-desktop-contract.mjs && find dist -name \"*.test.*\" -delete && node ../../scripts/strip-maps.mjs dist"
+    "prepack": "tsc -b && node scripts/gen-schema.mjs && node scripts/gen-desktop-contract.mjs && node scripts/gen-source-constants.mjs && node ../../scripts/prepare-dist.mjs dist"
   },
   "dependencies": {
     "zod": "^3.24.1"

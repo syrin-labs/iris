@@ -22,13 +22,11 @@ assets/marketing/**/*.mp4
 assets/marketing/**/*.mov
 assets/marketing/**/*.gif
 assets/marketing/**/*.png
-assets/benchmarks/*.png
 
 # Image-generation SOURCE split: the benchmark card generators (assets/benchmarks/render.mjs +
 # src/bench-*.html) and the shared design system (assets/marketing/src/_system.css) are PUBLIC —
-# they generate the committed README/docs images. The GTM/marketing source and the old numbered
-# card drafts stay LOCAL (design reference, never shipped to the public repo).
-assets/benchmarks/src/[0-9]*.html
+# they generate the committed README/docs images. The GTM/marketing source stays LOCAL (design
+# reference, never shipped to the public repo).
 assets/marketing/render.mjs
 assets/marketing/demo/
 assets/marketing/reels/
@@ -102,6 +100,7 @@ issuer-*.json
 
 # Agent git worktrees (never track — they are live checkouts)
 .claude/worktrees/
+.cursor/worktrees/
 leads/
 
 # Playwright CLI benchmark disk artifacts (snapshots/console logs)

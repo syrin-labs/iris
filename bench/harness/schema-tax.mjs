@@ -26,6 +26,10 @@ import { measure } from './tokenizer.mjs';
 const RETICLE_SURFACES = [
   { label: 'default', env: {} },
   { label: 'all', env: { RETICLE_ADVERTISE_ALL_TOOLS: '1' } },
+  // The two trimmed surfaces. Measured here rather than reasoned about, because the whole claim being
+  // tested is that the MENU is most of the bill — and that claim is only checkable off the wire.
+  { label: 'verify', env: { RETICLE_VERIFY_SURFACE: '1' } },
+  { label: 'lean', env: { RETICLE_TOOL_PROFILE: 'lean' } },
 ];
 
 const COMPETITORS = {

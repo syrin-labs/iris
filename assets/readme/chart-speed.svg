@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="320" viewBox="0 0 960 320" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Time to a verdict: a 2.6 second time-gated flow verified in 176 ms versus a 2978 ms real wait, and a 16-flow batch in 5.2 seconds versus 31.7 seconds one at a time.">
+<rect x="0" y="0" width="960" height="320" rx="14" fill="#ffffff"/>
+<text x="28" y="52" fill="#1a1726" font-size="24" font-weight="700">Time to a verdict</text>
+<circle cx="706.0" cy="40.0" r="6" fill="#6b4bf0" stroke="#ffffff" stroke-width="2"/><text x="722" y="45" fill="#615c7d" font-size="14">Reticle</text><circle cx="800.0" cy="40.0" r="6" fill="#7d8494" stroke="#ffffff" stroke-width="2"/><text x="816" y="45" fill="#615c7d" font-size="14">Alternatives</text>
+<rect x="478" y="96" width="1" height="168" fill="#000000" opacity="0.12"/>
+<text x="28" y="168" fill="#1a1726" font-size="76" font-weight="800" letter-spacing="-3">16.9×</text>
+<text x="28" y="198" fill="#615c7d" font-size="17" font-weight="600">verify a 2.6s time-gated flow</text>
+<rect x="28" y="224" width="290" height="20" rx="5" fill="#000000" opacity="0.05"/>
+<rect x="28" y="224" width="17.139019476158495" height="20" rx="5" fill="#6b4bf0"/>
+<text x="57.139019476158495" y="238.68" fill="#615c7d" font-size="13" font-weight="600">Reticle</text>
+<text x="334" y="240" fill="#1a1726" font-size="16" font-weight="700">176ms</text>
+<rect x="28" y="254" width="290" height="20" rx="5" fill="#000000" opacity="0.05"/>
+<rect x="28" y="254" width="290" height="20" rx="5" fill="#7d8494"/>
+<text x="40" y="268.68" fill="#ffffff" font-size="13" font-weight="600">Alternatives</text>
+<text x="334" y="270" fill="#615c7d" font-size="16">2,978ms</text>
+<text x="502" y="168" fill="#1a1726" font-size="76" font-weight="800" letter-spacing="-3">6.2×</text>
+<text x="502" y="198" fill="#615c7d" font-size="17" font-weight="600">run a 16-flow batch</text>
+<rect x="502" y="224" width="290" height="20" rx="5" fill="#000000" opacity="0.05"/>
+<rect x="502" y="224" width="47.14339753491158" height="20" rx="5" fill="#6b4bf0"/>
+<text x="561.1433975349116" y="238.68" fill="#615c7d" font-size="13" font-weight="600">Reticle</text>
+<text x="808" y="240" fill="#1a1726" font-size="16" font-weight="700">5.2s</text>
+<rect x="502" y="254" width="290" height="20" rx="5" fill="#000000" opacity="0.05"/>
+<rect x="502" y="254" width="290" height="20" rx="5" fill="#7d8494"/>
+<text x="514" y="268.68" fill="#ffffff" font-size="13" font-weight="600">Alternatives</text>
+<text x="808" y="270" fill="#615c7d" font-size="16">31.7s</text>
+</svg>

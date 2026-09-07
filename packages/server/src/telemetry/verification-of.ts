@@ -13,7 +13,7 @@
  * be readable and testable on its own rather than inferred from a ternary inside a dispatcher.
  */
 import { type BrowserBrand, CaptureLoss, type Verification, VerifiedReason } from '@reticlehq/core';
-import { VERIFICATION_TOOLS } from '../tools/feedback-tools.js';
+import { VERDICT_TOOLS } from '../tools/feedback-tools.js';
 import { getBrowserMode } from './browser-mode.js';
 
 /**
@@ -101,7 +101,7 @@ export function verificationOf(
   durationMs: number,
   brand?: BrowserBrand,
 ): Verification | undefined {
-  if (!VERIFICATION_TOOLS.has(toolName)) return undefined;
+  if (!VERDICT_TOOLS.has(toolName)) return undefined;
   // A paused session REFUSES the call — nothing driven, nothing asserted. The refusal carries a
   // verdict field so the agent never reads undefined off it, and that field must not be mistaken
   // here for work that happened.

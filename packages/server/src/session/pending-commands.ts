@@ -29,6 +29,16 @@ interface PendingCommand {
  */
 export class CommandTimeoutError extends Error {}
 
+/**
+ * The transport under this command was displaced by a newer connection claiming the same id.
+ *
+ * Typed, not a string to match on, because the two failures need OPPOSITE handling and the only
+ * thing separating them used to be the wording of a message. A read can simply be re-asked on the
+ * successor; a WRITE cannot — nobody can prove it did not land — so the honest answer is that the
+ * outcome went unobserved, which is a verdict this engine already has a word for.
+ */
+export class SessionReplacedError extends Error {}
+
 export class PendingCommands {
   readonly #pending = new Map<string, PendingCommand>();
   #seq = 0;
@@ -61,10 +71,10 @@ export class PendingCommands {
   }
 
   /** Reject everything still in flight — used on disconnect, so no caller waits on a dead socket. */
-  rejectAll(reason: string): void {
+  rejectAll(reason: string, replaced = false): void {
     for (const [id, pending] of this.#pending) {
       clearTimeout(pending.timer);
-      pending.reject(new Error(reason));
+      pending.reject(replaced ? new SessionReplacedError(reason) : new Error(reason));
       this.#pending.delete(id);
     }
   }

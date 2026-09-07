@@ -5,6 +5,7 @@ import {
   decideDriveMode,
   describeAttached,
   driveForeignHolder,
+  driveHeadlessOnAttach,
   driveRaceLost,
   readAttachResponse,
   requestDriveSession,
@@ -148,5 +149,20 @@ describe('what the user reads when drive cannot bind', () => {
     // is a second dead end at the moment the reader has already hit one.
     expect(message).toContain('RETICLE_PORT');
     expect(message).not.toContain('EADDRINUSE');
+  });
+});
+
+/**
+ * `drive` promises a window and the attach path cannot give one: the daemon's pool was launched
+ * headless at boot, and the request carries a url and nothing else. The lie is what the field report
+ * opened with ("the app starts to run headlessly"), so the line has to name the constraint AND the
+ * way to see the run anyway.
+ */
+describe('driveHeadlessOnAttach', () => {
+  it('says there is no window, and where the run can be watched instead', () => {
+    const line = driveHeadlessOnAttach(4400, 'http://localhost:3000');
+    expect(line).toContain('headless');
+    expect(line).toContain('http://localhost:3000');
+    expect(line).toContain('4400');
   });
 });

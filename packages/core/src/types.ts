@@ -50,7 +50,8 @@ export const ElementQuerySchema = z
     /** CSS selector or ref to scope the search. */
     scope: z.string().optional(),
     /**
-     * Return the `scope` element ITSELF rather than searching inside it.
+     * Return the `scope` element ITSELF rather than searching inside it. When `text` is also given,
+     * the scope root must contain that text across its full subtree.
      *
      * Every other path excludes the scope root by construction, so a layout container with no role,
      * name, testid or text of its own was unreachable — and that is routinely the element carrying the
@@ -152,6 +153,15 @@ export interface QueryEmptyHint {
   presentTestids: string[];
   /** True if a capability-registered testid is present in the scope. */
   knownEmptyState: boolean;
+  /**
+   * Present only when a TEXT search missed and the string is nonetheless on the page, split across
+   * this element's children — so no single element's own text carries it and no `by: text` query can
+   * ever match it.
+   *
+   * The descriptor is the tightest container that holds the whole string; its `ref` is a locator, so
+   * the recovery is `{ scope: <ref>, self: true }` rather than another guess at the text.
+   */
+  splitText?: ElementDescriptor;
 }
 
 /** Result of the QUERY command / reticle_query tool. `hint` present ONLY on zero matches. */

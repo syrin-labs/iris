@@ -1,4 +1,6 @@
 import { NO_SESSION_CONNECTED_ERROR } from '@reticlehq/core';
+import { notePendingNoSessionReason } from '../telemetry/tool-refused.js';
+import type { NoSessionReason } from '@reticlehq/core';
 import {
   declareDrivenRedactionKeys,
   forgetDrivenRedactionKeys,
@@ -6,6 +8,7 @@ import {
 import { Session, type SessionInfo } from './session.js';
 import { AttachmentHistory } from './attachment-history.js';
 import type { NoSessionNextAction } from './no-session-next-action.js';
+import { pickDocumentSuccessor, type SessionIdentity } from './session-successor.js';
 
 /**
  * The agent's active project, used to scope auto-selection. `projectId` is the stable build-stamped
@@ -80,6 +83,15 @@ function scopeMissError(connected: Session[], scope?: ResolveScope): string {
 /** How many bridge-initiated closes to remember for diagnosis. */
 const MAX_REMEMBERED_CLOSURES = 5;
 
+/**
+ * How many recently-departed session ids to remember for successor rebind.
+ *
+ * A full-document navigation HELLO's back under a new id while the agent still holds the old one.
+ * The tombstone is how `resolve(oldId)` finds the unique same-origin successor instead of refusing.
+ * Bounded so a long-lived daemon cannot accumulate one record per tab forever.
+ */
+const MAX_TOMBSTONES = 32;
+
 export class SessionManager {
   readonly #sessions = new Map<string, Session>();
   /**
@@ -88,6 +100,13 @@ export class SessionManager {
    * Owned here because this is the one place that sees both halves — every add and every remove.
    */
   readonly #attachment = new AttachmentHistory();
+  /**
+   * Recently departed sessions, keyed by the id the agent still holds.
+   *
+   * Insertion order is LRU: the oldest is dropped when the cap is hit. A reconnect under the same
+   * id forgets its tombstone — the live session is the answer then.
+   */
+  readonly #tombstones = new Map<string, SessionIdentity>();
   /**
    * The active project's scope, set once from the daemon's .reticle.json. When a tool resolves a session
    * without passing its own scope, this is applied — so auto-selection is project-scoped by default
@@ -118,12 +137,31 @@ export class SessionManager {
     this.#recordConnection?.(session.projectId);
     const previous = this.#sessions.get(session.id);
     this.#sessions.set(session.id, session);
+    // Who can SEE this session's HUD feed. Wired here because `add` is the one method every path
+    // that registers a session goes through, and read lazily so a tab that opens later still counts.
+    // Optional-call for the same reason `pushImpact` is one at the dispatch chokepoint: a test
+    // double is a partial Session, and wiring a courtesy channel must never break registration.
+    session.setViewers?.(() => this.#viewersFor(session));
     // Publish what this app declared sensitive to the driven-path rule. Here rather than in the
     // bridge because EVERY path that registers a session goes through this method, and a declaration
     // that silently fails to register is a leak nothing would report.
     declareDrivenRedactionKeys(session.id, session.redactKeys);
     this.#attachment.attached(session.id);
+    this.#tombstones.delete(session.id);
     return previous;
+  }
+
+  /**
+   * The other tabs of the same app as `driven`.
+   *
+   * Scoped the same way auto-selection is: by the stable projectId when the driven tab stamped one,
+   * else by origin. A drive session is frequently a headless pooled context (see Session.#viewers),
+   * so without this the human's own tab is the one place the report never reaches.
+   */
+  #viewersFor(driven: Session): Session[] {
+    const scope: ResolveScope =
+      driven.projectId === undefined ? { url: driven.url } : { projectId: driven.projectId };
+    return scopeSessions([...this.#sessions.values()], scope).filter((s) => s !== driven);
   }
 
   remove(session: Session): boolean {
@@ -133,7 +171,39 @@ export class SessionManager {
     // Recorded, not forgotten: a session that comes back needs its gap measured, and a listing after
     // the reconnect is exactly where that matters.
     this.#attachment.detached(session.id);
+    this.#rememberTombstone(session);
     return this.#sessions.delete(session.id);
+  }
+
+  #rememberTombstone(session: Session): void {
+    const origin = originOf(session.url);
+    if (origin === undefined) return;
+    if (this.#tombstones.has(session.id)) this.#tombstones.delete(session.id);
+    this.#tombstones.set(session.id, {
+      id: session.id,
+      url: session.url,
+      ...(session.projectId === undefined ? {} : { projectId: session.projectId }),
+    });
+    while (this.#tombstones.size > MAX_TOMBSTONES) {
+      const oldest = this.#tombstones.keys().next().value;
+      if (oldest === undefined) break;
+      this.#tombstones.delete(oldest);
+    }
+  }
+
+  #successorOf(sessionId: string): Session | undefined {
+    const departed = this.#tombstones.get(sessionId);
+    if (departed === undefined) return undefined;
+    const picked = pickDocumentSuccessor(
+      this.all().map((s) => ({
+        id: s.id,
+        url: s.url,
+        ...(s.projectId === undefined ? {} : { projectId: s.projectId }),
+      })),
+      departed,
+    );
+    if (picked === undefined) return undefined;
+    return this.#sessions.get(picked.id);
   }
 
   get(sessionId: string): Session | undefined {
@@ -199,6 +269,13 @@ export class SessionManager {
    * bridge constructed without a daemon (every unit test) keeps the plain message.
    */
   #noSessionHint: (() => string | undefined) | undefined;
+  /**
+   * The CODE for the same diagnosis `#noSessionHint` renders as prose.
+   *
+   * Registered from the same `explainNoSession` call as the hint, so the two cannot describe
+   * different branches. See no-session-watch.ts.
+   */
+  #noSessionReason: (() => NoSessionReason | undefined) | undefined;
 
   /** Wire the diagnosis provider (daemon boot). Absent ⇒ the plain, static message. */
   setNoSessionHint(hint: (() => string | undefined) | undefined): void {
@@ -215,6 +292,14 @@ export class SessionManager {
    */
   noSessionHint(): string | undefined {
     return this.#noSessionHint?.();
+  }
+
+  setNoSessionReason(reason: (() => NoSessionReason | undefined) | undefined): void {
+    this.#noSessionReason = reason;
+  }
+
+  noSessionReason(): NoSessionReason | undefined {
+    return this.#noSessionReason?.();
   }
 
   /**
@@ -253,6 +338,22 @@ export class SessionManager {
   }
 
   /**
+   * The id of the session that most recently went away, if any.
+   *
+   * Distinct from {@link lastClosure}, which only records closes the bridge itself initiated
+   * (handshake refusals, auth failures) — an ordinary disconnect never reaches it. This reads the
+   * tombstone ring `remove()` maintains, so it covers every departure.
+   *
+   * Read by the no-session diagnosis, which needs to say something about the session that actually
+   * vanished rather than about the daemon's lifetime history (#611).
+   */
+  lastDeparted(): string | undefined {
+    let last: string | undefined;
+    for (const id of this.#tombstones.keys()) last = id;
+    return last;
+  }
+
+  /**
    * A dead `sessionId`, answered with what the caller needs to recover — not with an errand.
    *
    * Telemetry, 2026-08-10: one agent called `reticle_navigate` twelve times against an id that was
@@ -283,7 +384,7 @@ export class SessionManager {
 
   resolve(sessionId?: string, scope?: ResolveScope): Session {
     if (sessionId !== undefined) {
-      const found = this.#sessions.get(sessionId);
+      const found = this.#sessions.get(sessionId) ?? this.#successorOf(sessionId);
       if (found === undefined) {
         throw new Error(this.#unknownSessionError(sessionId));
       }
@@ -303,6 +404,10 @@ export class SessionManager {
         closure === undefined
           ? ''
           : ` NOTE: the bridge REFUSED or closed a connection recently — "${closure.reason}". The app is probably still running and trying to connect: it was turned away, and the SDK does not retry after a policy close. The reason above names the fix — do not go looking for a stopped dev server.`;
+      // Hand the branch code to the refusal that is about to be reported for this throw. The
+      // diagnosis is computed HERE and the refusal is classified from the message downstream, so
+      // without this the largest refusal cohort stays one undifferentiated bucket (#615).
+      notePendingNoSessionReason(this.#noSessionReason?.());
       throw new Error(`${hint ?? NO_SESSION_CONNECTED_ERROR}${refusal}`);
     }
     // Scope to the agent's active project FIRST, so a stray tab from another app/origin (e.g. a
@@ -356,8 +461,15 @@ export class SessionManager {
     }
 
     // Multiple sessions: score each (lower = better candidate for auto-selection).
-    // 0 = non-throttled (visible + recently-heard), 1 = throttled (hidden or stale heartbeat).
-    const scored = all.map((s) => ({ s, score: s.throttled() ? 1 : 0, ms: s.lastSeenMs() }));
+    // 0 = non-throttled (visible + recently-heard), 1 = throttled (hidden or stale heartbeat),
+    // 2 = attached but not answering commands. A wedged tab keeps streaming events, so recency
+    // RATES IT HIGHEST — it was beating a healthy sibling on the one signal scoring looked at, and
+    // every call auto-targeted the one tab guaranteed to time out.
+    const scored = all.map((s) => ({
+      s,
+      score: s.unresponsive() ? 2 : s.throttled() ? 1 : 0,
+      ms: s.lastSeenMs(),
+    }));
     const bestScore = Math.min(...scored.map((x) => x.score));
     const candidates = scored.filter((x) => x.score === bestScore);
 
@@ -376,7 +488,8 @@ export class SessionManager {
     // desktop), the gap requirement is dropped: every session is already in "background" mode
     // so we just pick the one with the freshest heartbeat and let the agent proceed. Requiring
     // a gap here only produces spurious "ambiguous" errors while the user works elsewhere.
-    const allThrottled = 1 === bestScore;
+    // Nothing healthy left to choose between (all throttled, or all wedged): drop the gap check.
+    const allThrottled = bestScore >= 1;
     const RECENCY_GAP_MS = allThrottled ? 0 : 1_000;
     const clearWinner = runnerUp === undefined || best.ms + RECENCY_GAP_MS < runnerUp.ms;
 

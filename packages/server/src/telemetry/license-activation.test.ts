@@ -27,9 +27,14 @@ describe('licenseFacts', () => {
     // every event from every machine forever pays a per-event cost to carry something one local
     // file already knows, and the join that resolves the lid to a company resolves the plan with it.
     const facts = licenseFacts(NOW, licensed({ [LICENSE_KEY_ENV]: key(NOW + 100_000) }));
+    // `toEqual` on the WHOLE object on purpose: this is the assertion that stops a future property
+    // being added to the licence envelope without somebody deciding it belongs on the wire.
+    // `licenseKeyPresent` is here because an active licence self-evidently has a key placed — it
+    // earns its place by being reported in the cases where `licenseStatus` is absent entirely.
     expect(facts).toEqual({
       licenseId: LID,
       licenseStatus: LicenseActivation.ACTIVE,
+      licenseKeyPresent: true,
     });
   });
 
@@ -124,5 +129,62 @@ describe('a licensed event belongs to an organisation group', () => {
     const capture = await captureFor({});
     const props = capture['properties'] as Record<string, unknown>;
     expect(props['$groups']).toBeUndefined();
+  });
+});
+
+/**
+ * A key somebody PLACED must be visible, even when this build cannot judge it.
+ *
+ * `eval` deliberately reports nothing: it means no issuer key is baked, which is every OSS install
+ * and every source checkout, and three properties saying "not a licensed build" on the dominant
+ * population is cost for no signal. That reasoning is right for a machine with no key.
+ *
+ * It is wrong for a machine WITH one. A customer who pastes their enterprise key into a build that
+ * cannot verify it produces no licence signal at all — identical to a user who has never heard of
+ * the product. So the one population we most need to see, an enterprise customer whose key is not
+ * taking effect, is exactly the population that is invisible. `keyPresent` is reported without ever
+ * carrying the key itself.
+ */
+describe('a key that was placed but cannot be judged by this build', () => {
+  it('reports that a key is present even in evaluation mode', () => {
+    const facts = licenseFacts(Date.now(), { [LICENSE_KEY_ENV]: 'rtl_some_key' }, '');
+    expect(facts.licenseKeyPresent).toBe(true);
+  });
+
+  it('still says nothing at all when there is no key and no issuer', () => {
+    expect(licenseFacts(Date.now(), {}, '')).toEqual({});
+  });
+
+  it('never carries the key itself', () => {
+    const facts = licenseFacts(Date.now(), { [LICENSE_KEY_ENV]: 'rtl_secret_value' }, '');
+    expect(JSON.stringify(facts)).not.toContain('rtl_secret_value');
+  });
+});
+
+/**
+ * The end-to-end check, because every other test here stops at the fact and telemetry fails SILENTLY.
+ *
+ * A property can be produced correctly, typed correctly, and still never arrive: the envelope schema
+ * strips what it does not declare, and nothing throws when it does. The only way to know a licence
+ * signal reaches the wire is to look at what the wire carried.
+ */
+describe('the licence signal actually reaches the wire', () => {
+  it('carries keyPresent on a real emitted event when the build cannot verify the key', async () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'reticle-licwire-')), 'events.jsonl');
+    const telemetry = createTelemetry({
+      version: '0.0.0-test',
+      env: { RETICLE_TELEMETRY_FILE: file, [LICENSE_KEY_ENV]: 'rtl_unverifiable_key' },
+    });
+    await telemetry.emit(TelemetryEventKind.DAEMON_STARTED, {});
+    const written = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    // The recorded shape is PostHog's capture envelope, so the licence scalars live under
+    // `properties` — the same place the export column `*.properties.licenseKeyPresent` reads from.
+    const props = (written[0]?.['properties'] ?? {}) as Record<string, unknown>;
+    expect(props['licenseKeyPresent']).toBe(true);
+    // And never the credential itself, on any path.
+    expect(JSON.stringify(written[0])).not.toContain('rtl_unverifiable_key');
   });
 });

@@ -156,7 +156,9 @@ describe('a SUCCESSFUL act still marks the cursor and effect', () => {
     await tool(ReticleTool.ACT).handler(deps, { ref: 'e1', action: 'click' });
 
     expect(session.lastAct.cursor()).toBe(1000);
-    expect(session.lastAct.effect()).toEqual({ action: 'click', mutatedWithin: 0 });
+    // `ref` joins the effect so the verdict nudge can suggest a call about the element that was
+    // actually touched, rather than a worked example. Written on the same success path as `action`.
+    expect(session.lastAct.effect()).toEqual({ action: 'click', mutatedWithin: 0, ref: 'e1' });
     const kinds = ((await observe(deps)).contradictions ?? []).map((c) => c.kind);
     expect(kinds).toContain(ACT_HAD_NO_EFFECT);
   });

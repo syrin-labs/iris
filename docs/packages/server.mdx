@@ -64,7 +64,7 @@ await server.close();
 | `reticleRoot` | `string` | `cwd()/.reticle` |
 | `pairingTokenDir` | `string` | `~/.reticle` |
 | `now` | `() => number` | `Date.now` |
-| `toolProfile` | `string` | `RETICLE_TOOL_PROFILE`, else `full`. `core` serves the lean surface |
+| `toolProfile` | `string` | retired names (`core`/`full`/…) still map. Live switch is `RETICLE_ADVERTISE_ALL_TOOLS=1`. Default is the lean surface |
 | `httpVerify` | `boolean` | `false` |
 | `httpVerifyPort` | `number` | `RETICLE_VERIFY_DEFAULT_PORT` (`7331`) |
 | `httpVerifyToken` | `string` | `RETICLE_VERIFY_TOKEN` |

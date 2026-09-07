@@ -3,6 +3,7 @@ import { sessionRoot } from '../project/session-root.js';
 import { asNumber, asString } from '../tools/tools-helpers.js';
 import type { FlowFile } from '@reticlehq/core';
 import { ReticleTool } from '../tools/tool-names.js';
+import { countSchema } from '../tools/numeric-bounds.js';
 import { readContract } from '../project/reticle-dir.js';
 import { buildDomainModel } from './domain-model.js';
 import { proposeInstrumentation } from '../oracles/self-instrument.js';
@@ -24,8 +25,7 @@ export const DOMAIN_TOOLS: ToolDef[] = [
     description:
       'Read the app domain model BEFORE testing: every saved flow with its assertion grade, the consequence that MUST hold for it (mustHold = what it actually tests), the anchors/signals it exercises, plus GAPS — declared signals/testids that NO flow asserts (untested intent), and flows that assert no observable consequence. Use this to decide what to test and where the real risk is, instead of crawling the whole app. Reads .reticle/flows/ + .reticle/contract.json (no browser needed).',
     inputSchema: {
-      limit: z
-        .number()
+      limit: countSchema
         .optional()
         .describe(
           'Most-recent N flows to detail. Defaults to 25 — the per-flow list grows with every saved flow (measured at ~11KB / ~2,700 tokens at 22 flows) and a large project would spend most of an agent context on flows it is not asking about. `flowCount` is always the true total, and the gaps/coverage summary is computed over ALL flows regardless, so capping the detail never changes the analysis.',

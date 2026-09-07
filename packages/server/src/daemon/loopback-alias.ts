@@ -23,7 +23,7 @@ import { LOOPBACK_HOST } from '@reticlehq/core';
 /** IPv6 loopback. The other half of what `localhost` can mean. */
 export const IPV6_LOOPBACK = '::1';
 
-export interface LoopbackAlias {
+interface LoopbackAlias {
   /** False when the alias could not be bound — the daemon still serves IPv4 as before. */
   opened: boolean;
   close: () => Promise<void>;

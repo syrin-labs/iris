@@ -60,4 +60,42 @@ describe('VisualStore — temp dir, never touches the repo', () => {
     expect(() => store.diffPath('../escape')).toThrow();
     expect(store.baselinePath('home').endsWith(join('.reticle', 'visual', 'home.png'))).toBe(true);
   });
+
+  /**
+   * A baseline from another runtime is not this runtime's baseline.
+   *
+   * The dangerous direction is the quiet one. If they share a path, saving from Electron overwrites
+   * the browser's baseline, and the next web diff passes against a picture of a different program —
+   * a real regression, reported green. Reading it as ABSENT is the honest answer: "no baseline for
+   * this runtime" is actionable, and a pixel diff across renderings is a confident wrong one.
+   */
+  describe('a visual baseline belongs to the runtime that produced it', () => {
+    it('does not hand an electron baseline to a web diff, or the reverse', async () => {
+      await store.saveBaseline('home', PNG_BYTES, 'electron');
+
+      expect(await store.hasBaseline('home', 'electron')).toBe(true);
+      expect(await store.hasBaseline('home', 'web')).toBe(false);
+      expect(await store.hasBaseline('home')).toBe(false);
+      expect(await store.readBaseline('home', 'web')).toBeUndefined();
+    });
+
+    it('keeps the two desktop runtimes apart', async () => {
+      await store.saveBaseline('home', PNG_BYTES, 'tauri');
+      expect(await store.hasBaseline('home', 'electron')).toBe(false);
+      expect(await store.hasBaseline('home', 'tauri')).toBe(true);
+    });
+
+    // Everything captured before this existed came from a driven browser, and must keep matching.
+    it('leaves web and unscoped on the same flat path', async () => {
+      await store.saveBaseline('home', PNG_BYTES);
+      expect(await store.hasBaseline('home', 'web')).toBe(true);
+      expect(await store.hasBaseline('home')).toBe(true);
+    });
+
+    it('writes the overlay diff beside its own baseline', async () => {
+      await store.saveBaseline('home', PNG_BYTES, 'electron');
+      const path = await store.saveDiff('home', PNG_BYTES, 'electron');
+      expect(path).toContain(join('visual', 'electron'));
+    });
+  });
 });

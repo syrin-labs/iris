@@ -28,8 +28,10 @@ const failedCall = (editEpoch?: number): ReticleEvent =>
     editEpoch,
   );
 
+// `actionSince: 0` states the premise every consequence rule now requires — these windows were
+// always an action's, they simply never had to say so. See contradictions.attribution.test.ts.
 const kinds = (events: ReticleEvent[], currentEditEpoch?: number): string[] =>
-  findContradictions(events, { currentEditEpoch }).map((c) => c.kind);
+  findContradictions(events, { currentEditEpoch, actionSince: 0 }).map((c) => c.kind);
 
 describe('contradiction evidence is scoped to the current edit epoch', () => {
   it('cites same-epoch evidence exactly as before', () => {
@@ -51,7 +53,10 @@ describe('contradiction evidence is scoped to the current edit epoch', () => {
   });
 
   it('labels a window whose every observation predates the current edit', () => {
-    const found = findContradictions([domChanged(1), failedCall(1)], { currentEditEpoch: 2 });
+    const found = findContradictions([domChanged(1), failedCall(1)], {
+      currentEditEpoch: 2,
+      actionSince: 0,
+    });
     expect(found.map((c) => c.kind)).toContain(ContradictionKind.EVIDENCE_PREDATES_EDIT);
     expect(found.map((c) => c.kind)).toContain(ContradictionKind.UI_ADVANCED_REQUEST_FAILED);
   });
