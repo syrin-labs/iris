@@ -793,7 +793,7 @@ function handleDaemonInner(parsed: {
     });
 }
 
-function main(): void {
+export function main(): void {
   // Before anything reads process.env — notably the telemetry gate and the bridge's security
   // options — fold in a project-local `.env`. Values already in the environment always win.
   loadDotEnv(process.cwd());

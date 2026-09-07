@@ -6,7 +6,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "reticle": "./dist/cli.js"
+    "reticle": "./bin/reticle.js"
   },
   "exports": {
     ".": {
@@ -53,6 +53,7 @@
   "homepage": "https://github.com/reticlehq/reticle#readme",
   "bugs": "https://github.com/reticlehq/reticle/issues",
   "files": [
+    "bin",
     "dist",
     "README.md",
     "LICENSE-ENTERPRISE",
