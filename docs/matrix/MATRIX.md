@@ -24,3 +24,9 @@ Reticle working in that client.
 | opencode | ◐ runnable-unverified | n/a | darwin 25.5.0 | machine (client-compat.mjs) |
 | vscode | ◐ runnable-unverified | n/a | darwin 25.5.0 | machine (client-compat.mjs) |
 | windsurf | ◐ runnable-unverified | n/a | darwin 25.5.0 | machine (client-compat.mjs) |
+
+## 2.11.0
+
+| client | verdict | tools | os | submitted by |
+| --- | --- | --- | --- | --- |
+| claude-code 2.1.228 | ✅ works | 18 | windows 10.0.26200 | sanjayontech |

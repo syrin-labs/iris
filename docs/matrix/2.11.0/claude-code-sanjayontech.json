@@ -1,0 +1,22 @@
+{
+  "reticle": {
+    "version": "2.11.0",
+    "commit": "005319b9bfc693e00fb459339d90c90d117da362"
+  },
+  "client": {
+    "id": "claude-code",
+    "version": "2.1.228"
+  },
+  "host": {
+    "os": "windows 10.0.26200",
+    "node": "v22.16.0"
+  },
+  "checks": {
+    "registered": true,
+    "toolsVisible": 18,
+    "survivedDaemonRestart": true,
+    "clientError": ""
+  },
+  "verdict": "works",
+  "by": "sanjayontech"
+}
