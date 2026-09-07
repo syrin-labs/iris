@@ -11,6 +11,6 @@
     "@reticlehq/browser": "workspace:*"
   },
   "devDependencies": {
-    "vite": "^8.2.1"
+    "vite": "^8.2.2"
   }
 }
