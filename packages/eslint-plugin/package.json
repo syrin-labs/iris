@@ -19,13 +19,13 @@
     "prepack": "tsc -b && node ../../scripts/prepare-dist.mjs dist"
   },
   "dependencies": {
-    "@typescript-eslint/utils": "^8.67.0"
+    "@typescript-eslint/utils": "^8.69.0"
   },
   "peerDependencies": {
     "eslint": ">=9"
   },
   "devDependencies": {
-    "@typescript-eslint/rule-tester": "^8.67.0"
+    "@typescript-eslint/rule-tester": "^8.69.0"
   },
   "license": "Apache-2.0",
   "author": "Reticle contributors",

@@ -8,7 +8,7 @@
     "dev": "astro dev --port 5304"
   },
   "dependencies": {
-    "@astrojs/react": "^6.0.4",
+    "@astrojs/react": "^6.0.5",
     "@reticlehq/react": "workspace:*",
     "@reticlehq/vite-plugin": "workspace:*",
     "astro": "7.0.3",

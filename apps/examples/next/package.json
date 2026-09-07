@@ -10,13 +10,13 @@
   "dependencies": {
     "@reticlehq/next": "workspace:*",
     "@reticlehq/react": "workspace:*",
-    "next": "^16.3.2",
+    "next": "^16.3.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.7",
     "typescript": "^5.9.0"
   }
 }
